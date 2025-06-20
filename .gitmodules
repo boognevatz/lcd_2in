@@ -1,0 +1,4 @@
+[submodule "micropython"]
+	path = micropython
+	url = git@github.com:boognevatz/micropython
+	branch = rp2350_touch_boot_failure
