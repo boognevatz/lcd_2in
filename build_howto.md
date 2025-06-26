@@ -4,11 +4,18 @@
 ```
 sudo apt-get update && sudo apt-get install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential
 ```
-
-## install pico-sdk under `micropython/lib/` dir:
+## install micropython
 
 ```
-mkdir -p pico-sdk && cd pico-sdk && git clone https://github.com/raspberrypi/pico-sdk.git . && git submodule update --init
+git submodule update --init --remote --checkout
+```
+
+## install submodules under /lib directory (pico-sdk, wiznet, etc)
+
+```
+cd micropython
+git submodule update --init --remote --checkout
+
 ```
 
 ## Modified files
