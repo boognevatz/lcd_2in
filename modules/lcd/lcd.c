@@ -9,6 +9,57 @@
 #include "GUI_Paint.h"
 #include "fonts.h"
 
+
+
+// Define a new MicroPython type for fonts
+typedef struct _mp_lcd_font_obj_t {
+    mp_obj_base_t base;
+    sFONT *font;
+} mp_lcd_font_obj_t;
+
+// Method to get font width
+static mp_obj_t font_get_width(mp_obj_t self_in) {
+    mp_lcd_font_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    return mp_obj_new_int(self->font->Width);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(font_get_width_obj, font_get_width);
+
+// Method to get font height
+static mp_obj_t font_get_height(mp_obj_t self_in) {
+    mp_lcd_font_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    return mp_obj_new_int(self->font->Height);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(font_get_height_obj, font_get_height);
+
+// Define font type with properties
+static const mp_rom_map_elem_t font_locals_dict_table[] = {
+    { MP_ROM_QSTR(MP_QSTR_Width), MP_ROM_PTR(&font_get_width_obj) },
+    { MP_ROM_QSTR(MP_QSTR_Height), MP_ROM_PTR(&font_get_height_obj) },
+};
+static MP_DEFINE_CONST_DICT(font_locals_dict, font_locals_dict_table);
+
+MP_DEFINE_CONST_OBJ_TYPE(
+    mp_lcd_font_type,
+    MP_QSTR_Font,
+    MP_TYPE_FLAG_NONE,
+    locals_dict, &font_locals_dict
+);
+
+// Create wrapper objects for each font
+static mp_lcd_font_obj_t font16_wrapper = {
+    {&mp_lcd_font_type},
+    &Font16
+};
+
+static mp_lcd_font_obj_t font24_wrapper = {
+    {&mp_lcd_font_type},
+    &Font24
+};
+
+// Add more wrappers for other fonts as needed...
+
+
+
 // --- LCD_2in wrappers ---
 static mp_obj_t lcd_init(mp_obj_t scan_dir_obj) {
     UBYTE scan_dir = mp_obj_get_int(scan_dir_obj);
@@ -207,7 +258,11 @@ static mp_obj_t paint_draw_string_en(size_t n_args, const mp_obj_t *args) {
     UWORD x = mp_obj_get_int(args[0]);
     UWORD y = mp_obj_get_int(args[1]);
     const char *str = mp_obj_str_get_str(args[2]);
-    sFONT *font = (sFONT *)MP_OBJ_TO_PTR(args[3]);
+
+    // Extract font from wrapper object
+    mp_lcd_font_obj_t *font_wrapper = (mp_lcd_font_obj_t *)MP_OBJ_TO_PTR(args[3]);
+    sFONT *font = font_wrapper->font;
+    
     UWORD color_fg = mp_obj_get_int(args[4]);
     UWORD color_bg = mp_obj_get_int(args[5]);
     Paint_DrawString_EN(x, y, str, font, color_fg, color_bg);
@@ -217,6 +272,14 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(paint_draw_string_en_obj, 6, 6, paint
 
 // --- Font pointers as opaque ints (addresses) ---
 #define FONT_PTR_OBJ(font) (mp_obj_new_int((uintptr_t)&font))
+
+
+
+
+
+
+
+
 
 // --- Module globals ---
 static const mp_rom_map_elem_t lcd_module_globals_table[] = {
@@ -269,9 +332,9 @@ static const mp_rom_map_elem_t lcd_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_BRRED), MP_ROM_INT(BRRED) },
     { MP_ROM_QSTR(MP_QSTR_GRAY), MP_ROM_INT(GRAY) },
     // --- Font pointers ---
-    { MP_ROM_QSTR(MP_QSTR_Font24), MP_ROM_PTR(&Font24) },
+    { MP_ROM_QSTR(MP_QSTR_Font24), MP_ROM_PTR(&font24_wrapper) },
     { MP_ROM_QSTR(MP_QSTR_Font20), MP_ROM_PTR(&Font20) },
-    { MP_ROM_QSTR(MP_QSTR_Font16), MP_ROM_PTR(&Font16) },
+    { MP_ROM_QSTR(MP_QSTR_Font16), MP_ROM_PTR(&font16_wrapper) },
     { MP_ROM_QSTR(MP_QSTR_Font12), MP_ROM_PTR(&Font12) },
     { MP_ROM_QSTR(MP_QSTR_Font8), MP_ROM_PTR(&Font8) },
     { MP_ROM_QSTR(MP_QSTR_Font12CN), MP_ROM_PTR(&Font12CN) },
