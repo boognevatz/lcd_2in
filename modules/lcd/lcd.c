@@ -203,6 +203,18 @@ static mp_obj_t paint_clear_windows(size_t n_args, const mp_obj_t *args) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(paint_clear_windows_obj, 5, 5, paint_clear_windows);
 
+static mp_obj_t paint_draw_string_en(size_t n_args, const mp_obj_t *args) {
+    UWORD x = mp_obj_get_int(args[0]);
+    UWORD y = mp_obj_get_int(args[1]);
+    const char *str = mp_obj_str_get_str(args[2]);
+    sFONT *font = (sFONT *)MP_OBJ_TO_PTR(args[3]);
+    UWORD color_fg = mp_obj_get_int(args[4]);
+    UWORD color_bg = mp_obj_get_int(args[5]);
+    Paint_DrawString_EN(x, y, str, font, color_fg, color_bg);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(paint_draw_string_en_obj, 6, 6, paint_draw_string_en);
+
 // --- Font pointers as opaque ints (addresses) ---
 #define FONT_PTR_OBJ(font) (mp_obj_new_int((uintptr_t)&font))
 
@@ -236,6 +248,7 @@ static const mp_rom_map_elem_t lcd_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_paint_set_scale), MP_ROM_PTR(&paint_set_scale_obj) },
     { MP_ROM_QSTR(MP_QSTR_paint_clear), MP_ROM_PTR(&paint_clear_obj) },
     { MP_ROM_QSTR(MP_QSTR_paint_clear_windows), MP_ROM_PTR(&paint_clear_windows_obj) },
+    { MP_ROM_QSTR(MP_QSTR_paint_draw_string_en), MP_ROM_PTR(&paint_draw_string_en_obj) },
     // --- Constants ---
     { MP_ROM_QSTR(MP_QSTR_LCD_2IN_WIDTH), MP_ROM_INT(LCD_2IN_WIDTH) },
     { MP_ROM_QSTR(MP_QSTR_LCD_2IN_HEIGHT), MP_ROM_INT(LCD_2IN_HEIGHT) },
