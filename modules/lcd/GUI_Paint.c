@@ -332,11 +332,11 @@ void Paint_DrawPoint(UWORD Xpoint, UWORD Ypoint, UWORD Color,
 /******************************************************************************
 function: Draw a line of arbitrary slope
 parameter:
-    Xstart ：Starting Xpoint point coordinates
-    Ystart ：Starting Xpoint point coordinates
-    Xend   ：End point Xpoint coordinate
-    Yend   ：End point Ypoint coordinate
-    Color  ：The color of the line segment
+    Xstart : Starting Xpoint point coordinates
+    Ystart : Starting Xpoint point coordinates
+    Xend   : End point Xpoint coordinate
+    Yend   : End point Ypoint coordinate
+    Color  : The color of the line segment
     Line_width : Line width
     Line_Style: Solid and dotted lines
 ******************************************************************************/
@@ -400,11 +400,11 @@ void Paint_DrawLine(UWORD Xstart, UWORD Ystart, UWORD Xend, UWORD Yend,
 /******************************************************************************
 function: Draw a rectangle
 parameter:
-    Xstart ：Rectangular  Starting Xpoint point coordinates
-    Ystart ：Rectangular  Starting Xpoint point coordinates
-    Xend   ：Rectangular  End point Xpoint coordinate
-    Yend   ：Rectangular  End point Ypoint coordinate
-    Color  ：The color of the Rectangular segment
+    Xstart : Rectangular  Starting Xpoint point coordinates
+    Ystart : Rectangular  Starting Xpoint point coordinates
+    Xend   : Rectangular  End point Xpoint coordinate
+    Yend   : Rectangular  End point Ypoint coordinate
+    Color  : The color of the Rectangular segment
     Line_width: Line width
     Draw_Fill : Whether to fill the inside of the rectangle
 ******************************************************************************/
@@ -439,10 +439,10 @@ void Paint_DrawRectangle(UWORD Xstart, UWORD Ystart, UWORD Xend, UWORD Yend,
 function: Use the 8-point method to draw a circle of the
             specified size at the specified position->
 parameter:
-    X_Center  ：Center X coordinate
-    Y_Center  ：Center Y coordinate
-    Radius    ：circle Radius
-    Color     ：The color of the ：circle segment
+    X_Center  : Center X coordinate
+    Y_Center  : Center Y coordinate
+    Radius    : circle Radius
+    Color     : The color of the : circle segment
     Line_width: Line width
     Draw_Fill : Whether to fill the inside of the Circle
 ******************************************************************************/
@@ -517,10 +517,10 @@ void Paint_DrawCircle(UWORD X_Center, UWORD Y_Center, UWORD Radius,
 /******************************************************************************
 function: Show English characters
 parameter:
-    Xpoint           ：X coordinate
-    Ypoint           ：Y coordinate
-    Acsii_Char       ：To display the English characters
-    Font             ：A structure pointer that displays a character size
+    Xpoint           : X coordinate
+    Ypoint           : Y coordinate
+    Acsii_Char       : To display the English characters
+    Font             : A structure pointer that displays a character size
     Color_Foreground : Select the foreground color
     Color_Background : Select the background color
 ******************************************************************************/
@@ -566,10 +566,10 @@ void Paint_DrawChar(UWORD Xpoint, UWORD Ypoint, const char Acsii_Char,
 /******************************************************************************
 function:	Display the string
 parameter:
-    Xstart           ：X coordinate
-    Ystart           ：Y coordinate
-    pString          ：The first address of the English string to be displayed
-    Font             ：A structure pointer that displays a character size
+    Xstart           : X coordinate
+    Ystart           : Y coordinate
+    pString          : The first address of the English string to be displayed
+    Font             : A structure pointer that displays a character size
     Color_Foreground : Select the foreground color
     Color_Background : Select the background color
 ******************************************************************************/
@@ -613,11 +613,11 @@ void Paint_DrawString_EN(UWORD Xstart, UWORD Ystart, const char *pString,
 /******************************************************************************
 function: Display the string
 parameter:
-    Xstart  ：X coordinate
-    Ystart  ：Y coordinate
-    pString ：The first address of the Chinese string and English
+    Xstart  : X coordinate
+    Ystart  : Y coordinate
+    pString : The first address of the Chinese string and English
               string to be displayed
-    Font    ：A structure pointer that displays a character size
+    Font    : A structure pointer that displays a character size
     Color_Foreground : Select the foreground color
     Color_Background : Select the background color
 ******************************************************************************/
@@ -739,10 +739,10 @@ void Paint_DrawString_CN(UWORD Xstart, UWORD Ystart, const char *pString, cFONT 
 /******************************************************************************
 function:	Display nummber
 parameter:
-    Xstart           ：X coordinate
+    Xstart           : X coordinate
     Ystart           : Y coordinate
     Nummber          : The number displayed
-    Font             ：A structure pointer that displays a character size
+    Font             : A structure pointer that displays a character size
     Digit						 : Fractional width
     Color_Foreground : Select the foreground color
     Color_Background : Select the background color
@@ -767,10 +767,10 @@ void Paint_DrawNum(UWORD Xpoint, UWORD Ypoint, double Nummber,
 /******************************************************************************
 function:	Display time
 parameter:
-    Xstart           ：X coordinate
+    Xstart           : X coordinate
     Ystart           : Y coordinate
     pTime            : Time-related structures
-    Font             ：A structure pointer that displays a character size
+    Font             : A structure pointer that displays a character size
     Color_Foreground : Select the foreground color
     Color_Background : Select the background color
 ******************************************************************************/
@@ -827,7 +827,7 @@ void Paint_DrawImage1(const unsigned char *image, UWORD xStart, UWORD yStart, UW
 /******************************************************************************
 function:	Display monochrome bitmap
 parameter:
-    image_buffer ：A picture data converted to a bitmap
+    image_buffer : A picture data converted to a bitmap
 info:
     Use a computer to convert the image into a corresponding array,
     and then embed the array directly into Imagedata.cpp as a .c file.
