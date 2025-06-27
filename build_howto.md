@@ -31,17 +31,17 @@ git checkout micropython # branch
 
 ## The actual build itself:
 ```
-# only once:
+# build submodules. only once:
 make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 submodules
 
 
-# the actual build itself:
-
-## without user modules:
-# make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2
-
-# With user modules
+# The actual build itself with user modules
 make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 USER_C_MODULES=../../../modules/micropython.cmake
+
+# Rebuild
+make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 clean
+make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 USER_C_MODULES=../../../modules/micropython.cmake
+
 ```
 
 
