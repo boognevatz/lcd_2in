@@ -6,6 +6,9 @@
 # Add the LCD driver
 include(${CMAKE_CURRENT_LIST_DIR}/lcd/micropython.cmake)
 
+# Add the camera driver
+include(${CMAKE_CURRENT_LIST_DIR}/camera/micropython.cmake)
+
 
 # Add the C example.
 include(${CMAKE_CURRENT_LIST_DIR}/cexample/micropython.cmake)
