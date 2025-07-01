@@ -2,8 +2,10 @@
 #include "py/runtime.h"
 #include "cam.h"
 
+
 // Example wrapper for init_cam()
 static mp_obj_t camera_init_cam() {
+    mp_printf(MP_PYTHON_PRINTER, "Hello from C module, init_cam!\n");
     init_cam();
     return mp_const_none;
 }

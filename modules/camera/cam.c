@@ -31,6 +31,7 @@
 #include <math.h>
 #include <string.h>
 #include "cam.h"
+#include "py/runtime.h"
 
 // init PIO
 static PIO pio_cam = pio0;
@@ -42,7 +43,8 @@ static uint32_t sm_cam; // CAMERA's state machines
 static uint32_t DMA_CAM_RD_CH;
 
 // private functions and buffers
-uint8_t *cam_ptr;  // pointer of camera buffer
+uint8_t *cam_ptr = NULL;  // pointer of camera buffer
+
 
 // flag
 volatile bool buffer_ready = false;
@@ -53,16 +55,30 @@ parameter:
 ********************************************************************************/
 void init_cam()
 {
+    // Free existing buffer if re-initing
+    if (cam_ptr != NULL) {
+        free(cam_ptr);
+        cam_ptr = NULL;
+    }
+    
+
     // Initialize CAMERA
     set_pwm_freq_kHz(37000, PIN_PWM);
     sleep_ms(50);
     sccb_init(I2C1_SDA, I2C1_SCL); // sda,scl=(gp26,gp27). see 'sccb_if.c' and 'cam.h'
     sleep_ms(50);
 
+    // import gc; gc.mem_free() = 460144
     // buffer of camera data is LCD_2IN_WIDTH * LCD_2IN_HEIGHT * 2 bytes (RGB565 = 16 bits = 2 bytes)
-    cam_ptr = (uint8_t *)malloc(CAM_FUL_SIZE * 2);
-    memset(cam_ptr, 0, CAM_FUL_SIZE * 2); 
+    mp_printf(MP_PYTHON_PRINTER, "before malloc\n");
+    cam_ptr = (uint8_t *)m_malloc(CAM_FUL_SIZE * 2);  //320*240*2 =153600
+    //320*240*2 =153600
+    mp_printf(MP_PYTHON_PRINTER, "after malloc %d\n", CAM_FUL_SIZE * 2);
+    memset(cam_ptr, 0, CAM_FUL_SIZE * 2);
+    (void)cam_ptr;
 }
+
+
 
 /********************************************************************************
 function:   Configuring DMA
