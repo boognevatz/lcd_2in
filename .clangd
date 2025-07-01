@@ -1,0 +1,9 @@
+# .clangd
+CompileFlags:
+  Add: [
+    "-target", "arm-none-eabi",
+    # Add the required include path for the toolchain
+    "-isystem", "/usr/lib/gcc/arm-none-eabi/13.2.1/../../../arm-none-eabi/include",
+  ]
+
+
