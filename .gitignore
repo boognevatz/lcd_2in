@@ -1,5 +1,7 @@
 .cache
 compile_commands.json
 modules/camera/cland-output.txt
-
+picotool
+modules/reference
+tmp/
 
