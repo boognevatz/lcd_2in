@@ -26,13 +26,20 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 ******************************************************************************/
-#include <hardware/dma.h>
+
+#include "hardware/dma.h"
+#include "hardware/irq.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
 #include "cam.h"
 #include "py/runtime.h"
+
+#include "shared/runtime/mpirq.h"
+
+
 
 // init PIO
 static PIO pio_cam = pio0;
@@ -115,11 +122,35 @@ void config_cam_buffer()
     mp_printf(MP_PYTHON_PRINTER, "dma_channel_set_irq0_enabled:\n");
     
     //irq_set_exclusive_handler(DMA_IRQ_0, cam_handler);
-    mp_printf(MP_PYTHON_PRINTER, "//irq_set_exclusive_handler: cam_handler\n");
+    irq_add_shared_handler(DMA_IRQ_0, cam_handler, PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
+    mp_printf(MP_PYTHON_PRINTER, "irq_add_shared_handler: cam_handler\n");
     
     // irq_set_enabled(DMA_IRQ_0, true);
     // dma_channel_start(DMA_CAM_RD_CH); // Start DMA transfer
 }
+
+/********************************************************************************
+function:   DMA interrupt processing function
+parameter:
+********************************************************************************/
+void cam_handler(void)
+{
+    buffer_ready = true;
+    dma_hw->ints0 = 1u << DMA_CAM_RD_CH;  // clear the interrupt flag
+    
+    // uint32_t triggered_dma = dma_hw->ints0;
+    // if (triggered_dma & (1u << DMA_CAM_RD_CH))
+    // {
+    //     buffer_ready = true;
+    //     // Clear interrupt flag
+    //     dma_hw->ints0 = 1u << DMA_CAM_RD_CH;
+    // }
+
+    // Reset DMA write address to capture the next frame
+    // reset the DMA initial write address
+    dma_channel_set_write_addr(DMA_CAM_RD_CH, cam_ptr, true);
+}
+
 
 /********************************************************************************
 function:   Start the camera
@@ -162,25 +193,6 @@ void read_cam_data_blocking(uint8_t *buffer, size_t length)
             tight_loop_contents(); // wait for data
         }
     }
-}
-
-/********************************************************************************
-function:   DMA interrupt processing function
-parameter:
-********************************************************************************/
-void cam_handler()
-{
-    uint32_t triggered_dma = dma_hw->ints0;
-
-    if (triggered_dma & (1u << DMA_CAM_RD_CH))
-    {
-        buffer_ready = true;
-        // Clear interrupt flag
-        dma_hw->ints0 = 1u << DMA_CAM_RD_CH;
-    }
-
-    // reset the DMA initial write address
-    dma_channel_set_write_addr(DMA_CAM_RD_CH, cam_ptr, true);
 }
 
 /********************************************************************************
