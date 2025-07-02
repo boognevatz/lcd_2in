@@ -26,6 +26,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 ******************************************************************************/
+#include <hardware/dma.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -57,7 +58,7 @@ void init_cam()
 {
     // Free existing buffer if re-initing
     if (cam_ptr != NULL) {
-        free(cam_ptr);
+        m_free(cam_ptr);
         cam_ptr = NULL;
     }
     
@@ -88,27 +89,36 @@ void config_cam_buffer()
 {
     // init DMA
     DMA_CAM_RD_CH = dma_claim_unused_channel(true);
-    printf("DMA_CH= %d\n", (int)DMA_CAM_RD_CH);
+    mp_printf(MP_PYTHON_PRINTER, "DMA_CH= %d\n", (int)DMA_CAM_RD_CH);
     
     // Disable IRQ
     irq_set_enabled(DMA_IRQ_0, false);
+    mp_printf(MP_PYTHON_PRINTER, "irq_set_enabled\n");
 
-    // Configure DMA Channel 0
+     // Configure DMA Channel 0
     dma_channel_config c0 = get_cam_config(pio_cam, sm_cam, DMA_CAM_RD_CH);
+    mp_printf(MP_PYTHON_PRINTER, "dma_channel_config c0= %d\n", (int)&c0);
+    
     channel_config_set_transfer_data_size(&c0, DMA_SIZE_16);
-
+    mp_printf(MP_PYTHON_PRINTER, "channel_config_set_transfer_data_size\n");
+    
     dma_channel_configure(DMA_CAM_RD_CH, &c0,
                           cam_ptr,               // Destination pointer
                           &pio_cam->rxf[sm_cam], // Source pointer
                           CAM_FUL_SIZE,          // Number of transfers
                           false                  // Don't Start yet
     );
-
+    mp_printf(MP_PYTHON_PRINTER, "dma_channel_configure cam_ptr: %d\n", (int)cam_ptr);
+    
     // IRQ settings
     dma_channel_set_irq0_enabled(DMA_CAM_RD_CH, true);
-    irq_set_exclusive_handler(DMA_IRQ_0, cam_handler);
-    irq_set_enabled(DMA_IRQ_0, true);
-    dma_channel_start(DMA_CAM_RD_CH); // Start DMA transfer
+    mp_printf(MP_PYTHON_PRINTER, "dma_channel_set_irq0_enabled:\n");
+    
+    //irq_set_exclusive_handler(DMA_IRQ_0, cam_handler);
+    mp_printf(MP_PYTHON_PRINTER, "//irq_set_exclusive_handler: cam_handler\n");
+    
+    // irq_set_enabled(DMA_IRQ_0, true);
+    // dma_channel_start(DMA_CAM_RD_CH); // Start DMA transfer
 }
 
 /********************************************************************************
