@@ -36,11 +36,11 @@ make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 submodules
 
 
 # The actual build itself with user modules
-make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 USER_C_MODULES=../../../modules/micropython.cmake
+START=$(date +%s); make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 USER_C_MODULES=../../../modules/micropython.cmake; echo "Build took $(( $(date +%s) - START )) seconds."; echo "Finished at $(date)"
 
 # Rebuild
 make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 clean
-make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 USER_C_MODULES=../../../modules/micropython.cmake
+START=$(date +%s); make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 USER_C_MODULES=../../../modules/micropython.cmake; echo "Build took $(( $(date +%s) - START )) seconds."; echo "Finished at $(date)"
 
 ```
 
