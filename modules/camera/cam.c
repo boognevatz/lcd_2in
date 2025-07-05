@@ -35,6 +35,7 @@
 #include <math.h>
 #include <string.h>
 #include "cam.h"
+#include "py/mpprint.h"
 #include "py/runtime.h"
 
 #include "shared/runtime/mpirq.h"
@@ -50,40 +51,45 @@ static uint32_t sm_cam; // CAMERA's state machines
 // dma channels
 static uint32_t DMA_CAM_RD_CH;
 
-// private functions and buffers
-uint8_t *cam_ptr = NULL;  // pointer of camera buffer
+uint8_t *cam_ptr = NULL;
+
+uint8_t pin_i2c1_sda = 22; // default on RP2350 touch 2in
+uint8_t pin_i2c1_scl = 23; // default on RP2350 touch 2in
+uint8_t pin_xclk_pwm = 11; // GPIO11 (camera's xclk(24MHz))
 
 
 // flag
 volatile bool buffer_ready = false;
 
+
+
+
+void set_i2c_pins(uint8_t sda, uint8_t scl) {
+    pin_i2c1_sda = sda;
+    pin_i2c1_scl = scl;
+}
+
+void set_pwm_pin(uint8_t pwm) {
+    pin_xclk_pwm = pwm;
+}
 /********************************************************************************
 function:   Camera initialization
 parameter:
 ********************************************************************************/
 void init_cam()
 {
-    // Free existing buffer if re-initing
-    if (cam_ptr != NULL) {
-        m_free(cam_ptr);
-        cam_ptr = NULL;
-    }
-    
 
-    // Initialize CAMERA
-    set_pwm_freq_kHz(37000, PIN_PWM);
+    mp_printf(MP_PYTHON_PRINTER, "initialize CAMERA\n");
+    mp_printf(MP_PYTHON_PRINTER, "set camera XCLK (pwm) pin: %d\n", pin_xclk_pwm);
+    mp_printf(MP_PYTHON_PRINTER, "call set_pwm_freq_kHz(pwm) before init_cam() to change it\n");
+    set_pwm_freq_kHz(37000, pin_xclk_pwm); // XCLK
     sleep_ms(50);
-    sccb_init(I2C1_SDA, I2C1_SCL); // sda,scl=(gp26,gp27). see 'sccb_if.c' and 'cam.h'
+    mp_printf(MP_PYTHON_PRINTER, "set camera I2C pins: SDA: %d, SCL: %d\n", (int)pin_i2c1_sda, (int)pin_i2c1_scl);
+    mp_printf(MP_PYTHON_PRINTER, "call set_i2c_pins(sda,scl) before init_cam() to change it\n");
+
+    sccb_init(pin_i2c1_sda, pin_i2c1_scl); // sda,scl=(gp26,gp27). see 'sccb_if.c' and 'cam.h'
     sleep_ms(50);
 
-    // import gc; gc.mem_free() = 460144
-    // buffer of camera data is LCD_2IN_WIDTH * LCD_2IN_HEIGHT * 2 bytes (RGB565 = 16 bits = 2 bytes)
-    mp_printf(MP_PYTHON_PRINTER, "before malloc\n");
-    cam_ptr = (uint8_t *)m_malloc(CAM_FUL_SIZE * 2);  //320*240*2 =153600
-    //320*240*2 =153600
-    mp_printf(MP_PYTHON_PRINTER, "after malloc %d\n", CAM_FUL_SIZE * 2);
-    memset(cam_ptr, 0, CAM_FUL_SIZE * 2);
-    (void)cam_ptr;
 }
 
 
@@ -92,41 +98,41 @@ void init_cam()
 function:   Configuring DMA
 parameter:
 ********************************************************************************/
-void config_cam_buffer()
+void config_cam_buffer(mp_obj_t buf_obj)
 {
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(buf_obj, &bufinfo, MP_BUFFER_RW);
+    cam_ptr = bufinfo.buf;
+    size_t len = bufinfo.len;
+
     // init DMA
     DMA_CAM_RD_CH = dma_claim_unused_channel(true);
-    mp_printf(MP_PYTHON_PRINTER, "DMA_CH= %d\n", (int)DMA_CAM_RD_CH);
+    mp_printf(MP_PYTHON_PRINTER, "config_cam_buffer()->DMA_CH= %d\n", (int)DMA_CAM_RD_CH);
     
     // Disable IRQ
     irq_set_enabled(DMA_IRQ_0, false);
-    mp_printf(MP_PYTHON_PRINTER, "irq_set_enabled\n");
 
      // Configure DMA Channel 0
     dma_channel_config c0 = get_cam_config(pio_cam, sm_cam, DMA_CAM_RD_CH);
-    mp_printf(MP_PYTHON_PRINTER, "dma_channel_config c0= %d\n", (int)&c0);
     
     channel_config_set_transfer_data_size(&c0, DMA_SIZE_16);
-    mp_printf(MP_PYTHON_PRINTER, "channel_config_set_transfer_data_size\n");
     
     dma_channel_configure(DMA_CAM_RD_CH, &c0,
                           cam_ptr,               // Destination pointer
                           &pio_cam->rxf[sm_cam], // Source pointer
-                          CAM_FUL_SIZE,          // Number of transfers
+                          len,          // Number of transfers
                           false                  // Don't Start yet
     );
-    mp_printf(MP_PYTHON_PRINTER, "dma_channel_configure cam_ptr: %d\n", (int)cam_ptr);
     
     // IRQ settings
     dma_channel_set_irq0_enabled(DMA_CAM_RD_CH, true);
-    mp_printf(MP_PYTHON_PRINTER, "dma_channel_set_irq0_enabled:\n");
     
-    //irq_set_exclusive_handler(DMA_IRQ_0, cam_handler);
+    //irq_set_exclusive_handler(DMA_IRQ_0, cam_handler); //NOT WORKING, micropython has IRQ already!
     irq_add_shared_handler(DMA_IRQ_0, cam_handler, PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
     mp_printf(MP_PYTHON_PRINTER, "irq_add_shared_handler: cam_handler\n");
     
-    // irq_set_enabled(DMA_IRQ_0, true);
-    // dma_channel_start(DMA_CAM_RD_CH); // Start DMA transfer
+    irq_set_enabled(DMA_IRQ_0, true);
+    dma_channel_start(DMA_CAM_RD_CH); // Start DMA transfer
 }
 
 /********************************************************************************
@@ -151,6 +157,40 @@ void cam_handler(void)
     dma_channel_set_write_addr(DMA_CAM_RD_CH, cam_ptr, true);
 }
 
+// D0    GPIO 0
+// D1    GPIO 1
+// D2    GPIO 2
+// D3    GPIO 3
+// D4    GPIO 4
+// D5    GPIO 5
+// D6    GPIO 6
+// D7    GPIO 7
+
+// VSYNC GPIO 8
+// HREF  GPIO 9
+// PCLK  GPIO 10
+// XCLK  GPIO 11
+// PWDN  GPIO 21
+// SDA   GPIO 22
+// SCL   GPIO 23
+
+// NEW HARDWARE
+// D0    GPIO 19
+// D1    GPIO 18
+// D2    GPIO 17
+// D3    GPIO 16
+// D4    GPIO 15
+// D5    GPIO 14
+// D6    GPIO 13
+// D7    GPIO 12
+//  D8   GPIO 11
+//  D9   GPIO 10
+// VSYNC GPIO 9
+// HREF  GPIO 8
+// XCLK  GPIO 7
+// PCLK  GPIO 6
+// SDA   GPIO 24
+// SCL   GPIO 25
 
 /********************************************************************************
 function:   Start the camera
@@ -161,16 +201,16 @@ void start_cam()
     uint32_t offset_cam = pio_add_program(pio_cam, &picampinos_program);
     // uint32_t sm = 0; 
     picampinos_program_init(pio_cam, sm_cam, offset_cam, CAM_BASE_PIN, 11); // VSYNC,HREF,PCLK,D[2:9] : total 11 pins
-    
     // Enable the state machine and clear the FIFO
     pio_sm_set_enabled(pio_cam, sm_cam, false);
     pio_sm_clear_fifos(pio_cam, sm_cam);
     pio_sm_restart(pio_cam, sm_cam);
     pio_sm_set_enabled(pio_cam, sm_cam, true);
-    
+
     // Setting the X and Y registers
     pio_sm_put_blocking(pio_cam, sm_cam, 0);                  // X=0 : reserved
     pio_sm_put_blocking(pio_cam, sm_cam, (CAM_FUL_SIZE - 1)); // Y: total words in an image
+    mp_printf(MP_PYTHON_PRINTER, "start_cam finished, camera started\n");
 }
 
 /********************************************************************************
