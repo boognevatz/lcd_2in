@@ -40,6 +40,7 @@
 #include "DEV_Config.h"
 #include "LCD_2in.h"
 #include "picampinos.pio.h"
+#include "py/obj.h"
 
 extern uint8_t *cam_ptr;  
 extern uint8_t *cam_ptr1; 
@@ -49,12 +50,12 @@ extern volatile bool buffer_ready;
 
 #define SYS_CLK_IN_KHZ (150000) // 192000 ~ 250000 (if you use sfp, SYS_CLK_KHZ must be just 250000)
 #define CAM_BASE_PIN (0)        // GP1  (camera module needs 11pin)
-#define PIN_PWM (11)            // GP11 (camera's xclk(24MHz))
 
-// interfaces
-// SCCB IF
-#define I2C1_SDA (22)
-#define I2C1_SCL (23)
+extern uint8_t pin_i2c1_sda;
+extern uint8_t pin_i2c1_scl;
+extern uint8_t pin_xclk_pwm;
+void set_i2c_pins(uint8_t sda, uint8_t scl);
+void set_pwm_pin(uint8_t pwm);
 
 // camera buffer size
 // 240x320, RGB565 picture needs 240x320x2 bytes of buffers.
@@ -62,7 +63,7 @@ extern volatile bool buffer_ready;
 
 // high layer APIs
 void init_cam();
-void config_cam_buffer();
+void config_cam_buffer(mp_obj_t buf_obj);
 void start_cam();
 void free_cam();
 void set_pwm_freq_kHz(uint32_t freq_khz, uint8_t gpio_num);
