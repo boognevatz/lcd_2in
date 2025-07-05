@@ -186,17 +186,30 @@ static mp_obj_t dev_module_exit(void) {
 static MP_DEFINE_CONST_FUN_OBJ_0(dev_module_exit_obj, dev_module_exit);
 
 // --- GUI_Paint wrappers ---
-  static mp_obj_t paint_new_image(size_t n_args, const mp_obj_t *args) {
-      mp_buffer_info_t bufinfo;
-      mp_get_buffer_raise(args[0], &bufinfo, MP_BUFFER_RW);
-      UWORD width = mp_obj_get_int(args[1]);
-      UWORD height = mp_obj_get_int(args[2]);
-      UWORD rotate = mp_obj_get_int(args[3]);
-      UWORD color = mp_obj_get_int(args[4]);
-      Paint_NewImage((UBYTE *)bufinfo.buf, width, height, rotate, color);
-      return mp_const_none;
-  }
+static mp_obj_t paint_new_image(size_t n_args, const mp_obj_t *args) {
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(args[0], &bufinfo, MP_BUFFER_RW);
+    UWORD width = mp_obj_get_int(args[1]);
+    UWORD height = mp_obj_get_int(args[2]);
+    UWORD rotate = mp_obj_get_int(args[3]);
+    UWORD color = mp_obj_get_int(args[4]);
+    Paint_NewImage((UBYTE *)bufinfo.buf, width, height, rotate, color);
+    return mp_const_none;
+}
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(paint_new_image_obj, 5, 5, paint_new_image);
+
+static mp_obj_t paint_draw_image(size_t n_args, const mp_obj_t *args) {
+    mp_buffer_info_t bufinfo;
+    mp_get_buffer_raise(args[0], &bufinfo, MP_BUFFER_RW);
+    UWORD x      = mp_obj_get_int(args[1]);
+    UWORD y      = mp_obj_get_int(args[2]);
+    UWORD width  = mp_obj_get_int(args[3]);
+    UWORD height = mp_obj_get_int(args[4]);
+    Paint_DrawImage((UBYTE *)bufinfo.buf, x, y, width, height);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(paint_draw_image_obj, 5, 5, paint_draw_image);
+
 
 static mp_obj_t paint_select_image(mp_obj_t image_obj) {
     mp_buffer_info_t bufinfo;
@@ -304,6 +317,7 @@ static const mp_rom_map_elem_t lcd_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_dev_module_exit), MP_ROM_PTR(&dev_module_exit_obj) },
     // GUI_Paint
     { MP_ROM_QSTR(MP_QSTR_paint_new_image), MP_ROM_PTR(&paint_new_image_obj) },
+    { MP_ROM_QSTR(MP_QSTR_paint_draw_image), MP_ROM_PTR(&paint_draw_image_obj) },
     { MP_ROM_QSTR(MP_QSTR_paint_select_image), MP_ROM_PTR(&paint_select_image_obj) },
     { MP_ROM_QSTR(MP_QSTR_paint_set_rotate), MP_ROM_PTR(&paint_set_rotate_obj) },
     { MP_ROM_QSTR(MP_QSTR_paint_set_mirroring), MP_ROM_PTR(&paint_set_mirroring_obj) },
