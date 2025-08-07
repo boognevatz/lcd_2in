@@ -52,7 +52,21 @@ lcd.display(buf)
 
 
 import camera
-camera.set_i2c_pins(22,23) #22, 23 on RP2350_lcd_touch
+# Set new hardware pinout for camera
+# camera.set_data_pins([19, 18, 17, 16, 15, 14, 13, 12])  # D0-D7
+# camera.set_control_pins(9, 8, 6)  # VSYNC, HREF, PCLK
+# camera.set_xclk_pin(7)            # XCLK
+# camera.set_i2c_pins(24, 25)       # SDA, SCL (new hardware)
+# camera.init_cam()
+# buf = camera.get_buffer()
+# camera.config_cam_buffer(buf)
+# camera.start_cam()
+
+# Set old hardware pinout for camera
+camera.set_data_pins([0, 1, 2, 3, 4, 5, 6, 7])  # D0-D7
+camera.set_control_pins(8, 9, 10)  # VSYNC, HREF, PCLK
+camera.set_xclk_pin(11)            # XCLK
+camera.set_i2c_pins(22, 23)       # SDA, SCL (new hardware)
 camera.init_cam()
 buf = camera.get_buffer()
 camera.config_cam_buffer(buf)
@@ -60,3 +74,4 @@ camera.start_cam()
 
 lcd.paint_draw_image(buf,0,0,320,240)
 lcd.display(buf)
+

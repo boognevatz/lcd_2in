@@ -1,6 +1,8 @@
 #include "cam.h"
 #include <string.h>  // for memset
 #include "ov5640.h"
+#include "py/obj.h"
+#include "py/runtime.h"
 
 extern uint8_t *cam_ptr;
 
@@ -60,6 +62,37 @@ static mp_obj_t camera_set_data_order(mp_obj_t reverse_obj) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_data_order_obj, camera_set_data_order);
 
+// Python wrapper for cam_set_data_pins
+static mp_obj_t camera_set_data_pins(mp_obj_t pins_in) {
+    size_t len;
+    mp_obj_t *items;
+    mp_obj_get_array(pins_in, &len, &items);
+    if (len != 8) {
+        mp_raise_ValueError(MP_ERROR_TEXT("set_data_pins requires a list of 8 pins"));
+    }
+    for (size_t i = 0; i < 8; ++i) {
+        g_cam_pinmap.d[i] = mp_obj_get_int(items[i]);
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_data_pins_obj, camera_set_data_pins);
+
+// Python wrapper for cam_set_control_pins (3 positional arguments: vsync, href, pclk)
+static mp_obj_t camera_set_control_pins(mp_obj_t vsync, mp_obj_t href, mp_obj_t pclk) {
+    g_cam_pinmap.vsync = mp_obj_get_int(vsync);
+    g_cam_pinmap.href  = mp_obj_get_int(href);
+    g_cam_pinmap.pclk  = mp_obj_get_int(pclk);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(camera_set_control_pins_obj, camera_set_control_pins);
+
+// Python wrapper for cam_set_xclk_pin (1 positional argument: xclk)
+static mp_obj_t camera_set_xclk_pin(mp_obj_t xclk) {
+    g_cam_pinmap.xclk = mp_obj_get_int(xclk);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_xclk_pin_obj, camera_set_xclk_pin);
+
 
 // Define module globals
 static const mp_rom_map_elem_t camera_module_globals_table[] = {
@@ -71,7 +104,9 @@ static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_start_cam), MP_ROM_PTR(&camera_start_cam_obj) },
     { MP_ROM_QSTR(MP_QSTR_is_buffer_ready), MP_ROM_PTR(&cam_is_buffer_ready_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_data_order), MP_ROM_PTR(&camera_set_data_order_obj) },
-    
+    { MP_ROM_QSTR(MP_QSTR_set_data_pins), MP_ROM_PTR(&camera_set_data_pins_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_control_pins), MP_ROM_PTR(&camera_set_control_pins_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_xclk_pin), MP_ROM_PTR(&camera_set_xclk_pin_obj) },
 };
 static MP_DEFINE_CONST_DICT(camera_module_globals, camera_module_globals_table);
 

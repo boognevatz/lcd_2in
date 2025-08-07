@@ -32,13 +32,10 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 #include <string.h>
 #include "cam.h"
 #include "py/mpprint.h"
-#include "py/runtime.h"
-
-#include "shared/runtime/mpirq.h"
+#include "picampinos.pio.h"
 #include "ov5640.h"
 
 
@@ -157,6 +154,7 @@ void cam_handler(void)
     dma_channel_set_write_addr(DMA_CAM_RD_CH, cam_ptr, true);
 }
 
+// OLD HARDWARE
 // D0    GPIO 0
 // D1    GPIO 1
 // D2    GPIO 2
@@ -165,7 +163,6 @@ void cam_handler(void)
 // D5    GPIO 5
 // D6    GPIO 6
 // D7    GPIO 7
-
 // VSYNC GPIO 8
 // HREF  GPIO 9
 // PCLK  GPIO 10
@@ -173,6 +170,7 @@ void cam_handler(void)
 // PWDN  GPIO 21
 // SDA   GPIO 22
 // SCL   GPIO 23
+
 
 // NEW HARDWARE
 // D0    GPIO 19
@@ -192,15 +190,44 @@ void cam_handler(void)
 // SDA   GPIO 24
 // SCL   GPIO 25
 
+
+
+
+// Global pinmap instance, initialized to default (old hardware)
+cam_pinmap_t g_cam_pinmap = {
+    .d = {0, 1, 2, 3, 4, 5, 6, 7},
+    .vsync = 8,
+    .href = 9,
+    .pclk = 10,
+    .xclk = 11
+};
+
+void cam_set_pinmap(uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3, uint8_t d4, uint8_t d5, uint8_t d6, uint8_t d7, uint8_t vsync, uint8_t href, uint8_t pclk, uint8_t xclk) {
+    g_cam_pinmap.d[0] = d0;
+    g_cam_pinmap.d[1] = d1;
+    g_cam_pinmap.d[2] = d2;
+    g_cam_pinmap.d[3] = d3;
+    g_cam_pinmap.d[4] = d4;
+    g_cam_pinmap.d[5] = d5;
+    g_cam_pinmap.d[6] = d6;
+    g_cam_pinmap.d[7] = d7;
+    g_cam_pinmap.vsync = vsync;
+    g_cam_pinmap.href = href;
+    g_cam_pinmap.pclk = pclk;
+    g_cam_pinmap.xclk = xclk;
+}
+
 /********************************************************************************
 function:   Start the camera
 parameter:
 ********************************************************************************/
 void start_cam()
 {
+    // Use the lowest data pin as the base for PIO, and 8 pins for D0-D7
+    uint32_t cam_base_pin = g_cam_pinmap.d[0];
+    uint32_t cam_num_pins = 8;
     uint32_t offset_cam = pio_add_program(pio_cam, &picampinos_program);
-    // uint32_t sm = 0; 
-    picampinos_program_init(pio_cam, sm_cam, offset_cam, CAM_BASE_PIN, 11); // VSYNC,HREF,PCLK,D[2:9] : total 11 pins
+    picampinos_program_init(pio_cam, sm_cam, offset_cam, cam_base_pin, cam_num_pins);
     // Enable the state machine and clear the FIFO
     pio_sm_set_enabled(pio_cam, sm_cam, false);
     pio_sm_clear_fifos(pio_cam, sm_cam);
