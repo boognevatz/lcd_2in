@@ -27,19 +27,9 @@
 # THE SOFTWARE.
 ******************************************************************************/
 #include <stdio.h>
-#include <stdlib.h>
-#include "pico/stdlib.h"
-#include "hardware/gpio.h"
 #include "hardware/pio.h"
 #include "hardware/dma.h"
-#include "hardware/pwm.h"
-#include "hardware/irq.h"
-#include "hardware/clocks.h"
-#include "pico/binary_info.h"
-#include "ov5640.h"
-#include "DEV_Config.h"
 #include "LCD_2in.h"
-#include "picampinos.pio.h"
 #include "py/obj.h"
 
 extern uint8_t *cam_ptr;  
@@ -70,3 +60,15 @@ void set_pwm_freq_kHz(uint32_t freq_khz, uint8_t gpio_num);
 void read_cam_data_blocking(uint8_t *buffer, size_t length);
 dma_channel_config get_cam_config(PIO pio, uint32_t sm, uint32_t dma_chan);
 void cam_handler();
+
+// Camera pin mapping struct for runtime configuration
+typedef struct {
+    uint8_t d[8]; // D0-D7
+    uint8_t vsync;
+    uint8_t href;
+    uint8_t pclk;
+    uint8_t xclk;
+} cam_pinmap_t;
+
+// Global pinmap instance
+extern cam_pinmap_t g_cam_pinmap;
