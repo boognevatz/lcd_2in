@@ -52,7 +52,7 @@ lcd.display(buf)
 
 
 import camera
-camera.set_i2c_pins(24,25) #22, 23 on RP2350_lcd_touch
+camera.set_i2c_pins(22,23) #22, 23 on RP2350_lcd_touch
 camera.init_cam()
 buf = camera.get_buffer()
 camera.config_cam_buffer(buf)

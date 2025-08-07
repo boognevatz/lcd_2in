@@ -212,6 +212,10 @@ const uint16_t sensor_default_regs[][2] = {
     {0x0000, 0x00}, // tail
 };
 
+// Static variables to hold I2C instance and camera address after sccb_init
+static i2c_inst_t *ov5640_i2c = NULL;
+static uint8_t ov5640_cam_addr = 0x3c;
+
 /********************************************************************************
  * Function Definitions
  */
@@ -221,12 +225,11 @@ parameter:
 ********************************************************************************/
 void sccb_init(const uint32_t sda_pin, const uint32_t scl_pin)
 {
-    uint8_t CAM_ADDR = 0x3c; // default: OV5640
-
-    i2c_inst_t * i2c = i2c1;
+    ov5640_cam_addr = 0x3c; // default: OV5640
+    ov5640_i2c = i2c1;
 
     // Initialize I2C port at 100 kHz
-    i2c_init(i2c, 100 * 1000);
+    i2c_init(ov5640_i2c, 100 * 1000);
 
     // Initialize I2C pins
     gpio_set_function(sda_pin, GPIO_FUNC_I2C);
@@ -235,54 +238,70 @@ void sccb_init(const uint32_t sda_pin, const uint32_t scl_pin)
     gpio_pull_up(scl_pin);
 
     uint16_t reg;
-    reg=OV5640_RD_Reg(i2c,CAM_ADDR,0X300A);
+    reg=OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0X300A);
 	reg<<=8;
-	reg|=OV5640_RD_Reg(i2c,CAM_ADDR,0X300B);
+	reg|=OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0X300B);
     printf("ID: %d \r\n",reg);
 
     for(uint16_t i=0; i<sizeof(sensor_default_regs)/4; i++)
 	{
-		OV5640_WR_Reg(i2c,CAM_ADDR,sensor_default_regs[i][0],sensor_default_regs[i][1]);
+		OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,sensor_default_regs[i][0],sensor_default_regs[i][1]);
 	} 
     sleep_ms(50);
 
     // set_size_and_colorspace 320x240
-    OV5640_WR_Reg_2(i2c,CAM_ADDR,X_ADDR_ST_H,352,26);
-    OV5640_WR_Reg_2(i2c,CAM_ADDR,X_ADDR_END_H,1792,1946);
-    OV5640_WR_Reg_2(i2c,CAM_ADDR,X_OUTPUT_SIZE_H,240,320); //1440 1920
-    OV5640_WR_Reg_2(i2c,CAM_ADDR,X_TOTAL_SIZE_H,2592,1944);
-    OV5640_WR_Reg_2(i2c,CAM_ADDR,X_OFFSET_H,16,14);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_ST_H,352,26);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_END_H,1792,1946);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_OUTPUT_SIZE_H,240,320); //1440 1920
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_TOTAL_SIZE_H,2592,1944);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_OFFSET_H,16,14);
 
     uint8_t dat;
-    dat = OV5640_RD_Reg(i2c,CAM_ADDR,0x5001) | 0x20;
-    OV5640_WR_Reg(i2c,CAM_ADDR,0x5001, dat);
+    dat = OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0x5001) | 0x20;
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x5001, dat);
     sleep_ms(50);
 
     // set_image_options
-    OV5640_WR_Reg(i2c,CAM_ADDR,TIMING_TC_REG20, 0x01);
-    OV5640_WR_Reg(i2c,CAM_ADDR,TIMING_TC_REG21, 0X00);
-    OV5640_WR_Reg(i2c,CAM_ADDR,0x4514, 0xAA);
-    OV5640_WR_Reg(i2c,CAM_ADDR,0x4520, 0x0B);
-    OV5640_WR_Reg(i2c,CAM_ADDR,X_INCREMENT, 0x31);
-    OV5640_WR_Reg(i2c,CAM_ADDR,Y_INCREMENT, 0x31);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,TIMING_TC_REG20, 0x01);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,TIMING_TC_REG21, 0X00);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x4514, 0xAA);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x4520, 0x0B);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,X_INCREMENT, 0x31);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,Y_INCREMENT, 0x31);
     sleep_ms(50);
 
     // set_pll
-    OV5640_WR_Reg(i2c,CAM_ADDR,SC_PLL_CONTRL_5, 0x00);
-    OV5640_WR_Reg(i2c,CAM_ADDR,SC_PLL_CONTRL_0, 0x1A); 
-    OV5640_WR_Reg(i2c,CAM_ADDR,SC_PLL_CONTRL_1, 0x11); 
-    OV5640_WR_Reg(i2c,CAM_ADDR,SC_PLL_CONTRL_2, 11 & 0xFF); 
-    OV5640_WR_Reg(i2c,CAM_ADDR,SC_PLL_CONTRL_3, 0x01); 
-    OV5640_WR_Reg(i2c,CAM_ADDR,SYSTEM_ROOT_DIVIDER, 0x16); 
-    OV5640_WR_Reg(i2c,CAM_ADDR,PCLK_RATIO, 0x04); 
-    OV5640_WR_Reg(i2c,CAM_ADDR,VFIFO_CTRL0C, 0x22);
-    OV5640_WR_Reg(i2c,CAM_ADDR,SCCB_SYSTEM_CTRL1, 0x13);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_5, 0x00);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_0, 0x1A); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_1, 0x11); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_2, 11 & 0xFF); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_3, 0x01); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SYSTEM_ROOT_DIVIDER, 0x16); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,PCLK_RATIO, 0x04); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,VFIFO_CTRL0C, 0x22);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SCCB_SYSTEM_CTRL1, 0x13);
     sleep_ms(50);
 
     // set_colorspace
-    OV5640_WR_Reg(i2c,CAM_ADDR,FORMAT_CTRL,0x01);
-    OV5640_WR_Reg(i2c,CAM_ADDR,FORMAT_CTRL00,0x61);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,FORMAT_CTRL,0x01);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,FORMAT_CTRL00,0x61);
     sleep_ms(50);
+}
+
+/**
+ * @brief Set the OV5640 DATA ORDER register (0x4745)
+ *        Must be called after sccb_init().
+ * @param reverse: true for reverse output data bit order, false for normal
+ */
+void ov5640_set_data_order(bool reverse) {
+    if (!ov5640_i2c) return; // Not initialized
+    uint8_t val = OV5640_RD_Reg(ov5640_i2c, ov5640_cam_addr, OV5640_REG_DATA_ORDER);
+    if (reverse) {
+        val |= 0x01; // Set bit 0 for reverse
+    } else {
+        val &= ~0x01; // Clear bit 0 for normal
+    }
+    OV5640_WR_Reg(ov5640_i2c, ov5640_cam_addr, OV5640_REG_DATA_ORDER, val);
 }
 
 /********************************************************************************

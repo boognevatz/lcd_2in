@@ -285,6 +285,8 @@
 #define TIMING_TC_REG20_VFLIP   0x06 /* Vertical flip enable */
 #define TIMING_TC_REG21_HMIRROR 0x06 /* Horizontal mirror enable */
 
+#define OV5640_REG_DATA_ORDER 0x4745 // DATA ORDER: Bit[0]=0 normal, 1 reverse output data bit order; Bit[2:1]=DVP order option for debug
+
 /*******************************************************************************
  * Function Declarations
  *******************************************************************************/
@@ -316,6 +318,13 @@ void OV5640_WR_Reg_2(i2c_inst_t *i2c,
 uint8_t OV5640_RD_Reg(i2c_inst_t *i2c,
                   const uint8_t addr,
                   uint16_t reg);
+
+/**
+ * @brief Set the OV5640 DATA ORDER register (0x4745)
+ *        Must be called after sccb_init().
+ * @param reverse: true for reverse output data bit order, false for normal
+ */
+void ov5640_set_data_order(bool reverse);
 
 extern const uint16_t sensor_default_regs[][2];
 
