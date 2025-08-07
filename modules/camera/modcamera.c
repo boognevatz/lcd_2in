@@ -1,5 +1,6 @@
 #include "cam.h"
 #include <string.h>  // for memset
+#include "ov5640.h"
 
 extern uint8_t *cam_ptr;
 
@@ -52,6 +53,13 @@ static mp_obj_t cam_is_buffer_ready(void) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(cam_is_buffer_ready_obj, cam_is_buffer_ready);
 
+// Wrapper for ov5640_set_data_order()
+static mp_obj_t camera_set_data_order(mp_obj_t reverse_obj) {
+    ov5640_set_data_order(mp_obj_is_true(reverse_obj));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_data_order_obj, camera_set_data_order);
+
 
 // Define module globals
 static const mp_rom_map_elem_t camera_module_globals_table[] = {
@@ -62,6 +70,7 @@ static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_config_cam_buffer), MP_ROM_PTR(&camera_config_cam_buffer_obj) },
     { MP_ROM_QSTR(MP_QSTR_start_cam), MP_ROM_PTR(&camera_start_cam_obj) },
     { MP_ROM_QSTR(MP_QSTR_is_buffer_ready), MP_ROM_PTR(&cam_is_buffer_ready_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_data_order), MP_ROM_PTR(&camera_set_data_order_obj) },
     
 };
 static MP_DEFINE_CONST_DICT(camera_module_globals, camera_module_globals_table);

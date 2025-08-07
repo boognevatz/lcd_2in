@@ -39,7 +39,7 @@
 #include "py/runtime.h"
 
 #include "shared/runtime/mpirq.h"
-
+#include "ov5640.h"
 
 
 // init PIO
