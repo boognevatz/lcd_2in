@@ -225,7 +225,7 @@ void start_cam()
 {
     // Use the lowest data pin as the base for PIO, and 8 pins for D0-D7
     uint32_t cam_base_pin = g_cam_pinmap.d[0];
-    uint32_t cam_num_pins = 8;
+    uint32_t cam_num_pins = 11;
     uint32_t offset_cam = pio_add_program(pio_cam, &picampinos_program);
     picampinos_program_init(pio_cam, sm_cam, offset_cam, cam_base_pin, cam_num_pins);
     // Enable the state machine and clear the FIFO
@@ -316,3 +316,4 @@ void set_pwm_freq_kHz(uint32_t freq_khz, uint8_t gpio_num)
     pwm_init(pwm0_slice_num, &pwm_slice_config, true);
     pwm_set_gpio_level(gpio_num, (pwm_slice_config.top * 0.50)); // duty:50%
 }
+

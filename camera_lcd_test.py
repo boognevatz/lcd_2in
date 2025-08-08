@@ -66,7 +66,7 @@ import camera
 camera.set_data_pins([0, 1, 2, 3, 4, 5, 6, 7])  # D0-D7
 camera.set_control_pins(8, 9, 10)  # VSYNC, HREF, PCLK
 camera.set_xclk_pin(11)            # XCLK
-camera.set_i2c_pins(22, 23)       # SDA, SCL (new hardware)
+camera.set_i2c_pins(22, 23)       # SDA, SCL (old hardware)
 camera.init_cam()
 buf = camera.get_buffer()
 camera.config_cam_buffer(buf)
