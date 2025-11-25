@@ -48,7 +48,9 @@ static uint32_t sm_cam; // CAMERA's state machines
 // dma channels
 static uint32_t DMA_CAM_RD_CH;
 
-uint8_t *cam_ptr = NULL;
+static uint8_t cam_buffer[CAM_FUL_SIZE * 2];
+uint8_t *cam_ptr = cam_buffer;
+
 
 uint8_t pin_i2c1_sda = 22; // default on RP2350 touch 2in
 uint8_t pin_i2c1_scl = 23; // default on RP2350 touch 2in
@@ -91,20 +93,11 @@ void init_cam()
 
 
 
-/********************************************************************************
-function:   Configuring DMA
-parameter:
-********************************************************************************/
-void config_cam_buffer(mp_obj_t buf_obj)
+void setup_dma_for_capture()
 {
-    mp_buffer_info_t bufinfo;
-    mp_get_buffer_raise(buf_obj, &bufinfo, MP_BUFFER_RW);
-    cam_ptr = bufinfo.buf;
-    size_t len = bufinfo.len;
-
     // init DMA
     DMA_CAM_RD_CH = dma_claim_unused_channel(true);
-    mp_printf(MP_PYTHON_PRINTER, "config_cam_buffer()->DMA_CH= %d\n", (int)DMA_CAM_RD_CH);
+    mp_printf(MP_PYTHON_PRINTER, "setup_dma_for_capture()->DMA_CH= %d\n", (int)DMA_CAM_RD_CH);
     
     // Disable IRQ
     irq_set_enabled(DMA_IRQ_0, false);
@@ -117,7 +110,7 @@ void config_cam_buffer(mp_obj_t buf_obj)
     dma_channel_configure(DMA_CAM_RD_CH, &c0,
                           cam_ptr,               // Destination pointer
                           &pio_cam->rxf[sm_cam], // Source pointer
-                          len,          // Number of transfers
+                          sizeof(cam_buffer) / 2,          // Number of transfers
                           false                  // Don't Start yet
     );
     
@@ -141,20 +134,12 @@ void cam_handler(void)
     buffer_ready = true;
     dma_hw->ints0 = 1u << DMA_CAM_RD_CH;  // clear the interrupt flag
     
-    // uint32_t triggered_dma = dma_hw->ints0;
-    // if (triggered_dma & (1u << DMA_CAM_RD_CH))
-    // {
-    //     buffer_ready = true;
-    //     // Clear interrupt flag
-    //     dma_hw->ints0 = 1u << DMA_CAM_RD_CH;
-    // }
-
-    // Reset DMA write address to capture the next frame
-    // reset the DMA initial write address
     dma_channel_set_write_addr(DMA_CAM_RD_CH, cam_ptr, true);
 }
 
-// OLD HARDWARE
+
+
+// BIG HEAD
 // D0    GPIO 0
 // D1    GPIO 1
 // D2    GPIO 2
@@ -167,29 +152,9 @@ void cam_handler(void)
 // HREF  GPIO 9
 // PCLK  GPIO 10
 // XCLK  GPIO 11
-// PWDN  GPIO 21
+// PWDN  GPIO 14
 // SDA   GPIO 22
 // SCL   GPIO 23
-
-
-// NEW HARDWARE
-// D0    GPIO 19
-// D1    GPIO 18
-// D2    GPIO 17
-// D3    GPIO 16
-// D4    GPIO 15
-// D5    GPIO 14
-// D6    GPIO 13
-// D7    GPIO 12
-//  D8   GPIO 11
-//  D9   GPIO 10
-// VSYNC GPIO 9
-// HREF  GPIO 8
-// XCLK  GPIO 7
-// PCLK  GPIO 6
-// SDA   GPIO 24
-// SCL   GPIO 25
-
 
 
 
@@ -238,6 +203,7 @@ void start_cam()
     pio_sm_put_blocking(pio_cam, sm_cam, 0);                  // X=0 : reserved
     pio_sm_put_blocking(pio_cam, sm_cam, (CAM_FUL_SIZE - 1)); // Y: total words in an image
     mp_printf(MP_PYTHON_PRINTER, "start_cam finished, camera started\n");
+    setup_dma_for_capture();
 }
 
 /********************************************************************************
@@ -252,7 +218,7 @@ void read_cam_data_blocking(uint8_t *buffer, size_t length)
         if (!pio_sm_is_rx_fifo_empty(pio_cam, sm_cam))
         {
             uint16_t dat = pio_sm_get(pio_cam, sm_cam);
-            buffer[index++] = (dat >> 8) & 0xFF; 
+            buffer[index++] = (dat >> 8) & 0xFF;
             buffer[index++] = dat & 0xFF;
         }
         else
@@ -316,4 +282,3 @@ void set_pwm_freq_kHz(uint32_t freq_khz, uint8_t gpio_num)
     pwm_init(pwm0_slice_num, &pwm_slice_config, true);
     pwm_set_gpio_level(gpio_num, (pwm_slice_config.top * 0.50)); // duty:50%
 }
-
