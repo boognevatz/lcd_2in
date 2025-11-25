@@ -28,7 +28,7 @@ lcd.paint_new_image(buf, width, height, 0, lcd.WHITE)
 lcd.paint_set_scale(65)  # Set to 16bpp mode
 
 # Apply mirroring fix - try different options
-#mirror_mode = MIRROR_NONE  # Start with no mirroring
+# mirror_mode = MIRROR_NONE        # Start with no mirroring
 mirror_mode = MIRROR_HORIZONTAL  # If text is backwards
 # mirror_mode = MIRROR_VERTICAL    # If text is upside down
 # mirror_mode = MIRROR_ORIGIN      # If both issues
@@ -68,10 +68,11 @@ camera.set_control_pins(8, 9, 10)  # VSYNC, HREF, PCLK
 camera.set_xclk_pin(11)            # XCLK
 camera.set_i2c_pins(22, 23)       # SDA, SCL (old hardware)
 camera.init_cam()
+# Fix for inverted colors - set normal data bit order
+# camera.set_data_order(False)
 buf = camera.get_buffer()
 camera.config_cam_buffer(buf)
 camera.start_cam()
 
-lcd.paint_draw_image(buf,0,0,320,240)
+lcd.paint_draw_image(buf, 0, 0, 320, 240)
 lcd.display(buf)
-

@@ -53,13 +53,13 @@ void set_pwm_pin(uint8_t pwm);
 
 // high layer APIs
 void init_cam();
-void config_cam_buffer(mp_obj_t buf_obj);
 void start_cam();
 void free_cam();
 void set_pwm_freq_kHz(uint32_t freq_khz, uint8_t gpio_num);
 void read_cam_data_blocking(uint8_t *buffer, size_t length);
 dma_channel_config get_cam_config(PIO pio, uint32_t sm, uint32_t dma_chan);
 void cam_handler();
+void setup_dma_for_capture();
 
 // Camera pin mapping struct for runtime configuration
 typedef struct {
