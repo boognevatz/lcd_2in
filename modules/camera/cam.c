@@ -38,6 +38,10 @@
 #include "picampinos.pio.h"
 #include "ov5640.h"
 
+// W5500 direct buffer access
+#include "lib/wiznet5k/Ethernet/wizchip_conf.h"
+#include "lib/wiznet5k/Ethernet/socket.h"
+
 // For streaming
 #include <stdint.h>
 #include <stdbool.h>
@@ -67,6 +71,7 @@ volatile bool buffer_ready = false;
 // Streaming variables
 static uint8_t dest_ip[4];
 static uint16_t dest_port;
+static uint8_t stream_socket_num;
 
 
 
@@ -297,12 +302,15 @@ parameter:  dest_ip - destination IP address, dest_port - destination port
 ********************************************************************************/
 void init_streaming(uint8_t *dest_ip_addr, uint16_t port)
 {
+    // This function is deprecated - use start_streaming instead
     memcpy(dest_ip, dest_ip_addr, 4);
     dest_port = port;
+    // Socket initialization is now handled in Python
+}
 
-    // Initialize W5500 socket
-    socket(STREAM_SOCKET, Sn_MR_TCP, STREAM_PORT, 0);
-    connect(STREAM_SOCKET, dest_ip, dest_port);
+void start_streaming(uint8_t sock_num)
+{
+    stream_socket_num = sock_num;
 }
 
 /********************************************************************************
@@ -311,6 +319,21 @@ parameter:
 ********************************************************************************/
 void streaming_loop(void)
 {
+    // Send multipart boundary and headers first
+    const char *boundary_header = "--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
+    uint16_t boundary_len = strlen(boundary_header);
+
+    // Wait for buffer space
+    while (getSn_TX_FSR(stream_socket_num) < boundary_len) {
+        // Spin wait
+    }
+
+    uint16_t wr = getSn_TX_WR(stream_socket_num);
+    uint32_t addrsel = ((uint32_t)wr << 8) + (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
+    WIZCHIP_WRITE_BUF(addrsel, (uint8_t*)boundary_header, boundary_len);
+    setSn_TX_WR(stream_socket_num, (uint16_t)(wr + boundary_len));
+    setSn_CR(stream_socket_num, Sn_CR_SEND);
+
     while (1) {
         // Wait for frame ready
         if (!buffer_ready) {
@@ -318,16 +341,48 @@ void streaming_loop(void)
         }
         buffer_ready = false;  // Reset flag
 
-        // Send frame over W5500
-        // This is a single DMA send, no splitting
-        int32_t sent = send(STREAM_SOCKET, cam_ptr, FRAME_SIZE);
-        if (sent != FRAME_SIZE) {
-            // Handle error (e.g., log or retry)
+        // Send frame data in chunks
+        uint16_t chunk_size = 16384;  // 16KB chunks (fits in W5500 buffer)
+        uint32_t total_sent = 0;
+        while (total_sent < FRAME_SIZE) {
+            uint16_t send_len = (FRAME_SIZE - total_sent > chunk_size) ? chunk_size : (FRAME_SIZE - total_sent);
+
+            // Wait for enough TX buffer space
+            while (getSn_TX_FSR(stream_socket_num) < send_len) {
+                // Spin wait for buffer space
+            }
+
+            // Get TX buffer write pointer
+            uint16_t wr = getSn_TX_WR(stream_socket_num);
+
+            // Calculate buffer address for direct write
+            uint32_t addrsel = ((uint32_t)wr << 8) + (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
+
+            // Write data directly to TX buffer
+            WIZCHIP_WRITE_BUF(addrsel, cam_ptr + total_sent, send_len);
+
+            // Update write pointer
+            setSn_TX_WR(stream_socket_num, (uint16_t)(wr + send_len));
+
+            // Issue SEND command
+            setSn_CR(stream_socket_num, Sn_CR_SEND);
+
+            total_sent += send_len;
         }
 
-        // Optional: Wait for W5500 send to complete
-        while (getSn_TX_FSR(STREAM_SOCKET) < FRAME_SIZE) {
-            // Spin, or sleep a few microseconds
+        // Send boundary for next frame
+        const char *frame_boundary = "\r\n--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
+        uint16_t frame_boundary_len = strlen(frame_boundary);
+
+        // Wait for buffer space
+        while (getSn_TX_FSR(stream_socket_num) < frame_boundary_len) {
+            // Spin wait
         }
+
+        wr = getSn_TX_WR(stream_socket_num);
+        addrsel = ((uint32_t)wr << 8) + (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
+        WIZCHIP_WRITE_BUF(addrsel, (uint8_t*)frame_boundary, frame_boundary_len);
+        setSn_TX_WR(stream_socket_num, (uint16_t)(wr + frame_boundary_len));
+        setSn_CR(stream_socket_num, Sn_CR_SEND);
     }
 }

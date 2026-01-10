@@ -2,11 +2,12 @@
 add_library(usermod_camera INTERFACE)
 
 # Add our source files to the lib
-target_sources(usermod_lcd INTERFACE
+target_sources(usermod_camera INTERFACE
     ${CMAKE_CURRENT_LIST_DIR}/cam.c
     ${CMAKE_CURRENT_LIST_DIR}/modcamera.c
     ${CMAKE_CURRENT_LIST_DIR}/ov5640.c
     ${CMAKE_CURRENT_LIST_DIR}/picampinos.pio
+    ${MICROPY_DIR}/lib/wiznet5k/Ethernet/socket.c
 )
 
 # Add the current directory as an include directory.

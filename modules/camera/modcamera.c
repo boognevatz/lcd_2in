@@ -67,6 +67,15 @@ static mp_obj_t camera_init_streaming(mp_obj_t dest_ip_obj, mp_obj_t dest_port_o
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(camera_init_streaming_obj, camera_init_streaming);
 
+static mp_obj_t camera_start_streaming(mp_obj_t sock_obj) {
+    // Extract socket fileno (socket number for W5500)
+    mp_obj_t fileno = mp_load_attr(sock_obj, MP_QSTR_fileno);
+    int sock = mp_obj_get_int(mp_call_function_0(fileno));
+    start_streaming(sock);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_start_streaming_obj, camera_start_streaming);
+
 static mp_obj_t camera_streaming_loop() {
     streaming_loop();
     return mp_const_none;
@@ -127,6 +136,7 @@ static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_set_xclk_pin), MP_ROM_PTR(&camera_set_xclk_pin_obj) },
     { MP_ROM_QSTR(MP_QSTR_init_streaming), MP_ROM_PTR(&camera_init_streaming_obj) },
     { MP_ROM_QSTR(MP_QSTR_streaming_loop), MP_ROM_PTR(&camera_streaming_loop_obj) },
+    { MP_ROM_QSTR(MP_QSTR_start_streaming), MP_ROM_PTR(&camera_start_streaming_obj) },
 };
 static MP_DEFINE_CONST_DICT(camera_module_globals, camera_module_globals_table);
 

@@ -1004,11 +1004,6 @@ Connection: close
                 cl.send(response.encode())
 
         elif path == '/stream':
-            # Get client address for streaming
-            client_addr = cl.getpeername()
-            client_ip_str, client_port = client_addr
-            client_ip_bytes = bytes([int(x) for x in client_ip_str.split('.')])
-            
             # Send HTTP header for streaming
             try:
                 header = b"HTTP/1.1 200 OK\r\n"
@@ -1020,13 +1015,11 @@ Connection: close
             except OSError:
                 cl.close()
                 return "CLOSE"
-            
-            # Initialize C streaming to this client
-            camera.init_streaming(client_ip_bytes, client_port)
-            
-            # Start C streaming loop (blocking)
-            camera.streaming_loop()
-            
+
+            # Pass the existing client socket to C for direct streaming
+            # The camera will use the socket's fileno to write directly to W5500 buffer
+            camera.start_streaming(cl)
+
             # This will not return
             return "STREAM"
 
