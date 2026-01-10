@@ -50,9 +50,28 @@ static mp_obj_t camera_send_frame_over_eth(mp_obj_t callback) {
         return mp_const_none;
     }
     mp_call_function_1(callback, mp_obj_new_bytearray_by_ref(CAM_FUL_SIZE * 2, cam_ptr));
+    buffer_ready = false;
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(camera_send_frame_over_eth_obj, camera_send_frame_over_eth);
+
+static mp_obj_t camera_init_streaming(mp_obj_t dest_ip_obj, mp_obj_t dest_port_obj) {
+    mp_buffer_info_t ip_buf;
+    mp_get_buffer_raise(dest_ip_obj, &ip_buf, MP_BUFFER_READ);
+    if (ip_buf.len != 4) {
+        mp_raise_ValueError(MP_ERROR_TEXT("dest_ip must be 4 bytes"));
+    }
+    uint16_t port = mp_obj_get_int(dest_port_obj);
+    init_streaming((uint8_t*)ip_buf.buf, port);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(camera_init_streaming_obj, camera_init_streaming);
+
+static mp_obj_t camera_streaming_loop() {
+    streaming_loop();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_streaming_loop_obj, camera_streaming_loop);
 
 // Wrapper for ov5640_set_data_order()
 static mp_obj_t camera_set_data_order(mp_obj_t reverse_obj) {
@@ -106,6 +125,8 @@ static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_set_data_pins), MP_ROM_PTR(&camera_set_data_pins_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_control_pins), MP_ROM_PTR(&camera_set_control_pins_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_xclk_pin), MP_ROM_PTR(&camera_set_xclk_pin_obj) },
+    { MP_ROM_QSTR(MP_QSTR_init_streaming), MP_ROM_PTR(&camera_init_streaming_obj) },
+    { MP_ROM_QSTR(MP_QSTR_streaming_loop), MP_ROM_PTR(&camera_streaming_loop_obj) },
 };
 static MP_DEFINE_CONST_DICT(camera_module_globals, camera_module_globals_table);
 

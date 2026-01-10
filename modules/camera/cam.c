@@ -38,6 +38,10 @@
 #include "picampinos.pio.h"
 #include "ov5640.h"
 
+// For streaming
+#include <stdint.h>
+#include <stdbool.h>
+
 
 // init PIO
 static PIO pio_cam = pio0;
@@ -59,6 +63,10 @@ uint8_t pin_xclk_pwm = 11; // GPIO11 (camera's xclk(24MHz))
 
 // flag
 volatile bool buffer_ready = false;
+
+// Streaming variables
+static uint8_t dest_ip[4];
+static uint16_t dest_port;
 
 
 
@@ -281,4 +289,45 @@ void set_pwm_freq_kHz(uint32_t freq_khz, uint8_t gpio_num)
     // set PWM start
     pwm_init(pwm0_slice_num, &pwm_slice_config, true);
     pwm_set_gpio_level(gpio_num, (pwm_slice_config.top * 0.50)); // duty:50%
+}
+
+/********************************************************************************
+function:   Initialize streaming
+parameter:  dest_ip - destination IP address, dest_port - destination port
+********************************************************************************/
+void init_streaming(uint8_t *dest_ip_addr, uint16_t port)
+{
+    memcpy(dest_ip, dest_ip_addr, 4);
+    dest_port = port;
+
+    // Initialize W5500 socket
+    socket(STREAM_SOCKET, Sn_MR_TCP, STREAM_PORT, 0);
+    connect(STREAM_SOCKET, dest_ip, dest_port);
+}
+
+/********************************************************************************
+function:   Streaming loop (event loop style, no threads)
+parameter:
+********************************************************************************/
+void streaming_loop(void)
+{
+    while (1) {
+        // Wait for frame ready
+        if (!buffer_ready) {
+            continue;  // Busy wait, or optionally sleep a few microseconds
+        }
+        buffer_ready = false;  // Reset flag
+
+        // Send frame over W5500
+        // This is a single DMA send, no splitting
+        int32_t sent = send(STREAM_SOCKET, cam_ptr, FRAME_SIZE);
+        if (sent != FRAME_SIZE) {
+            // Handle error (e.g., log or retry)
+        }
+
+        // Optional: Wait for W5500 send to complete
+        while (getSn_TX_FSR(STREAM_SOCKET) < FRAME_SIZE) {
+            // Spin, or sleep a few microseconds
+        }
+    }
 }

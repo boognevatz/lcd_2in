@@ -1,0 +1,1165 @@
+### ETHERNET WEBSERVER WITH W5500 AND CAMERA - OPTIMIZED NON-BLOCKING
+import machine
+import network
+import socket
+import time
+import camera
+import select
+import json
+import gc
+
+# ===== WATCHDOG TIMER SETUP =====
+# Initialize watchdog timer to prevent system freezes
+# If the system doesn't call wdt.feed() within 8 seconds, it will reset
+wdt = machine.WDT(timeout=8000)  # 8 second timeout
+print("Watchdog initialized with 8s timeout")
+# ================================
+
+
+# ===== LOAD CONFIGURATION =====
+def load_config():
+    """Load configuration from config.json file"""
+    try:
+        with open("config.json", "r") as f:
+            config = json.load(f)
+            return config
+    except Exception as e:
+        print(f"ERROR: Failed to load config.json: {e}")
+        # Return default config
+        return {
+            "headID": 1117,
+            "i2c": {
+                "adc_address": "0x48",
+                "barometer_address": "0x6C",
+                "dac_address": "0x60",
+            },
+            "adc": {"ref_voltage": 2.5},
+            "ntc": {
+                "r0": 10000,
+                "beta": 3380,
+                "t0_kelvin": 298.15,
+                "divider_r": 10000,
+                "divider_vcc": 3.3,
+            },
+            "barometer": {"atmospheric_raw": 5463198, "atmospheric_bar": 1.0},
+        }
+
+
+config = load_config()
+
+# Feed watchdog during initialization
+wdt.feed()
+
+# Main configuration
+HEAD_ID = config.get("headID", 1117)
+
+# I2C addresses (convert hex strings to integers)
+ADS7830_ADDR = int(config.get("i2c", {}).get("adc_address", "0x48"), 16)
+BAROMETER_ADDR = int(config.get("i2c", {}).get("barometer_address", "0x6C"), 16)
+MCP4725_ADDR = int(config.get("i2c", {}).get("dac_address", "0x60"), 16)
+
+# ADC configuration
+ADC_REF_VOLTAGE = config.get("adc", {}).get("ref_voltage", 2.5)
+
+# NTC Thermistor configuration
+NTC_R0 = config.get("ntc", {}).get("r0", 10000)
+NTC_BETA = config.get("ntc", {}).get("beta", 3380)
+NTC_T0 = config.get("ntc", {}).get("t0_kelvin", 298.15)
+DIVIDER_R = config.get("ntc", {}).get("divider_r", 10000)
+DIVIDER_VCC = config.get("ntc", {}).get("divider_vcc", 3.3)
+
+# WF5803F Barometer calibration
+BAROMETER_ATMOSPHERIC_RAW = config.get("barometer", {}).get("atmospheric_raw", 5463198)
+BAROMETER_ATMOSPHERIC_BAR = config.get("barometer", {}).get("atmospheric_bar", 1.0)
+# =========================
+
+# Record boot time for uptime calculation
+boot_time_ms = time.ticks_ms()
+
+# Initialize I2C for ADS7830 ADC, WF5803F Barometer, and MCP4725 DAC
+i2c = machine.I2C(0, scl=machine.Pin(13), sda=machine.Pin(12), freq=100000)
+
+# Check if devices are present
+adc_ready = False
+barometer_ready = False
+dac_ready = False
+try:
+    devices = i2c.scan()
+
+    if ADS7830_ADDR in devices:
+        adc_ready = True
+    else:
+        print(f"WARNING: ADS7830 ADC not found")
+
+    if BAROMETER_ADDR in devices:
+        barometer_ready = True
+    else:
+        print(f"WARNING: WF5803F Barometer not found")
+
+    if MCP4725_ADDR in devices:
+        dac_ready = True
+    else:
+        print(f"WARNING: MCP4725 DAC not found")
+except Exception as e:
+    print(f"ERROR: I2C initialization failed: {e}")
+    adc_ready = False
+    barometer_ready = False
+    dac_ready = False
+
+# Feed watchdog after I2C initialization
+wdt.feed()
+
+
+def read_adc_channel(channel):
+    """
+    Read a single channel from ADS7830
+
+    Args:
+        channel: Channel number (0-7)
+
+    Returns:
+        Voltage value in volts, or None if read fails
+    """
+    if not adc_ready:
+        return None
+
+    try:
+        # Command byte format for ADS7830:
+        # Bit 7: SD=1 (single-ended mode)
+        # Bits 6-4: C2-C1-C0 (channel select)
+        # Bits 3-2: PD1-PD0=11 (internal reference ON, ADC ON between conversions)
+        # Bits 1-0: Don't care
+        command = 0x8C | (channel << 4)  # 0x8C = 10001100
+
+        # Write command byte
+        i2c.writeto(ADS7830_ADDR, bytes([command]))
+
+        # Delay for conversion (datasheet: typ 32µs, max 64µs)
+        time.sleep_ms(2)
+
+        # Read result (8-bit value)
+        data = i2c.readfrom(ADS7830_ADDR, 1)
+        adc_value = data[0]
+
+        # Convert to voltage (8-bit ADC, 0-255 maps to 0-2.5V)
+        voltage = (adc_value / 255.0) * ADC_REF_VOLTAGE
+
+        return voltage
+    except Exception as e:
+        print(f"Error reading ADC channel {channel}: {e}")
+        return None
+
+
+def voltage_to_temperature(voltage):
+    """
+    Convert voltage reading to temperature in Celsius using NTC thermistor
+
+    Voltage divider configuration (per schematic):
+    3.3V --- R_fixed (10k) --- V_out (measured) --- R_NTC --- GND
+
+    V_out = VCC * R_NTC / (R_fixed + R_NTC)
+    Therefore: R_NTC = (V_out * R_fixed) / (VCC - V_out)
+
+    Args:
+        voltage: Measured voltage in volts
+
+    Returns:
+        Temperature in Celsius (integer), or None if calculation fails
+    """
+    if voltage is None:
+        return None
+
+    # Check for invalid voltage range (with some tolerance)
+    if voltage < 0.01 or voltage > (DIVIDER_VCC - 0.01):
+        return None
+
+    try:
+        # Calculate thermistor resistance from voltage divider
+        # NTC is on bottom (connected to GND), R_fixed is on top (connected to 3.3V)
+        # R_NTC = (V_out * R_fixed) / (VCC - V_out)
+        r_ntc = (voltage * DIVIDER_R) / (DIVIDER_VCC - voltage)
+
+        # Beta equation: 1/T = 1/T0 + (1/B) * ln(R/R0)
+        import math
+
+        temp_kelvin = 1.0 / (1.0 / NTC_T0 + (1.0 / NTC_BETA) * math.log(r_ntc / NTC_R0))
+        temp_celsius = temp_kelvin - 273.15
+
+        # Return as integer (no decimals)
+        return int(round(temp_celsius))
+    except Exception as e:
+        print(f"Error converting voltage to temperature: {e}")
+        return None
+
+
+def get_uptime_seconds():
+    """
+    Get uptime since boot in seconds
+
+    Returns:
+        Uptime in seconds (integer)
+    """
+    current_time_ms = time.ticks_ms()
+    uptime_ms = time.ticks_diff(current_time_ms, boot_time_ms)
+    uptime_sec = uptime_ms // 1000
+    return uptime_sec
+
+
+def get_mcu_temperature():
+    """
+    Read RP2350A internal temperature sensor
+
+    Returns:
+        Temperature in Celsius (integer), or None if read fails
+    """
+    try:
+        # ADC4 is connected to the internal temperature sensor
+        adc_temp = machine.ADC(4)
+
+        # Read raw ADC value (16-bit: 0-65535)
+        adc_value = adc_temp.read_u16()
+
+        # Convert to voltage (3.3V reference)
+        voltage = (adc_value / 65535.0) * 3.3
+
+        # RP2040/RP2350 temperature sensor formula:
+        # T = 27 - (ADC_voltage - 0.706) / 0.001721
+        temp_celsius = 27 - (voltage - 0.706) / 0.001721
+
+        # Return as integer (no decimals)
+        return int(round(temp_celsius))
+    except Exception as e:
+        print(f"Error reading MCU temperature: {e}")
+        return None
+
+
+def init_barometer():
+    """
+    Initialize the WF5803F 01BA barometer sensor
+    Model: WF5803F 01BA L8 DT
+    Range: 30kPa - 1.1bar (0.3 - 1.1 bar)
+    TCO: 1.5 Pa/K
+
+    CMD register: 0x30
+    CTRL register: 0x02
+
+    Returns:
+        True if initialization successful, False otherwise
+    """
+    if not barometer_ready:
+        return False
+
+    try:
+        return True
+    except Exception as e:
+        print(f"ERROR: Barometer init: {e}")
+        return False
+
+
+def read_barometer():
+    """
+    Read temperature and pressure from WF5803F 01BA barometer
+    Model: WF5803F 01BA L8 DT
+    Range: 30-110 kPa (0.3-1.1 bar)
+
+    Protocol based on working C implementation:
+    - CMD register 0x30: Write 0x0A (0x02 + SCO bit) to start measurement
+    - CTRL register 0x02: Check bit 0 (DRDY) for data ready
+    - Pressure: 24-bit signed at 0x06, 0x07, 0x08 (MSB first)
+    - Temperature: 16-bit at 0x09, 0x0A (MSB first)
+
+    Returns:
+        Tuple of (temperature_celsius, pressure_bar) or (None, None) if read fails
+    """
+    if not barometer_ready:
+        return (None, None)
+
+    try:
+        # Start measurement: Write 0x0A to CMD register (0x30)
+        # 0x0A = 0x02 (measurement mode) + 0x08 (SCO bit)
+        SCO_BITMASK = 0x08
+        DRDY_BITMASK = 0x01
+
+        i2c.writeto_mem(BAROMETER_ADDR, 0x30, bytes([0x02 | SCO_BITMASK]))
+
+        # Wait for data ready (DRDY bit in control register 0x02 goes to 0)
+        delay_count = 0
+        while delay_count < 50:
+            time.sleep_ms(1)
+            ctrl_reg = i2c.readfrom_mem(BAROMETER_ADDR, 0x02, 1)[0]
+            if not (ctrl_reg & DRDY_BITMASK):
+                break
+            delay_count += 1
+
+        if delay_count >= 50:
+            print("Barometer measurement timeout")
+            return (None, None)
+
+        # Read pressure (24-bit signed, MSB first) from registers 0x06, 0x07, 0x08
+        press_byte0 = i2c.readfrom_mem(BAROMETER_ADDR, 0x06, 1)[0]
+        press_byte1 = i2c.readfrom_mem(BAROMETER_ADDR, 0x07, 1)[0]
+        press_byte2 = i2c.readfrom_mem(BAROMETER_ADDR, 0x08, 1)[0]
+
+        # Combine bytes (MSB first)
+        pressure_raw = (press_byte0 << 16) | (press_byte1 << 8) | press_byte2
+
+        # Sign extend 24-bit to 32-bit if negative (bit 23 is set)
+        if pressure_raw & 0x800000:
+            pressure_raw |= 0xFF000000
+            # Convert to signed integer
+            pressure_raw = pressure_raw - 0x100000000
+
+        # Read temperature (16-bit, MSB first) from registers 0x09, 0x0A
+        temp_byte0 = i2c.readfrom_mem(BAROMETER_ADDR, 0x09, 1)[0]
+        temp_byte1 = i2c.readfrom_mem(BAROMETER_ADDR, 0x0A, 1)[0]
+
+        # Combine bytes (MSB first)
+        temp_raw = (temp_byte0 << 8) | temp_byte1
+
+        # Sign extend if negative
+        if temp_raw > 32767:
+            temp_raw -= 65536
+
+        # Convert raw values to actual units
+        # Temperature: raw / 256.0 (from datasheet specification)
+        temperature_celsius = temp_raw / 256.0
+
+        # Calculate scale factor (bar per count) from calibration constants
+        PRESSURE_SCALE_FACTOR = BAROMETER_ATMOSPHERIC_BAR / BAROMETER_ATMOSPHERIC_RAW
+
+        # Convert raw count to absolute pressure
+        pressure_absolute_bar = pressure_raw * PRESSURE_SCALE_FACTOR
+
+        # Convert absolute pressure to gauge pressure (relative to atmosphere)
+        pressure_gauge_bar = pressure_absolute_bar - BAROMETER_ATMOSPHERIC_BAR
+
+        # Clamp to minimum 0.0 (no negative pressure readings)
+        if pressure_gauge_bar < 0.0:
+            pressure_gauge_bar = 0.0
+
+        # Return as integer for temperature, 3 decimals for pressure
+        return (int(round(temperature_celsius)), round(pressure_gauge_bar, 3))
+
+    except Exception as e:
+        print(f"Error reading barometer: {e}")
+        return (None, None)
+
+
+def init_head_led():
+    """
+    Initialize MCP4725 DAC for LED brightness control
+    Set to 0% brightness (off) on startup
+
+    Returns:
+        True if initialization successful, False otherwise
+    """
+    if not dac_ready:
+        return False
+
+    try:
+        # Initialize DAC to 0 (LED off)
+        # Command: 0x60 (write DAC and EEPROM), data: 0x00 0x00
+        i2c.writeto(MCP4725_ADDR, bytes([0x60, 0x00, 0x00]))
+        time.sleep_ms(10)
+        return True
+    except Exception as e:
+        print(f"ERROR: LED DAC init: {e}")
+        return False
+
+
+def set_head_led_brightness(percent):
+    """
+    Set LED brightness using MCP4725 DAC
+
+    Args:
+        percent: Brightness level 0-100 (integer percentage)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if not dac_ready:
+        return False
+
+    # Validate and clamp input
+    if percent < 0:
+        percent = 0
+    elif percent > 100:
+        percent = 100
+
+    try:
+        # Convert percentage to 12-bit DAC value (0-4095)
+        dac_value = int((percent / 100.0) * 4095)
+
+        # Split into MSB and LSB
+        # MCP4725 format: MSB = upper 8 bits, LSB = lower 4 bits in upper nibble
+        msb = (dac_value >> 4) & 0xFF
+        lsb = (dac_value << 4) & 0xF0
+
+        # Write to DAC (fast write mode)
+        # Command: 0x40 (write DAC register only, not EEPROM)
+        i2c.writeto(MCP4725_ADDR, bytes([0x40, msb, lsb]))
+
+        return True
+    except Exception as e:
+        print(f"ERROR: LED brightness: {e}")
+        return False
+
+
+def read_all_led_temps():
+    """
+    Read all 6 temperature channels and convert to Celsius
+
+    Returns:
+        Dictionary with headTemp1 through headTemp6 values in Celsius (integers)
+    """
+    temps = {}
+    for i in range(6):
+        voltage = read_adc_channel(i)
+        temp_c = voltage_to_temperature(voltage)
+        temps[f"headTemp{i + 1}"] = temp_c
+    return temps
+
+
+# ===== MEMORY MONITORING =====
+def get_memory_stats():
+    """Get memory statistics without printing"""
+    gc.collect()
+    free = gc.mem_free()
+    alloc = gc.mem_alloc()
+    total = free + alloc
+    return {"total": total, "used": alloc, "free": free}
+
+def print_memory_stats(label=""):
+    """Print compact memory statistics"""
+    stats = get_memory_stats()
+    free_kb = stats["free"] / 1024
+    total = stats["total"]
+    free_pct = stats["free"] * 100 / total
+    print(f"MEMORY check: {label} | Free: {free_kb:.1f}KB ({free_pct:.1f}%)")
+    return stats
+# ============================
+
+# ===== UNIFIED SERVER (SINGLE CORE, NON-BLOCKING) =====
+
+
+# Initialize barometer if present
+if barometer_ready:
+    if not init_barometer():
+        print("ERROR: Barometer initialization failed")
+        barometer_ready = False
+
+# Initialize LED DAC if present
+if dac_ready:
+    if not init_head_led():
+        print("ERROR: LED DAC initialization failed")
+        dac_ready = False
+
+# W5500 Pin Configuration for RP2350A
+# MISO: GPIO16
+# SCSN: GPIO17
+# SCLK: GPIO18
+# MOSI: GPIO19
+# RSTN: GPIO20
+# INTN: GPIO21
+
+# Chip Select and Reset pins - initialize first
+cs = machine.Pin(17, machine.Pin.OUT)
+rst = machine.Pin(20, machine.Pin.OUT)
+
+# Initialize CS high (inactive) before any SPI activity
+cs.value(1)
+time.sleep_ms(10)
+
+# Perform hardware reset on W5500
+rst.value(0)  # Pull reset LOW
+time.sleep_ms(100)  # Hold low for 100ms
+rst.value(1)  # Pull reset HIGH to enable chip
+time.sleep_ms(500)  # Wait longer for chip to fully initialize
+
+# Initialize SPI for W5500 - can use higher speed with optimizations
+spi = machine.SPI(
+    0,
+    baudrate=20000000,  # 2->20MHz - faster than before
+    polarity=0,
+    phase=0,
+    sck=machine.Pin(18),
+    mosi=machine.Pin(19),
+    miso=machine.Pin(16),
+)
+
+time.sleep_ms(100)
+
+# Initialize network interface
+nic = network.WIZNET5K(spi, cs, rst)
+
+# Activate the network interface first
+nic.active(True)
+time.sleep_ms(100)
+
+# Configure static IP: 172.16.1.1 (this device acts as gateway)
+nic.ifconfig(("172.16.1.1", "255.255.255.0", "172.16.1.1", "8.8.8.8"))
+
+# Give it a moment to apply settings
+time.sleep_ms(500)
+
+# Check if interface is active and configured
+if nic.active():
+    config_net = nic.ifconfig()
+    print(f"Ethernet initialized successfully, IP: {config_net[0]}")
+else:
+    print("ERROR: Ethernet failed")
+
+print_memory_stats("After network initialization")
+
+# Feed watchdog after network initialization
+wdt.feed()
+
+# Initialize Camera
+camera_ready = False
+try:
+    camera.init_cam()
+    camera.start_cam()
+    print("Camera started")
+
+    print_memory_stats("After Camera Init")
+except Exception as e:
+    print(f"ERROR: Camera: {e}")
+
+# Feed watchdog after camera initialization
+wdt.feed()
+
+
+# Cleanup function
+def cleanup():
+    print("\nCleaning up...")
+    global nic
+    try:
+        # Deactivate network interface
+        if nic:
+            nic.active(False)
+            print("Network interface deactivated")
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
+
+
+# ===== UNIFIED SERVER (SINGLE CORE, NON-BLOCKING) =====
+def start_webserver():
+    """Unified server handling both camera and JSON on single core with non-blocking I/O"""
+    # Create socket for camera image on port 8081
+    addr_camera = socket.getaddrinfo("0.0.0.0", 8081)[0][-1]
+    s_camera = socket.socket()
+    s_camera.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s_camera.bind(addr_camera)
+    s_camera.listen(3)
+    s_camera.setblocking(False)  # Non-blocking
+
+    # Create socket for JSON data on port 8082
+    addr_json = socket.getaddrinfo("0.0.0.0", 8082)[0][-1]
+    s_json = socket.socket()
+    s_json.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s_json.bind(addr_json)
+    s_json.listen(5)
+    s_json.setblocking(False)  # Non-blocking
+
+    print(f"Camera Server started on http://{config_net[0]}:8081")
+    print(f"Sensor JSON Server started on http://{config_net[0]}:8082")
+    print(
+        f"Test Drum led control on http://{config_net[0]}:8082/headled/10 or http://{config_net[0]}:8082/headled/0"
+    )
+
+    print_memory_stats("After Webserver initialization")
+    # Feed watchdog before entering main loop
+    wdt.feed()
+
+    # Use select to handle both sockets efficiently
+    poller = select.poll()
+    poller.register(s_camera, select.POLLIN)
+    poller.register(s_json, select.POLLIN)
+
+
+
+    while True:
+        try:
+            # Feed watchdog to prevent system reset
+            wdt.feed()
+
+            # Wait for activity on either socket (short timeout for responsiveness)
+            events = poller.poll(50)  # 50ms timeout
+
+            for sock, event in events:
+                cl = None
+                try:
+                    # Accept connection
+                    cl, addr = sock.accept()
+                    cl.setblocking(False)  # Make client socket non-blocking too
+                    result = None
+
+                    # Determine which server this is and handle accordingly
+                    if sock == s_camera:
+                        result = handle_camera_request_optimized(cl)
+                    elif sock == s_json:
+                        handle_json_request(cl)
+
+                except Exception as e:
+                    print(f"Error: {e}")
+                finally:
+                    if cl and result != "STREAM":
+                        cl.close()
+
+
+
+            # Periodic GC to free memory
+            gc.collect()
+
+        except Exception as e:
+            print(f"Server error: {e}")
+            time.sleep_ms(50)
+
+
+def handle_camera_request_optimized(cl):
+    """Handle requests on port 8081 - optimized for large image transfers"""
+    global active_stream_clients
+
+    try:
+        # Set blocking mode temporarily for recv to ensure we get the full request
+        cl.setblocking(True)
+        cl.settimeout(2.0)
+
+        # Read the HTTP request
+        request = cl.recv(1024).decode("utf-8")
+        request_line = request.split("\r\n")[0]
+        path = request_line.split(" ")[1] if len(request_line.split(" ")) > 1 else "/"
+
+        if path == "/":
+            # Serve HTML page with high-performance streaming AND color correction
+            html = """HTTP/1.1 200 OK
+Content-Type: text/html
+Connection: close
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Camera Stream</title>
+    <style>
+        body { margin: 20px; font-family: Arial, sans-serif; background: #222; color: #fff; }
+        #camera-canvas { border: 2px solid #0f0; display: block; }
+        #stats { margin-top: 10px; font-size: 16px; }
+        .metric { display: inline-block; margin-right: 20px; padding: 5px 10px; background: #333; }
+        #color-format-options { margin-top: 10px; }
+        #color-format-options label { display: block; margin: 5px 0; }
+    </style>
+</head>
+<body>
+    <h2>Camera Stream - RGB565</h2>
+    <canvas id="camera-canvas" width="240" height="320"></canvas>
+    <div id="stats">
+        <div class="metric">FPS: <span id="fps">0.00</span></div>
+        <div class="metric">Frame: <span id="frame-count">0</span></div>
+        <div class="metric">Status: <span id="status">Starting...</span></div>
+    </div>
+    <div id="color-format-options">
+        <strong>Color Format:</strong><br>
+        <label><input type="radio" name="color-format" value="bgr"> b01234_g012345_r01234</label>
+        <label><input type="radio" name="color-format" value="rgb" checked> r01234_g012345_b01234</label>
+        <label><input type="radio" name="color-format" value="grb"> g01234_r012345_b01234</label>
+        <label><input type="radio" name="color-format" value="brg"> b01234_r012345_g01234</label>
+        <label><input type="radio" name="color-format" value="gbr"> g01234_b012345_r01234</label>
+        <label><input type="radio" name="color-format" value="rbg"> r01234_b012345_g01234</label>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('camera-canvas');
+        const ctx = canvas.getContext('2d');
+        const width = 240;
+        const height = 320;
+        const frameSize = width * height * 2; // RGB565 = 2 bytes per pixel
+
+        let frameCount = 0;
+        let fpsCounter = 0;
+        let lastFpsTime = Date.now();
+
+        function displayImage(arrayBuffer) {
+            // Decode bit-packed data (from colorfix implementation)
+            const source = new Uint8Array(arrayBuffer);
+            const dest = new Uint8Array(source.length);
+
+            if (source.length > 0) {
+                dest[0] = source[0] >> 2;
+                for (let i = 1; i < source.length; i++) {
+                    dest[i] = ((source[i - 1] & 3) << 6) | (source[i] >> 2);
+                }
+            }
+            const data = dest;
+
+            const imageData = ctx.createImageData(width, height);
+            const format = document.querySelector('input[name="color-format"]:checked').value;
+
+            for (let i = 0; i < width * height; i++) {
+                const byte0 = data[i * 2];
+                const byte1 = data[i * 2 + 1];
+                const rgb565 = byte0 | (byte1 << 8);
+
+                let r, g, b;
+
+                switch (format) {
+                    case 'bgr': // b01234_g012345_r01234
+                        b = (rgb565 >> 11) & 0x1F;
+                        g = (rgb565 >> 5) & 0x3F;
+                        r = rgb565 & 0x1F;
+                        break;
+                    case 'rgb': // r01234_g012345_b01234
+                        r = (rgb565 >> 11) & 0x1F;
+                        g = (rgb565 >> 5) & 0x3F;
+                        b = rgb565 & 0x1F;
+                        break;
+                    case 'grb': // g01234_r012345_b01234
+                        g = (rgb565 >> 11) & 0x1F;
+                        r = (rgb565 >> 5) & 0x3F;
+                        b = rgb565 & 0x1F;
+                        break;
+                    case 'brg': // b01234_r012345_g01234
+                        b = (rgb565 >> 11) & 0x1F;
+                        r = (rgb565 >> 5) & 0x3F;
+                        g = rgb565 & 0x1F;
+                        break;
+                    case 'gbr': // g01234_b012345_r01234
+                        g = (rgb565 >> 11) & 0x1F;
+                        b = (rgb565 >> 5) & 0x3F;
+                        r = rgb565 & 0x1F;
+                        break;
+                    case 'rbg': // r01234_b012345_g01234
+                        r = (rgb565 >> 11) & 0x1F;
+                        b = (rgb565 >> 5) & 0x3F;
+                        g = rgb565 & 0x1F;
+                        break;
+                }
+
+                const r8 = (r << 3) | (r >> 2);
+                const g8 = (g << 2) | (g >> 4);
+                const b8 = (b << 3) | (b >> 2);
+
+                const finalR = Math.round(b8 * 0.85);
+                const finalG = Math.round(r8 * 0.85);
+                const finalB = Math.round(g8 * 0.85);
+
+                const idx = i * 4;
+                imageData.data[idx] = finalR;
+                imageData.data[idx + 1] = finalG;
+                imageData.data[idx + 2] = finalB;
+                imageData.data[idx + 3] = 255;
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+
+            frameCount++;
+            fpsCounter++;
+            document.getElementById('frame-count').textContent = frameCount;
+
+            const now = Date.now();
+            if (now - lastFpsTime >= 1000) {
+                const fps = fpsCounter / ((now - lastFpsTime) / 1000);
+                document.getElementById('fps').textContent = fps.toFixed(2);
+                fpsCounter = 0;
+                lastFpsTime = now;
+            }
+        }
+
+        async function startStream() {
+            try {
+                document.getElementById('status').textContent = 'Connecting...';
+                const response = await fetch('/stream');
+                document.getElementById('status').textContent = 'Streaming';
+
+                const reader = response.body.getReader();
+                let buffer = new Uint8Array(0);
+                const boundaryText = '--frame';
+                const boundary = new TextEncoder().encode(boundaryText);
+
+                while (true) {
+                    const {done, value} = await reader.read();
+
+                    if (done) {
+                        console.log('Stream ended, reconnecting...');
+                        document.getElementById('status').textContent = 'Reconnecting...';
+                        setTimeout(startStream, 100);
+                        break;
+                    }
+
+                    // Append new data to buffer
+                    const newBuffer = new Uint8Array(buffer.length + value.length);
+                    newBuffer.set(buffer);
+                    newBuffer.set(value, buffer.length);
+                    buffer = newBuffer;
+
+                    // Process all complete frames in buffer
+                    while (true) {
+                        // Find boundary marker
+                        let boundaryIndex = -1;
+                        for (let i = 0; i < buffer.length - boundary.length; i++) {
+                            let match = true;
+                            for (let j = 0; j < boundary.length; j++) {
+                                if (buffer[i + j] !== boundary[j]) {
+                                    match = false;
+                                    break;
+                                }
+                            }
+                            if (match) {
+                                boundaryIndex = i;
+                                break;
+                            }
+                        }
+
+                        if (boundaryIndex === -1) break;
+
+                        // Find data start (after \\r\\n\\r\\n)
+                        let dataStart = -1;
+                        for (let i = boundaryIndex; i < buffer.length - 3; i++) {
+                            if (buffer[i] === 13 && buffer[i+1] === 10 &&
+                                buffer[i+2] === 13 && buffer[i+3] === 10) {
+                                dataStart = i + 4;
+                                break;
+                            }
+                        }
+
+                        if (dataStart === -1 || buffer.length - dataStart < frameSize) {
+                            break; // Not enough data yet
+                        }
+
+                        // Extract and display frame
+                        const frameData = buffer.slice(dataStart, dataStart + frameSize);
+                        displayImage(frameData);
+
+                        // Remove processed data
+                        buffer = buffer.slice(dataStart + frameSize);
+                    }
+                }
+            } catch (err) {
+                console.error('Stream error:', err);
+                document.getElementById('status').textContent = 'Error: ' + err.message;
+                setTimeout(startStream, 2000);
+            }
+        }
+
+        // Start streaming
+        startStream();
+    </script>
+</body>
+</html>
+"""
+            cl.send(html.encode())
+
+        elif path.startswith("/poll"):
+            # Serve minimal HTML page with just the camera view
+            html = """HTTP/1.1 200 OK
+Content-Type: text/html
+Connection: close
+
+<!DOCTYPE html>
+<html>
+<body>
+    <canvas id="camera-canvas" width="240" height="320"></canvas>
+    <div id="color-format-options">
+        <label><input type="radio" name="color-format" value="bgr" onclick="refreshImage()"> b01234_g012345_r01234</label><br>
+        <label><input type="radio" name="color-format" value="rgb" checked onclick="refreshImage()"> r01234_g012345_b01234</label><br>
+        <label><input type="radio" name="color-format" value="grb" onclick="refreshImage()"> g01234_r012345_b01234</label><br>
+        <label><input type="radio" name="color-format" value="brg" onclick="refreshImage()"> b01234_r012345_g01234</label><br>
+        <label><input type="radio" name="color-format" value="gbr" onclick="refreshImage()"> g01234_b012345_r01234</label><br>
+        <label><input type="radio" name="color-format" value="rbg" onclick="refreshImage()"> r01234_b012345_g01234</label><br>
+    </div>
+    <script>
+        const canvas = document.getElementById('camera-canvas');
+        const ctx = canvas.getContext('2d');
+        const width = 240;
+        const height = 320;
+        let lastImageBuffer = null;
+        
+        function displayImage(arrayBuffer) {
+            const source = new Uint8Array(arrayBuffer);
+            const dest = new Uint8Array(source.length);
+
+            if (source.length > 0) {
+                dest[0] = source[0] >> 2;
+                for (let i = 1; i < source.length; i++) {
+                    dest[i] = ((source[i - 1] & 3) << 6) | (source[i] >> 2);
+                }
+            }
+            const data = dest;
+            const imageData = ctx.createImageData(width, height);
+            const format = document.querySelector('input[name="color-format"]:checked').value;
+
+            for (let i = 0; i < width * height; i++) {
+                const byte0 = data[i * 2];
+                const byte1 = data[i * 2 + 1];
+                const rgb565 = byte0 | (byte1 << 8);
+                
+                let r, g, b;
+
+                switch (format) {
+                    case 'bgr': // b01234_g012345_r01234
+                        b = (rgb565 >> 11) & 0x1F;
+                        g = (rgb565 >> 5) & 0x3F;
+                        r = rgb565 & 0x1F;
+                        break;
+                    case 'rgb': // r01234_g012345_b01234
+                        r = (rgb565 >> 11) & 0x1F;
+                        g = (rgb565 >> 5) & 0x3F;
+                        b = rgb565 & 0x1F;
+                        break;
+                    case 'grb': // g01234_r012345_b01234
+                        g = (rgb565 >> 11) & 0x1F;
+                        r = (rgb565 >> 5) & 0x3F;
+                        b = rgb565 & 0x1F;
+                        break;
+                    case 'brg': // b01234_r012345_g01234
+                        b = (rgb565 >> 11) & 0x1F;
+                        r = (rgb565 >> 5) & 0x3F;
+                        g = rgb565 & 0x1F;
+                        break;
+                    case 'gbr': // g01234_b012345_r01234
+                        g = (rgb565 >> 11) & 0x1F;
+                        b = (rgb565 >> 5) & 0x3F;
+                        r = rgb565 & 0x1F;
+                        break;
+                    case 'rbg': // r01234_b012345_g01234
+                        r = (rgb565 >> 11) & 0x1F;
+                        b = (rgb565 >> 5) & 0x3F;
+                        g = rgb565 & 0x1F;
+                        break;
+                }
+                
+                const r8 = (r << 3) | (r >> 2);
+                const g8 = (g << 2) | (g >> 4);
+                const b8 = (b << 3) | (b >> 2);
+                
+                let finalR = Math.round(b8 * 0.85);
+                let finalG = Math.round(r8 * 0.85);
+                let finalB = Math.round(g8 * 0.85);
+                
+                const idx = i * 4;
+                imageData.data[idx] = finalR;
+                imageData.data[idx + 1] = finalG;
+                imageData.data[idx + 2] = finalB;
+                imageData.data[idx + 3] = 255;
+            }
+            
+            ctx.putImageData(imageData, 0, 0);
+        }
+        
+        function refreshImage() {
+            fetch('/image.raw?t=' + new Date().getTime())
+                .then(response => response.arrayBuffer())
+                .then(arrayBuffer => {
+                    displayImage(arrayBuffer);
+                })
+                .catch(err => console.error(err));
+        }
+        
+        // Refresh image every 1 second for live view
+        refreshImage();
+        setInterval(refreshImage, 1000);
+    </script>
+</body>
+</html>
+"""
+            cl.send(html.encode())
+
+        elif path.startswith("/image.raw"):
+            # Serve raw camera image data
+            if camera.is_buffer_ready():
+                # Send HTTP header first
+                frame_len = 240 * 320 * 2  # Known size
+                header = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {frame_len}\r\nConnection: close\r\n\r\n"
+                cl.send(header.encode())
+
+                # Define callback to send frame data in chunks
+                def send_callback(frame_data):
+                    # Optimized transfer - use larger chunks for efficiency
+                    chunk_size = 153600 # 8192  # 8KB chunks for maximum throughput
+                    total_sent = 0
+                    mv = memoryview(frame_data)
+
+                    # Set a reasonable timeout for the transfer
+                    cl.settimeout(10.0)
+
+                    while total_sent < len(frame_data):
+                        end = min(total_sent + chunk_size, len(frame_data))
+                        chunk = mv[total_sent:end]
+                        try:
+                            bytes_sent = cl.send(chunk)
+                            if bytes_sent == 0:
+                                break
+                            total_sent += bytes_sent
+
+                            # Feed watchdog during long image transfer
+                            if total_sent % (chunk_size * 4) == 0:  # Every ~32KB
+                                wdt.feed()
+                        except OSError as e:
+                            print(f"Socket error: {e}")
+                            break
+
+                # Send frame using the new callback mechanism
+                camera.send_frame_over_eth(send_callback)
+            else:
+                response = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nCamera not available"
+                cl.send(response.encode())
+
+        elif path == '/stream':
+            # Get client address for streaming
+            client_addr = cl.getpeername()
+            client_ip_str, client_port = client_addr
+            client_ip_bytes = bytes([int(x) for x in client_ip_str.split('.')])
+            
+            # Send HTTP header for streaming
+            try:
+                header = b"HTTP/1.1 200 OK\r\n"
+                header += b"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+                header += b"Cache-Control: no-cache\r\n"
+                header += b"\r\n"
+                cl.send(header)
+                print("Stream client connected")
+            except OSError:
+                cl.close()
+                return "CLOSE"
+            
+            # Initialize C streaming to this client
+            camera.init_streaming(client_ip_bytes, client_port)
+            
+            # Start C streaming loop (blocking)
+            camera.streaming_loop()
+            
+            # This will not return
+            return "STREAM"
+
+        else:
+            # 404 for other paths
+            response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n404 Not Found"
+            cl.send(response.encode())
+
+    except Exception as e:
+        print(f"Camera handler error: {e}")
+
+
+def handle_json_request(cl):
+    """Handle requests on port 8082 - serve JSON status data or handle LED control"""
+    try:
+        # Set blocking mode temporarily for recv
+        cl.setblocking(True)
+        cl.settimeout(2.0)
+
+        # Read the HTTP request
+        request = cl.recv(1024).decode("utf-8")
+        request_line = request.split("\r\n")[0]
+
+        # Parse the request path
+        path = request_line.split(" ")[1] if len(request_line.split(" ")) > 1 else "/"
+
+        # Handle LED brightness control: /headled/{value}
+        if path.startswith("/headled/"):
+            try:
+                # Extract brightness value from path
+                value_str = path.split("/headled/")[1]
+                brightness = int(value_str)
+
+                # Set LED brightness
+                if set_head_led_brightness(brightness):
+                    response = f'{{"status": "ok", "brightness": {brightness}}}'
+                    http_response = (
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                        + response
+                    )
+                else:
+                    response = '{"status": "error", "message": "DAC not available"}'
+                    http_response = (
+                        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                        + response
+                    )
+
+                cl.send(http_response.encode())
+            except (ValueError, IndexError):
+                response = '{"status": "error", "message": "Invalid brightness value"}'
+                http_response = (
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                    + response
+                )
+                cl.send(http_response.encode())
+
+        # Handle status JSON: /
+        elif path == "/":
+            # Get uptime
+            uptime = get_uptime_seconds()
+
+            # Get MCU temperature
+            mcu_temp = get_mcu_temperature()
+
+            # Read barometer
+            cooling_temp, cooling_press = read_barometer()
+
+            # Read LED temperatures from ADC
+            led_temps = read_all_led_temps()
+
+            # Build JSON response manually
+            json_parts = [f'"headID": {HEAD_ID}', f'"upTime": {uptime}']
+
+            # Add MCU temperature
+            if mcu_temp is not None:
+                json_parts.append(f'"mcuTemp": {mcu_temp}')
+            else:
+                json_parts.append('"mcuTemp": null')
+
+            # Add cooling temperature and pressure
+            if cooling_temp is not None:
+                json_parts.append(f'"cooling_temperature": {cooling_temp}')
+            else:
+                json_parts.append('"cooling_temperature": null')
+
+            if cooling_press is not None:
+                json_parts.append(f'"cooling_pressure": {cooling_press}')
+            else:
+                json_parts.append(f'"cooling_pressure": null')
+
+            # Add LED temperatures in order (1-6)
+            for i in range(1, 7):
+                key = f"headTemp{i}"
+                value = led_temps.get(key)
+                if value is not None:
+                    json_parts.append(f'"{key}": {value}')
+                else:
+                    json_parts.append(f'"{key}": null')
+
+            json_data = "{" + ", ".join(json_parts) + "}"
+
+            # Send JSON response
+            response = (
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                + json_data
+            )
+            cl.send(response.encode())
+
+        else:
+            # 404 for unknown paths
+            response = '{"status": "error", "message": "Not found"}'
+            http_response = (
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                + response
+            )
+            cl.send(http_response.encode())
+
+    except Exception as e:
+        print(f"JSON handler error: {e}")
+
+
+# Start the unified webserver
+if nic.active():
+    try:
+        start_webserver()
+    except KeyboardInterrupt:
+        print("\nShutdown")
+        cleanup()
+    except Exception as e:
+        print(f"\nERROR: Server: {e}")
+        import sys
+
+        sys.print_exception(e)
+        cleanup()
+else:
+    print("ERROR: No network")
