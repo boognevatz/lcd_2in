@@ -3,7 +3,6 @@
 #include "ov5640.h"
 #include "py/obj.h"
 #include "py/runtime.h"
-#include "extmod/modnetwork.h"   // for mod_network_socket_obj_t
 
 extern uint8_t *cam_ptr;
 
