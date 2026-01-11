@@ -79,21 +79,6 @@ static mp_obj_t camera_start_streaming(mp_obj_t sockno_obj) {
     return mp_const_none;
 }
 
-/*static mp_obj_t camera_start_streaming(mp_obj_t sock_obj) {
-    if (!mp_obj_is_type(sock_obj, &mod_network_socket_type)) {
-        mp_raise_TypeError(MP_ERROR_TEXT("expected socket"));
-    }
-
-    mod_network_socket_obj_t *s = MP_OBJ_TO_PTR(sock_obj);
-
-    if (s->fileno < 0) {
-        mp_raise_ValueError(MP_ERROR_TEXT("socket not connected"));
-    }
-
-    start_streaming(s->fileno);  // direct W5500 socket number
-    return mp_const_none;
-}*/
-
 static MP_DEFINE_CONST_FUN_OBJ_1(camera_start_streaming_obj, camera_start_streaming);
 
 static mp_obj_t camera_streaming_loop() {
