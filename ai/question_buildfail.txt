@@ -1,0 +1,45 @@
+
+Analyze the following file, which is the main entry point:
+`main_webcamera_colorfix_dma_fps_fix.py`.
+
+It is a camera streaming application, where it serves a 
+html on port :8081 (working), and the client (browser) through 
+javascript starts the streaming, then the streaming html is 
+sent in python, but the actual streaming should happen in C land only.
+The actual streaming do not work, but not focus there yet.
+
+What you should focus, is the runtime error:
+which is not available. Here is the micropython console output:
+```
+launching `main_webcamera_colorfix_dma_fps_fix.py` on the actual rp2350 causes this output: ERROR: Server: [Errno 22] EINVAL
+Traceback (most recent call last):
+  File "main.py", line 1152, in <module>
+  File "main.py", line 551, in start_webserver
+OSError: [Errno 22] EINVAL please note, we are using native w5500, and not lwip anymore. With lwip it was working. Please be thorough, and read every files necessary to fully grasp the problem especially in `micropython/extmod/*`
+```
+Your job is to find why Errno 22 EINVAL errors pops up.
+
+For completeness I paste all the relevant codes here, specifically:
+"main_webcamera_colorfix_dma_fps_fix.py"
+"modules/camera/cam.c"
+"modules/camera/cam.h"
+"modules/camera/micropython.cmake"
+"micropython/extmod/network_wiznet5k.c"
+"micropython/extmod/machine_spi.c"
+"micropython/extmod/modnetwork.c"
+"micropython/extmod/modnetwork.h"
+"micropython/extmod/modsocket.c"
+
+If there any other file you need to look, list the filenames.
+---
+
+FILELIST:
+main_webcamera_colorfix_dma_fps_fix.py
+modules/camera/cam.c
+modules/camera/cam.h
+modules/camera/micropython.cmake
+micropython/extmod/network_wiznet5k.c
+micropython/extmod/machine_spi.c
+micropython/extmod/modnetwork.c
+micropython/extmod/modnetwork.h
+micropython/extmod/modsocket.c

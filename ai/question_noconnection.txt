@@ -1,0 +1,50 @@
+
+Analyze the following file, which is the main entry point:
+`main_webcamera_colorfix_dma_fps_fix.py`.
+
+It is a camera streaming application, where it serves a 
+html on port :8081, and the client (browser) through 
+javascript starts the streaming, then the streaming html is 
+sent in python, but the actual streaming should happen in C land only.
+
+Currently it is a nonworking state. The build (firmware) completes without 
+error, the python is started on the actual device without error.
+But I can not load either :?8082 or :8081, because nothing happens (no response).
+
+Please not I modified both network_wiznet5k.c and modsocket.c 
+to use w5500 native socket capabilities and be able to dma through 
+spi a whole 150kB frame without python involvement.
+In theory it should work like this: python accepts connection 
+then sends the initial http header, then it hands over to C land, 
+which sends spi burst the whole 150kB frame.
+
+For completeness I paste all the relevant codes here, specifically:
+"main_webcamera_colorfix_dma_fps_fix.py"
+"modules/camera/cam.c"
+"modules/camera/cam.h"
+"modules/camera/modcamera.c"
+"modules/camera/micropython.cmake"
+"modules/camera/ov5640.c"
+"modules/camera/picampinos.pio"
+"micropython/extmod/network_wiznet5k.c"
+"micropython/extmod/machine_spi.c"
+"micropython/extmod/modnetwork.c"
+"micropython/extmod/modnetwork.h"
+"micropython/extmod/modsocket.c"
+
+If there any other file you need to look, list the filenames.
+---
+
+FILELIST:
+main_webcamera_colorfix_dma_fps_fix.py
+modules/camera/cam.c
+modules/camera/cam.h
+modules/camera/modcamera.c
+modules/camera/ov5640.c
+modules/camera/picampinos.pio
+modules/camera/micropython.cmake
+micropython/extmod/network_wiznet5k.c
+micropython/extmod/machine_spi.c
+micropython/extmod/modnetwork.c
+micropython/extmod/modnetwork.h
+micropython/extmod/modsocket.c

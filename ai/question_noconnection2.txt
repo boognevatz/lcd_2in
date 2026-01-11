@@ -1,0 +1,76 @@
+
+Analyze the following file, which is the main entry point:
+`main_bareminimum.py`.
+
+It is json serving application.
+
+Currently it is a nonworking state. The build (firmware) completes without 
+error, the python is started on the actual device without error.
+But I can not load :8082, because nothing happens (no response).
+
+Please not I modified both network_wiznet5k.c and modsocket.c 
+to use w5500 native socket capabilities and be able to dma through 
+spi (in the future, not used here, but need this capability in future)
+
+So we are not using lwIP, but rather native w5500 provided functionality, 
+and it is on purpose and needed (in the future).
+
+On th econsole micropython starts fine it even displays the  socket (8081) listening, but after I try to connect nothing is printed on the console, and from the browser I get eventually a timeout without sending anything.
+
+The setsockopt and setblocking is commented out, because it resulted an error, since w5500 (network_wiznet5k.c) do not support either of it. (the error was: OSError: [Errno 22] EINVAL
+for both setsockopt and setblocking).
+
+Here is the micropython console output (from runtime):
+Watchdog initialized with 8s timeout
+ERROR: Failed to load config.json: [Errno 2] ENOENT
+Ethernet initialized successfully, IP: 172.16.1.1
+MEMORY check: After network initialization | Free: 323.5KB (95.7%)
+Sensor JSON Server started on http://172.16.1.1:8082
+Test Drum led control on http://172.16.1.1:8082/headled/10 or http://172.16.1.1:8082/headled/0
+MEMORY check: After Webserver initialization | Free: 323.1KB (95.6%)
+
+After that nothing is printed not even when I try to connect from browser to the :8082 port.
+
+Please also note, before migrating from lwIP, the application worked, so the client side (browser) and actual networking cables, 
+and also rp2350-w5500 spi wiring all must be ok.
+
+Also do not recommend any threading, it is unreliable on micropython. Also we can not use multiple cores on the mcu.
+So the python and C must live in harmony, if not, we should fix the C code.
+
+If there is something missing from w5500 implementation that was present in lwIP one, 
+I believe we should add it if not complicated.
+
+Also whenever you come up with some debugging code, take all the relevant and necessary initialization
+from the existing .py file, so it is self contained and can be launched (I specifically mean the spi initialization, 
+the nic initialization, the necessary imports, etc)
+
+For completeness I paste all the relevant codes here, specifically:
+"main_bareminimum.py"
+"modules/camera/cam.c"
+"modules/camera/cam.h"
+"modules/camera/modcamera.c"
+"modules/camera/micropython.cmake"
+"modules/camera/ov5640.c"
+"modules/camera/picampinos.pio"
+"micropython/extmod/network_wiznet5k.c"
+"micropython/extmod/machine_spi.c"
+"micropython/extmod/modnetwork.c"
+"micropython/extmod/modnetwork.h"
+"micropython/extmod/modsocket.c"
+
+If there any other file you need to look, list the filenames.
+---
+
+FILELIST:
+main_bareminimum.py
+modules/camera/cam.c
+modules/camera/cam.h
+modules/camera/modcamera.c
+modules/camera/ov5640.c
+modules/camera/picampinos.pio
+modules/camera/micropython.cmake
+micropython/extmod/network_wiznet5k.c
+micropython/extmod/machine_spi.c
+micropython/extmod/modnetwork.c
+micropython/extmod/modnetwork.h
+micropython/extmod/modsocket.c
