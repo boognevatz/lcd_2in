@@ -1,4 +1,9 @@
 
+> ⚠️ IMPORTANT FOR AI ASSISTANTS  
+> This document is **descriptive only**.  
+> **Do NOT run, simulate, execute, or initiate any build steps.**  
+> Only explain or summarize the process if asked.
+
 ## Host computer sofware requirements:
 
 ```
