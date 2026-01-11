@@ -1,11 +1,10 @@
-### ETHERNET WEBSERVER WITH W5500 AND CAMERA - OPTIMIZED NON-BLOCKING
+### ETHERNET WEBSERVER WITH W5500 - JSON SERVING ONLY
 import machine
 import network
 import socket
 import time
-import camera
-import select
 import json
+import select
 import gc
 
 # ===== WATCHDOG TIMER SETUP =====
@@ -514,21 +513,6 @@ print_memory_stats("After network initialization")
 # Feed watchdog after network initialization
 wdt.feed()
 
-# Initialize Camera
-camera_ready = False
-try:
-    camera.init_cam()
-    camera.start_cam()
-    print("Camera started")
-
-    print_memory_stats("After Camera Init")
-except Exception as e:
-    print(f"ERROR: Camera: {e}")
-
-# Feed watchdog after camera initialization
-wdt.feed()
-
-
 # Cleanup function
 def cleanup():
     print("\nCleaning up...")
@@ -544,24 +528,13 @@ def cleanup():
 
 # ===== UNIFIED SERVER (SINGLE CORE, NON-BLOCKING) =====
 def start_webserver():
-    """Unified server handling both camera and JSON on single core with non-blocking I/O"""
-    # Create socket for camera image on port 8081
-    addr_camera = socket.getaddrinfo("0.0.0.0", 8081)[0][-1]
-    s_camera = socket.socket()
-    #s_camera.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s_camera.bind(addr_camera)
-    s_camera.listen(3)
-    #s_camera.setblocking(False)  # Non-blocking
-
+    """Unified server handling JSON on port 8082"""
     # Create socket for JSON data on port 8082
     addr_json = socket.getaddrinfo("0.0.0.0", 8082)[0][-1]
     s_json = socket.socket()
-    #s_json.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s_json.bind(addr_json)
     s_json.listen(5)
-    #s_json.setblocking(False)  # Non-blocking
 
-    print(f"Camera Server started on http://{config_net[0]}:8081")
     print(f"Sensor JSON Server started on http://{config_net[0]}:8082")
     print(
         f"Test Drum led control on http://{config_net[0]}:8082/headled/10 or http://{config_net[0]}:8082/headled/0"
@@ -571,19 +544,16 @@ def start_webserver():
     # Feed watchdog before entering main loop
     wdt.feed()
 
-    # Use select to handle both sockets efficiently
+    # Use select to handle the socket efficiently
     poller = select.poll()
-    poller.register(s_camera, select.POLLIN)
     poller.register(s_json, select.POLLIN)
-
-
 
     while True:
         try:
             # Feed watchdog to prevent system reset
             wdt.feed()
 
-            # Wait for activity on either socket (short timeout for responsiveness)
+            # Wait for activity on the socket (short timeout for responsiveness)
             events = poller.poll(50)  # 50ms timeout
 
             for sock, event in events:
@@ -591,22 +561,13 @@ def start_webserver():
                 try:
                     # Accept connection
                     cl, addr = sock.accept()
-                    #cl.setblocking(False)  # Make client socket non-blocking too
-                    result = None
-
-                    # Determine which server this is and handle accordingly
-                    if sock == s_camera:
-                        result = handle_camera_request_optimized(cl)
-                    elif sock == s_json:
-                        handle_json_request(cl)
+                    handle_json_request(cl)
 
                 except Exception as e:
                     print(f"Error: {e}")
                 finally:
-                    if cl and result != "STREAM":
+                    if cl:
                         cl.close()
-
-
 
             # Periodic GC to free memory
             gc.collect()
@@ -616,432 +577,10 @@ def start_webserver():
             time.sleep_ms(50)
 
 
-def handle_camera_request_optimized(cl):
-    """Handle requests on port 8081 - optimized for large image transfers"""
-    global active_stream_clients
-
-    try:
-        # Set blocking mode temporarily for recv to ensure we get the full request
-        #cl.setblocking(True)
-        cl.settimeout(2.0)
-
-        # TEST: Check socket type and attributes
-        print(f"Socket type: {type(cl)}")
-        print(f"Socket dir: {dir(cl)}")
-        print(f"Has _wiznet_sn: {hasattr(cl, '_wiznet_sn')}")
-
-        # Read the HTTP request
-        request = cl.recv(1024).decode("utf-8")
-        request_line = request.split("\r\n")[0]
-        path = request_line.split(" ")[1] if len(request_line.split(" ")) > 1 else "/"
-
-        if path == "/":
-            # Serve HTML page with high-performance streaming AND color correction
-            html = """HTTP/1.1 200 OK
-Content-Type: text/html
-Connection: close
-
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Camera Stream</title>
-    <style>
-        body { margin: 20px; font-family: Arial, sans-serif; background: #222; color: #fff; }
-        #camera-canvas { border: 2px solid #0f0; display: block; }
-        #stats { margin-top: 10px; font-size: 16px; }
-        .metric { display: inline-block; margin-right: 20px; padding: 5px 10px; background: #333; }
-        #color-format-options { margin-top: 10px; }
-        #color-format-options label { display: block; margin: 5px 0; }
-    </style>
-</head>
-<body>
-    <h2>Camera Stream - RGB565</h2>
-    <canvas id="camera-canvas" width="240" height="320"></canvas>
-    <div id="stats">
-        <div class="metric">FPS: <span id="fps">0.00</span></div>
-        <div class="metric">Frame: <span id="frame-count">0</span></div>
-        <div class="metric">Status: <span id="status">Starting...</span></div>
-    </div>
-    <div id="color-format-options">
-        <strong>Color Format:</strong><br>
-        <label><input type="radio" name="color-format" value="bgr"> b01234_g012345_r01234</label>
-        <label><input type="radio" name="color-format" value="rgb" checked> r01234_g012345_b01234</label>
-        <label><input type="radio" name="color-format" value="grb"> g01234_r012345_b01234</label>
-        <label><input type="radio" name="color-format" value="brg"> b01234_r012345_g01234</label>
-        <label><input type="radio" name="color-format" value="gbr"> g01234_b012345_r01234</label>
-        <label><input type="radio" name="color-format" value="rbg"> r01234_b012345_g01234</label>
-    </div>
-
-    <script>
-        const canvas = document.getElementById('camera-canvas');
-        const ctx = canvas.getContext('2d');
-        const width = 240;
-        const height = 320;
-        const frameSize = width * height * 2; // RGB565 = 2 bytes per pixel
-
-        let frameCount = 0;
-        let fpsCounter = 0;
-        let lastFpsTime = Date.now();
-
-        function displayImage(arrayBuffer) {
-            // Decode bit-packed data (from colorfix implementation)
-            const source = new Uint8Array(arrayBuffer);
-            const dest = new Uint8Array(source.length);
-
-            if (source.length > 0) {
-                dest[0] = source[0] >> 2;
-                for (let i = 1; i < source.length; i++) {
-                    dest[i] = ((source[i - 1] & 3) << 6) | (source[i] >> 2);
-                }
-            }
-            const data = dest;
-
-            const imageData = ctx.createImageData(width, height);
-            const format = document.querySelector('input[name="color-format"]:checked').value;
-
-            for (let i = 0; i < width * height; i++) {
-                const byte0 = data[i * 2];
-                const byte1 = data[i * 2 + 1];
-                const rgb565 = byte0 | (byte1 << 8);
-
-                let r, g, b;
-
-                switch (format) {
-                    case 'bgr': // b01234_g012345_r01234
-                        b = (rgb565 >> 11) & 0x1F;
-                        g = (rgb565 >> 5) & 0x3F;
-                        r = rgb565 & 0x1F;
-                        break;
-                    case 'rgb': // r01234_g012345_b01234
-                        r = (rgb565 >> 11) & 0x1F;
-                        g = (rgb565 >> 5) & 0x3F;
-                        b = rgb565 & 0x1F;
-                        break;
-                    case 'grb': // g01234_r012345_b01234
-                        g = (rgb565 >> 11) & 0x1F;
-                        r = (rgb565 >> 5) & 0x3F;
-                        b = rgb565 & 0x1F;
-                        break;
-                    case 'brg': // b01234_r012345_g01234
-                        b = (rgb565 >> 11) & 0x1F;
-                        r = (rgb565 >> 5) & 0x3F;
-                        g = rgb565 & 0x1F;
-                        break;
-                    case 'gbr': // g01234_b012345_r01234
-                        g = (rgb565 >> 11) & 0x1F;
-                        b = (rgb565 >> 5) & 0x3F;
-                        r = rgb565 & 0x1F;
-                        break;
-                    case 'rbg': // r01234_b012345_g01234
-                        r = (rgb565 >> 11) & 0x1F;
-                        b = (rgb565 >> 5) & 0x3F;
-                        g = rgb565 & 0x1F;
-                        break;
-                }
-
-                const r8 = (r << 3) | (r >> 2);
-                const g8 = (g << 2) | (g >> 4);
-                const b8 = (b << 3) | (b >> 2);
-
-                const finalR = Math.round(b8 * 0.85);
-                const finalG = Math.round(r8 * 0.85);
-                const finalB = Math.round(g8 * 0.85);
-
-                const idx = i * 4;
-                imageData.data[idx] = finalR;
-                imageData.data[idx + 1] = finalG;
-                imageData.data[idx + 2] = finalB;
-                imageData.data[idx + 3] = 255;
-            }
-
-            ctx.putImageData(imageData, 0, 0);
-
-            frameCount++;
-            fpsCounter++;
-            document.getElementById('frame-count').textContent = frameCount;
-
-            const now = Date.now();
-            if (now - lastFpsTime >= 1000) {
-                const fps = fpsCounter / ((now - lastFpsTime) / 1000);
-                document.getElementById('fps').textContent = fps.toFixed(2);
-                fpsCounter = 0;
-                lastFpsTime = now;
-            }
-        }
-
-        async function startStream() {
-            try {
-                document.getElementById('status').textContent = 'Connecting...';
-                const response = await fetch('/stream');
-                document.getElementById('status').textContent = 'Streaming';
-
-                const reader = response.body.getReader();
-                let buffer = new Uint8Array(0);
-                const boundaryText = '--frame';
-                const boundary = new TextEncoder().encode(boundaryText);
-
-                while (true) {
-                    const {done, value} = await reader.read();
-
-                    if (done) {
-                        console.log('Stream ended, reconnecting...');
-                        document.getElementById('status').textContent = 'Reconnecting...';
-                        setTimeout(startStream, 100);
-                        break;
-                    }
-
-                    // Append new data to buffer
-                    const newBuffer = new Uint8Array(buffer.length + value.length);
-                    newBuffer.set(buffer);
-                    newBuffer.set(value, buffer.length);
-                    buffer = newBuffer;
-
-                    // Process all complete frames in buffer
-                    while (true) {
-                        // Find boundary marker
-                        let boundaryIndex = -1;
-                        for (let i = 0; i < buffer.length - boundary.length; i++) {
-                            let match = true;
-                            for (let j = 0; j < boundary.length; j++) {
-                                if (buffer[i + j] !== boundary[j]) {
-                                    match = false;
-                                    break;
-                                }
-                            }
-                            if (match) {
-                                boundaryIndex = i;
-                                break;
-                            }
-                        }
-
-                        if (boundaryIndex === -1) break;
-
-                        // Find data start (after \\r\\n\\r\\n)
-                        let dataStart = -1;
-                        for (let i = boundaryIndex; i < buffer.length - 3; i++) {
-                            if (buffer[i] === 13 && buffer[i+1] === 10 &&
-                                buffer[i+2] === 13 && buffer[i+3] === 10) {
-                                dataStart = i + 4;
-                                break;
-                            }
-                        }
-
-                        if (dataStart === -1 || buffer.length - dataStart < frameSize) {
-                            break; // Not enough data yet
-                        }
-
-                        // Extract and display frame
-                        const frameData = buffer.slice(dataStart, dataStart + frameSize);
-                        displayImage(frameData);
-
-                        // Remove processed data
-                        buffer = buffer.slice(dataStart + frameSize);
-                    }
-                }
-            } catch (err) {
-                console.error('Stream error:', err);
-                document.getElementById('status').textContent = 'Error: ' + err.message;
-                setTimeout(startStream, 2000);
-            }
-        }
-
-        // Start streaming
-        startStream();
-    </script>
-</body>
-</html>
-"""
-            cl.send(html.encode())
-
-        elif path.startswith("/poll"):
-            # Serve minimal HTML page with just the camera view
-            html = """HTTP/1.1 200 OK
-Content-Type: text/html
-Connection: close
-
-<!DOCTYPE html>
-<html>
-<body>
-    <canvas id="camera-canvas" width="240" height="320"></canvas>
-    <div id="color-format-options">
-        <label><input type="radio" name="color-format" value="bgr" onclick="refreshImage()"> b01234_g012345_r01234</label><br>
-        <label><input type="radio" name="color-format" value="rgb" checked onclick="refreshImage()"> r01234_g012345_b01234</label><br>
-        <label><input type="radio" name="color-format" value="grb" onclick="refreshImage()"> g01234_r012345_b01234</label><br>
-        <label><input type="radio" name="color-format" value="brg" onclick="refreshImage()"> b01234_r012345_g01234</label><br>
-        <label><input type="radio" name="color-format" value="gbr" onclick="refreshImage()"> g01234_b012345_r01234</label><br>
-        <label><input type="radio" name="color-format" value="rbg" onclick="refreshImage()"> r01234_b012345_g01234</label><br>
-    </div>
-    <script>
-        const canvas = document.getElementById('camera-canvas');
-        const ctx = canvas.getContext('2d');
-        const width = 240;
-        const height = 320;
-        let lastImageBuffer = null;
-        
-        function displayImage(arrayBuffer) {
-            const source = new Uint8Array(arrayBuffer);
-            const dest = new Uint8Array(source.length);
-
-            if (source.length > 0) {
-                dest[0] = source[0] >> 2;
-                for (let i = 1; i < source.length; i++) {
-                    dest[i] = ((source[i - 1] & 3) << 6) | (source[i] >> 2);
-                }
-            }
-            const data = dest;
-            const imageData = ctx.createImageData(width, height);
-            const format = document.querySelector('input[name="color-format"]:checked').value;
-
-            for (let i = 0; i < width * height; i++) {
-                const byte0 = data[i * 2];
-                const byte1 = data[i * 2 + 1];
-                const rgb565 = byte0 | (byte1 << 8);
-                
-                let r, g, b;
-
-                switch (format) {
-                    case 'bgr': // b01234_g012345_r01234
-                        b = (rgb565 >> 11) & 0x1F;
-                        g = (rgb565 >> 5) & 0x3F;
-                        r = rgb565 & 0x1F;
-                        break;
-                    case 'rgb': // r01234_g012345_b01234
-                        r = (rgb565 >> 11) & 0x1F;
-                        g = (rgb565 >> 5) & 0x3F;
-                        b = rgb565 & 0x1F;
-                        break;
-                    case 'grb': // g01234_r012345_b01234
-                        g = (rgb565 >> 11) & 0x1F;
-                        r = (rgb565 >> 5) & 0x3F;
-                        b = rgb565 & 0x1F;
-                        break;
-                    case 'brg': // b01234_r012345_g01234
-                        b = (rgb565 >> 11) & 0x1F;
-                        r = (rgb565 >> 5) & 0x3F;
-                        g = rgb565 & 0x1F;
-                        break;
-                    case 'gbr': // g01234_b012345_r01234
-                        g = (rgb565 >> 11) & 0x1F;
-                        b = (rgb565 >> 5) & 0x3F;
-                        r = rgb565 & 0x1F;
-                        break;
-                    case 'rbg': // r01234_b012345_g01234
-                        r = (rgb565 >> 11) & 0x1F;
-                        b = (rgb565 >> 5) & 0x3F;
-                        g = rgb565 & 0x1F;
-                        break;
-                }
-                
-                const r8 = (r << 3) | (r >> 2);
-                const g8 = (g << 2) | (g >> 4);
-                const b8 = (b << 3) | (b >> 2);
-                
-                let finalR = Math.round(b8 * 0.85);
-                let finalG = Math.round(r8 * 0.85);
-                let finalB = Math.round(g8 * 0.85);
-                
-                const idx = i * 4;
-                imageData.data[idx] = finalR;
-                imageData.data[idx + 1] = finalG;
-                imageData.data[idx + 2] = finalB;
-                imageData.data[idx + 3] = 255;
-            }
-            
-            ctx.putImageData(imageData, 0, 0);
-        }
-        
-        function refreshImage() {
-            fetch('/image.raw?t=' + new Date().getTime())
-                .then(response => response.arrayBuffer())
-                .then(arrayBuffer => {
-                    displayImage(arrayBuffer);
-                })
-                .catch(err => console.error(err));
-        }
-        
-        // Refresh image every 1 second for live view
-        refreshImage();
-        setInterval(refreshImage, 1000);
-    </script>
-</body>
-</html>
-"""
-            cl.send(html.encode())
-
-        elif path.startswith("/image.raw"):
-            # Serve raw camera image data
-            if camera.is_buffer_ready():
-                # Send HTTP header first
-                frame_len = 240 * 320 * 2  # Known size
-                header = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {frame_len}\r\nConnection: close\r\n\r\n"
-                cl.send(header.encode())
-
-                # Define callback to send frame data in chunks
-                def send_callback(frame_data):
-                    # Optimized transfer - use larger chunks for efficiency
-                    chunk_size = 153600 # 8192  # 8KB chunks for maximum throughput
-                    total_sent = 0
-                    mv = memoryview(frame_data)
-
-                    # Set a reasonable timeout for the transfer
-                    cl.settimeout(10.0)
-
-                    while total_sent < len(frame_data):
-                        end = min(total_sent + chunk_size, len(frame_data))
-                        chunk = mv[total_sent:end]
-                        try:
-                            bytes_sent = cl.send(chunk)
-                            if bytes_sent == 0:
-                                break
-                            total_sent += bytes_sent
-
-                            # Feed watchdog during long image transfer
-                            if total_sent % (chunk_size * 4) == 0:  # Every ~32KB
-                                wdt.feed()
-                        except OSError as e:
-                            print(f"Socket error: {e}")
-                            break
-
-                # Send frame using the new callback mechanism
-                camera.send_frame_over_eth(send_callback)
-            else:
-                response = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nCamera not available"
-                cl.send(response.encode())
-
-        elif path == '/stream':
-            # Send HTTP header for streaming
-            try:
-                header = b"HTTP/1.1 200 OK\r\n"
-                header += b"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
-                header += b"Cache-Control: no-cache\r\n"
-                header += b"\r\n"
-                cl.send(header)
-                print("Stream client connected")
-            except OSError:
-                cl.close()
-                return "CLOSE"
-
-            # Get the W5500 socket number and pass to C for direct streaming
-            sn = cl._wiznet_sn()
-            camera.start_streaming(sn)
-
-            # This will not return
-            return "STREAM"
-
-        else:
-            # 404 for other paths
-            response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n404 Not Found"
-            cl.send(response.encode())
-
-    except Exception as e:
-        print(f"Camera handler error: {e}")
-
-
 def handle_json_request(cl):
     """Handle requests on port 8082 - serve JSON status data or handle LED control"""
     try:
         # Set blocking mode temporarily for recv
-        #cl.setblocking(True)
         cl.settimeout(2.0)
 
         # Read the HTTP request
