@@ -628,7 +628,7 @@ def handle_camera_request_optimized(cl):
         # TEST: Check socket type and attributes
         print(f"Socket type: {type(cl)}")
         print(f"Socket dir: {dir(cl)}")
-        print(f"Has fileno: {hasattr(cl, 'fileno')}")
+        print(f"Has _wiznet_sn: {hasattr(cl, '_wiznet_sn')}")
 
         # Read the HTTP request
         request = cl.recv(1024).decode("utf-8")
@@ -1022,7 +1022,7 @@ Connection: close
                 return "CLOSE"
 
             # Get the W5500 socket number and pass to C for direct streaming
-            sn = cl.fileno()
+            sn = cl._wiznet_sn()
             camera.start_streaming(sn)
 
             # This will not return
