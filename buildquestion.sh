@@ -1,54 +1,47 @@
 #!/bin/bash
 
-# DESCRIPTION variable - specify your text here
-DESCRIPTION=$(cat <<EOF
-# Build Question
+if [ $# -ne 1 ]; then
+    echo "Usage: $0 <input_file>"
+    exit 1
+fi
 
-This is a dummy markdown-like text for the build question script.
+input_file="$1"
+output_file="${input_file%.*}_ai.txt"
 
-## Overview
+if [ ! -f "$input_file" ]; then
+    echo "Input file $input_file not found"
+    exit 1
+fi
 
-The script processes an array of items and generates a buildquestion.txt file.
+# Read description until ---
+description=""
+reading_desc=true
+filelist=()
+while IFS= read -r line; do
+    if [ "$line" = "---" ]; then
+        reading_desc=false
+        continue
+    fi
+    if $reading_desc; then
+        description+="$line\n"
+    else
+        if [[ "$line" == FILELIST:* ]]; then
+            continue
+        fi
+        if [ -n "$line" ]; then
+            filelist+=("$line")
+        fi
+    fi
+done < "$input_file"
 
-## Features
+# Output to file
+echo -e "$description" > "$output_file"
 
-- Outputs description to file
-- Loops through array elements
-- Appends cat commands and contents
-
-## Usage
-
-Run the script with: ./buildquestion.sh
-
-## Array Items
-
-The array contains:
-- FIRST
-- SECOND
-- THIRD
-
-## Output Format
-
-The output includes the description followed by cat commands for each item.
-
-## Notes
-
-Ensure the files in the array exist before running the script.
-
-## End
-
-This concludes the dummy markdown text.
-EOF
-)
-
-# Array of items to process
-array=("FIRST" "SECOND" "THIRD")
-
-# Output to buildquestion.txt
-echo "$DESCRIPTION" > buildquestion.txt
-
-# Loop through the array
-for item in "${array[@]}"; do
-    echo "cat $item" >> buildquestion.txt
-    cat "$item" >> buildquestion.txt
+for file in "${filelist[@]}"; do
+    echo "cat $file" >> "$output_file"
+    if [ -f "$file" ]; then
+        cat "$file" >> "$output_file"
+    else
+        echo "Warning: $file not found" >> "$output_file"
+    fi
 done
