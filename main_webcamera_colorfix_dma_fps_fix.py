@@ -593,6 +593,9 @@ def start_webserver():
                     cl, addr = sock.accept()
                     cl.setblocking(False)  # Make client socket non-blocking too
                     result = None
+                    print('cl')
+                    print(dir(cl))
+                    print('cl vege')
 
                     # Determine which server this is and handle accordingly
                     if sock == s_camera:
@@ -1016,9 +1019,9 @@ Connection: close
                 cl.close()
                 return "CLOSE"
 
-            # Pass the existing client socket to C for direct streaming
-            # The camera will use the socket's fileno to write directly to W5500 buffer
-            camera.start_streaming(cl)
+            # Get the W5500 socket number and pass to C for direct streaming
+            sn = cl._sock.fileno()
+            camera.start_streaming(sn)
 
             # This will not return
             return "STREAM"
