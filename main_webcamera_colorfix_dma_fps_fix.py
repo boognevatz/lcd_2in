@@ -625,6 +625,11 @@ def handle_camera_request_optimized(cl):
         cl.setblocking(True)
         cl.settimeout(2.0)
 
+        # TEST: Check socket type and attributes
+        print(f"Socket type: {type(cl)}")
+        print(f"Socket dir: {dir(cl)}")
+        print(f"Has fileno: {hasattr(cl, 'fileno')}")
+
         # Read the HTTP request
         request = cl.recv(1024).decode("utf-8")
         request_line = request.split("\r\n")[0]
