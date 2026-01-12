@@ -20,14 +20,14 @@ If there any other file you need to look, list the filenames.
 
 FILELIST:
 main_test_accept_now.py
-modules/camera/cam.c
-modules/camera/cam.h
-modules/camera/modcamera.c
-modules/camera/ov5640.c
-modules/camera/picampinos.pio
-modules/camera/micropython.cmake
+micropython/lib/wiznet5k/Ethernet/wizchip_conf.c
+micropython/lib/wiznet5k/Ethernet/wizchip_conf.h
+micropython/lib/wiznet5k/Ethernet/W5500/w5500.c
+micropython/lib/wiznet5k/Ethernet/W5500/w5500.h
 micropython/extmod/network_wiznet5k.c
 micropython/extmod/machine_spi.c
 micropython/extmod/modnetwork.c
 micropython/extmod/modnetwork.h
 micropython/extmod/modsocket.c
+
+
