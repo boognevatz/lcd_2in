@@ -52,12 +52,7 @@ while True:
         print("Client connected from", addr)
         request = cl.recv(1024)  # Read request data
         time.sleep_ms(50)
-        response = b"""\
-HTTP/1.1 200 OK
-Content-Type: text/html
-Content-Length: 69
-Connection: close
-
+        response_body = b"""\
 <!DOCTYPE html>
 <html>
     <head>
@@ -67,7 +62,14 @@ Connection: close
     <body><h1>Hello, world!</h1></body>
 </html>
 """
-        cl.send(response)
+        response_header = b"""\
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Length: """ + str(len(response_body)).encode() + b"""
+Connection: close
+
+"""
+        cl.send(response_header + response_body)
         time.sleep_ms(50)
         cl.close()
     except Exception as e:
