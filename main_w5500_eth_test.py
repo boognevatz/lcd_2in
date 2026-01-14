@@ -51,7 +51,7 @@ while True:
         cl, addr = s.accept()
         print("Client connected from", addr)
         request = cl.recv(1024)  # Read request data
-
+        time.sleep_ms(50)
         response = b"""\
 HTTP/1.1 200 OK
 Content-Type: text/html
@@ -68,6 +68,7 @@ Connection: close
 </html>
 """
         cl.send(response)
+        time.sleep_ms(50)
         cl.close()
     except Exception as e:
         print("Error:", e)
