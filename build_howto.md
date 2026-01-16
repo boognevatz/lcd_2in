@@ -45,11 +45,10 @@ START=$(date +%s); make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 USER_
 
 # Rebuild
 make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 clean
-START=$(date +%s); make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 USER_C_MODULES=../../../modules/micropython.cmake; echo "Build took $(( $(date +%s) - START )) seconds."; echo "Finished at $(date)"
+START=$(date +%s); make -j4 -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 USER_C_MODULES=../../../modules/micropython.cmake; echo "Build took $(( $(date +%s) - START )) seconds."; echo "Finished at $(date)"
 
 ```
-
-
+# For final build, omit the -j4 parameter!
 
 #############################
 ### NOT NEEDED (already in git) ### 
