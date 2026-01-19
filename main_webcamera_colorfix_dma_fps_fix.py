@@ -590,7 +590,7 @@ def start_webserver():
                     result = None
 
                     # Read the HTTP request
-                    request = cl.recv(1024).decode("utf-8")
+                    request = cl.recv(16384).decode("utf-8")
                     request_line = request.split("\r\n")[0]
                     path = request_line.split(" ")[1] if len(request_line.split(" ")) > 1 else "/"
 
@@ -599,9 +599,13 @@ def start_webserver():
                         # Handle JSON request
                         adjusted_path = path[5:] if len(path) > 5 else "/"
                         handle_json_request(cl, adjusted_path)
-                    else:
+                    elif path == "/" or path == "/stream" or path.startswith("/poll"):
                         # Handle camera request
                         result = handle_camera_request_optimized(cl, path)
+                    else:
+                        # 404 for unknown paths
+                        response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n404 Not Found"
+                        cl.send(response.encode())
 
                 except Exception as e:
                     print(f"Error: {e}")
@@ -854,6 +858,7 @@ Connection: close
             html = """HTTP/1.1 200 OK
 Content-Type: text/html
 Connection: close
+Keep-Alive: timeout=0, max=0
 
 <!DOCTYPE html>
 <html>
@@ -969,7 +974,7 @@ Connection: close
             if camera.is_buffer_ready():
                 # Send HTTP header first
                 frame_len = 240 * 320 * 2  # Known size
-                header = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {frame_len}\r\nConnection: close\r\n\r\n"
+                header = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {frame_len}\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
                 cl.send(header.encode())
 
                 # Define callback to send frame data in chunks
@@ -1001,7 +1006,7 @@ Connection: close
                 # Send frame using the new callback mechanism
                 camera.send_frame_over_eth(send_callback)
             else:
-                response = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nCamera not available"
+                response = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\nCamera not available"
                 cl.send(response.encode())
 
         elif path == '/stream':
@@ -1010,10 +1015,12 @@ Connection: close
                 header = b"HTTP/1.1 200 OK\r\n"
                 header += b"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
                 header += b"Cache-Control: no-cache\r\n"
+                header += b"Connection: keep-alive\r\n"
                 header += b"\r\n"
                 cl.send(header)
-                print("Stream client connected")
-            except OSError:
+                print("Stream client connected - header sent")
+            except OSError as e:
+                print(f"Failed to send header: {e}")
                 cl.close()
                 return "CLOSE"
 
@@ -1026,7 +1033,7 @@ Connection: close
 
         else:
             # 404 for other paths
-            response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n404 Not Found"
+            response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n404 Not Found"
             cl.send(response.encode())
 
     except Exception as e:
@@ -1048,13 +1055,13 @@ def handle_json_request(cl, path):
                 if set_head_led_brightness(brightness):
                     response = f'{{"status": "ok", "brightness": {brightness}}}'
                     http_response = (
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
                         + response
                     )
                 else:
                     response = '{"status": "error", "message": "DAC not available"}'
                     http_response = (
-                        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
                         + response
                     )
 
@@ -1062,7 +1069,7 @@ def handle_json_request(cl, path):
             except (ValueError, IndexError):
                 response = '{"status": "error", "message": "Invalid brightness value"}'
                 http_response = (
-                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
                     + response
                 )
                 cl.send(http_response.encode())
@@ -1114,7 +1121,7 @@ def handle_json_request(cl, path):
 
             # Send JSON response
             response = (
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
                 + json_data
             )
             cl.send(response.encode())
@@ -1123,7 +1130,7 @@ def handle_json_request(cl, path):
             # 404 for unknown paths
             response = '{"status": "error", "message": "Not found"}'
             http_response = (
-                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
                 + response
             )
             cl.send(http_response.encode())
@@ -1147,3 +1154,4 @@ if nic.active():
         cleanup()
 else:
     print("ERROR: No network")
+
