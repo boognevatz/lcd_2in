@@ -502,6 +502,11 @@ nic.ifconfig(("172.16.1.1", "255.255.255.0", "172.16.1.1", "8.8.8.8"))
 # Give it a moment to apply settings
 time.sleep_ms(500)
 
+print("Waiting for Ethernet link...")
+while not nic.isconnected():
+    time.sleep(0.1)
+print("Connected. IP address:", nic.ifconfig()[0])
+
 # Check if interface is active and configured
 if nic.active():
     config_net = nic.ifconfig()
