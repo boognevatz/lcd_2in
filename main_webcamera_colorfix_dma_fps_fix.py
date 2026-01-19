@@ -550,36 +550,26 @@ def cleanup():
 # ===== UNIFIED SERVER (SINGLE CORE, NON-BLOCKING) =====
 def start_webserver():
     """Unified server handling both camera and JSON on single core with non-blocking I/O"""
-    # Create socket for camera image on port 8081
-    addr_camera = socket.getaddrinfo("0.0.0.0", 8081)[0][-1]
-    s_camera = socket.socket()
-    #s_camera.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s_camera.bind(addr_camera)
-    s_camera.listen(3)
-    #s_camera.setblocking(False)  # Non-blocking
+    # Create single socket for both camera and JSON on port 8081
+    addr = socket.getaddrinfo("0.0.0.0", 8081)[0][-1]
+    s = socket.socket()
+    #s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(addr)
+    s.listen(5)
+    #s.setblocking(False)  # Non-blocking
 
-    # Create socket for JSON data on port 8082
-    addr_json = socket.getaddrinfo("0.0.0.0", 8082)[0][-1]
-    s_json = socket.socket()
-    #s_json.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s_json.bind(addr_json)
-    s_json.listen(5)
-    #s_json.setblocking(False)  # Non-blocking
-
-    print(f"Camera Server started on http://{config_net[0]}:8081")
-    print(f"Sensor JSON Server started on http://{config_net[0]}:8082")
+    print(f"Unified Server started on http://{config_net[0]}:8081")
     print(
-        f"Test Drum led control on http://{config_net[0]}:8082/headled/10 or http://{config_net[0]}:8082/headled/0"
+        f"Test Drum led control on http://{config_net[0]}:8081/json/headled/10 or http://{config_net[0]}:8081/json/headled/0"
     )
 
     print_memory_stats("After Webserver initialization")
     # Feed watchdog before entering main loop
     wdt.feed()
 
-    # Use select to handle both sockets efficiently
+    # Use select to handle the socket efficiently
     poller = select.poll()
-    poller.register(s_camera, select.POLLIN)
-    poller.register(s_json, select.POLLIN)
+    poller.register(s, select.POLLIN)
 
 
 
@@ -588,7 +578,7 @@ def start_webserver():
             # Feed watchdog to prevent system reset
             wdt.feed()
 
-            # Wait for activity on either socket (short timeout for responsiveness)
+            # Wait for activity on socket (short timeout for responsiveness)
             events = poller.poll(50)  # 50ms timeout
 
             for sock, event in events:
@@ -596,14 +586,22 @@ def start_webserver():
                 try:
                     # Accept connection
                     cl, addr = sock.accept()
-                    #cl.setblocking(False)  # Make client socket non-blocking too
+                    cl.settimeout(2.0)
                     result = None
 
-                    # Determine which server this is and handle accordingly
-                    if sock == s_camera:
-                        result = handle_camera_request_optimized(cl)
-                    elif sock == s_json:
-                        handle_json_request(cl)
+                    # Read the HTTP request
+                    request = cl.recv(1024).decode("utf-8")
+                    request_line = request.split("\r\n")[0]
+                    path = request_line.split(" ")[1] if len(request_line.split(" ")) > 1 else "/"
+
+                    # Route based on path
+                    if path.startswith("/json"):
+                        # Handle JSON request
+                        adjusted_path = path[5:] if len(path) > 5 else "/"
+                        handle_json_request(cl, adjusted_path)
+                    else:
+                        # Handle camera request
+                        result = handle_camera_request_optimized(cl, path)
 
                 except Exception as e:
                     print(f"Error: {e}")
@@ -621,24 +619,17 @@ def start_webserver():
             time.sleep_ms(50)
 
 
-def handle_camera_request_optimized(cl):
-    """Handle requests on port 8081 - optimized for large image transfers"""
+def handle_camera_request_optimized(cl, path):
+    """Handle camera requests - optimized for large image transfers"""
     global active_stream_clients
 
     try:
-        # Set blocking mode temporarily for recv to ensure we get the full request
-        #cl.setblocking(True)
-        cl.settimeout(2.0)
-
         # TEST: Check socket type and attributes
         print(f"Socket type: {type(cl)}")
         print(f"Socket dir: {dir(cl)}")
         print(f"Has _wiznet_sn: {hasattr(cl, '_wiznet_sn')}")
 
-        # Read the HTTP request
-        request = cl.recv(1024).decode("utf-8")
-        request_line = request.split("\r\n")[0]
-        path = request_line.split(" ")[1] if len(request_line.split(" ")) > 1 else "/"
+        # Path is already parsed
 
         if path == "/":
             # Serve HTML page with high-performance streaming AND color correction
@@ -1042,19 +1033,9 @@ Connection: close
         print(f"Camera handler error: {e}")
 
 
-def handle_json_request(cl):
-    """Handle requests on port 8082 - serve JSON status data or handle LED control"""
+def handle_json_request(cl, path):
+    """Handle JSON requests - serve JSON status data or handle LED control"""
     try:
-        # Set blocking mode temporarily for recv
-        #cl.setblocking(True)
-        cl.settimeout(2.0)
-
-        # Read the HTTP request
-        request = cl.recv(1024).decode("utf-8")
-        request_line = request.split("\r\n")[0]
-
-        # Parse the request path
-        path = request_line.split(" ")[1] if len(request_line.split(" ")) > 1 else "/"
 
         # Handle LED brightness control: /headled/{value}
         if path.startswith("/headled/"):
