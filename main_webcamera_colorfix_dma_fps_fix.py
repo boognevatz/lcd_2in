@@ -11,7 +11,7 @@ import gc
 # ===== WATCHDOG TIMER SETUP =====
 # Initialize watchdog timer to prevent system freezes
 # If the system doesn't call wdt.feed() within 8 seconds, it will reset
-wdt = machine.WDT(timeout=8000)  # 8 second timeout
+#wdt = machine.WDT(timeout=8000)  # 8 second timeout
 print("Watchdog initialized with 8s timeout")
 # ================================
 
@@ -48,7 +48,7 @@ def load_config():
 config = load_config()
 
 # Feed watchdog during initialization
-wdt.feed()
+#wdt.feed()
 
 # Main configuration
 HEAD_ID = config.get("headID", 1117)
@@ -107,7 +107,7 @@ except Exception as e:
     dac_ready = False
 
 # Feed watchdog after I2C initialization
-wdt.feed()
+#wdt.feed()
 
 
 def read_adc_channel(channel):
@@ -517,7 +517,7 @@ else:
 print_memory_stats("After network initialization")
 
 # Feed watchdog after network initialization
-wdt.feed()
+#wdt.feed()
 
 # Initialize Camera
 camera_ready = False
@@ -531,7 +531,7 @@ except Exception as e:
     print(f"ERROR: Camera: {e}")
 
 # Feed watchdog after camera initialization
-wdt.feed()
+#wdt.feed()
 
 
 # Cleanup function
@@ -565,7 +565,7 @@ def start_webserver():
 
     print_memory_stats("After Webserver initialization")
     # Feed watchdog before entering main loop
-    wdt.feed()
+    #wdt.feed()
 
     # Use select to handle the socket efficiently
     poller = select.poll()
@@ -576,7 +576,7 @@ def start_webserver():
     while True:
         try:
             # Feed watchdog to prevent system reset
-            wdt.feed()
+            #wdt.feed()
 
             # Wait for activity on socket (short timeout for responsiveness)
             events = poller.poll(50)  # 50ms timeout
@@ -630,7 +630,7 @@ def handle_camera_request_optimized(cl, path):
     try:
         # TEST: Check socket type and attributes
         print(f"Socket type: {type(cl)}")
-        print(f"Socket dir: {dir(cl)}")
+        #print(f"Socket dir: {dir(cl)}")
         print(f"Has _wiznet_sn: {hasattr(cl, '_wiznet_sn')}")
 
         # Path is already parsed
@@ -997,8 +997,8 @@ Keep-Alive: timeout=0, max=0
                             total_sent += bytes_sent
 
                             # Feed watchdog during long image transfer
-                            if total_sent % (chunk_size * 4) == 0:  # Every ~32KB
-                                wdt.feed()
+                            #if total_sent % (chunk_size * 4) == 0:  # Every ~32KB
+                                #wdt.feed()
                         except OSError as e:
                             print(f"Socket error: {e}")
                             break
@@ -1027,6 +1027,8 @@ Keep-Alive: timeout=0, max=0
             # Get the W5500 socket number and pass to C for direct streaming
             sn = cl._wiznet_sn()
             camera.start_streaming(sn)
+            # Never returns, basically an infinite loop
+            camera.streaming_loop()
 
             # This will not return
             return "STREAM"
