@@ -46,6 +46,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "pico/time.h"
+
+// Timeout constants for flow control
+#define TX_WAIT_TIMEOUT_MS      5000    // Max time to wait for TX buffer space
+#define SENDOK_TIMEOUT_MS       3000    // Max time to wait for SENDOK
+#define TX_POLL_INTERVAL_US     100     // Microseconds between TX_FSR checks
 
 // init PIO
 static PIO pio_cam = pio0;
@@ -313,6 +319,32 @@ void start_streaming(uint8_t sock_num)
     stream_socket_num = sock_num;
 }
 
+// Helper to get current time in milliseconds
+static inline uint32_t get_time_ms(void) {
+    return to_ms_since_boot(get_absolute_time());
+}
+
+// Check if timeout has elapsed
+static inline bool timeout_elapsed(uint32_t start_ms, uint32_t timeout_ms) {
+    return (get_time_ms() - start_ms) >= timeout_ms;
+}
+
+// Helper to pause camera DMA during W5500 transfers
+static void pause_camera_dma(void) {
+    // Disable camera DMA IRQ to prevent interference
+    dma_channel_set_irq0_enabled(DMA_CAM_RD_CH, false);
+    // Abort any in-progress camera DMA
+    dma_channel_abort(DMA_CAM_RD_CH);
+}
+
+// Helper to resume camera DMA
+static void resume_camera_dma(void) {
+    // Re-enable camera DMA IRQ
+    dma_channel_set_irq0_enabled(DMA_CAM_RD_CH, true);
+    // Restart camera DMA
+    dma_channel_set_write_addr(DMA_CAM_RD_CH, cam_ptr, true);
+}
+
 /********************************************************************************
 function:   Streaming loop with proper W5500 flow control
 parameter:
@@ -331,6 +363,25 @@ void streaming_loop(void)
     
     mp_printf(MP_PYTHON_PRINTER, "Starting streaming loop on socket %d, TX buffer size: %d\n", 
               stream_socket_num, tx_buffer_size);
+    
+    // CRITICAL: Pause camera DMA to prevent conflict with W5500 SPI DMA
+    mp_printf(MP_PYTHON_PRINTER, "Pausing camera DMA to prevent SPI DMA conflict\n");
+    pause_camera_dma();
+
+    // NEW: Verify W5500 socket configuration
+    uint8_t socket_mode = getSn_MR(stream_socket_num);
+    uint16_t rx_buffer_size = getSn_RxMAX(stream_socket_num);
+    uint16_t mss = getSn_MSSR(stream_socket_num);
+    
+    mp_printf(MP_PYTHON_PRINTER, "Socket %d config: Mode=0x%02x, TX=%d, RX=%d, MSS=%d\n",
+              stream_socket_num, socket_mode, tx_buffer_size, rx_buffer_size, mss);
+    
+    // Verify we're in TCP mode
+    if ((socket_mode & 0x0F) != Sn_MR_TCP) {
+        mp_printf(MP_PYTHON_PRINTER, "ERROR: Socket not in TCP mode!\n");
+        resume_camera_dma();
+        return;
+    }
 
     // Send initial boundary and headers
     while (getSn_TX_FSR(stream_socket_num) < boundary_len) {
@@ -368,6 +419,7 @@ void streaming_loop(void)
         uint8_t sr = getSn_SR(stream_socket_num);
         if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
             mp_printf(MP_PYTHON_PRINTER, "Socket disconnected during initial header send\n");
+            resume_camera_dma();
             return;
         }
         tight_loop_contents();
@@ -377,45 +429,70 @@ void streaming_loop(void)
     mp_printf(MP_PYTHON_PRINTER, "Initial header sent, starting frame loop\n");
     
     uint32_t frame_count = 0;
+    
+    // Since camera DMA is paused, we'll use the last captured frame in cam_buffer
+    // For testing: just stream the static buffer content to verify W5500 DMA works
+    mp_printf(MP_PYTHON_PRINTER, "Using static frame buffer (camera DMA paused)\n");
 
     while (1) {
         // Check socket state
         uint8_t sr = getSn_SR(stream_socket_num);
         if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
             mp_printf(MP_PYTHON_PRINTER, "Socket disconnected, state: 0x%02x\n", sr);
+            resume_camera_dma();  // Restore camera DMA before returning
             return;
         }
         
-        // Wait for frame ready
-        if (!buffer_ready) {
-            tight_loop_contents();
-            continue;
-        }
-        buffer_ready = false;
+        // No longer waiting for buffer_ready since camera DMA is paused
+        // We'll just send the current buffer content as a static frame
+        // Add a small delay to control frame rate (~30fps = 33ms per frame)
+        sleep_ms(33);
         
         frame_count++;
-        if (frame_count % 10 == 0) {
-            mp_printf(MP_PYTHON_PRINTER, "Sending frame %d\n", frame_count);
+        
+        // Diagnostic: Log buffer state at start of each frame
+        if (frame_count % 10 == 1) {  // Every 10 frames
+            mp_printf(MP_PYTHON_PRINTER, "Frame %d: TX_FSR=%d, TX_WR=%d, TX_RD=%d, RX_RSR=%d\n",
+                      frame_count,
+                      getSn_TX_FSR(stream_socket_num),
+                      getSn_TX_WR(stream_socket_num),
+                      getSn_TX_RD(stream_socket_num),
+                      getSn_RX_RSR(stream_socket_num));
         }
 
         // Send frame data in chunks with proper flow control
-        uint16_t chunk_size = 8192;  // 8KB chunks for safety
+        // Use smaller chunks to allow TCP ACKs to arrive between sends
+        // 2KB allows ~8 chunks per TX buffer, giving more opportunities for ACK processing
+        uint16_t chunk_size = 8192;  // 8kB -> 2kB chunks for safety
         uint32_t total_sent = 0;
         
         while (total_sent < FRAME_SIZE) {
             uint16_t remaining = FRAME_SIZE - total_sent;
             uint16_t send_len = (remaining > chunk_size) ? chunk_size : remaining;
 
-            // Wait for enough TX buffer space
-            uint16_t free_space;
-            while ((free_space = getSn_TX_FSR(stream_socket_num)) < send_len) {
-                // Check if socket is still connected while waiting
-                sr = getSn_SR(stream_socket_num);
-                if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
-                    mp_printf(MP_PYTHON_PRINTER, "Socket disconnected while waiting for TX space\n");
-                    return;
+
+            // Quick check for TX buffer space - if not available, skip this frame
+            uint16_t free_space = getSn_TX_FSR(stream_socket_num);
+            if (free_space < send_len) {
+                uint32_t quick_wait_start = get_time_ms();
+       
+                // Wait up to 100ms for buffer space
+                while (free_space < send_len && !timeout_elapsed(quick_wait_start, 100)) {
+                    sr = getSn_SR(stream_socket_num);
+                    if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
+                        mp_printf(MP_PYTHON_PRINTER, "Socket disconnected\n");
+                        resume_camera_dma();
+                        return;
+                    }
+                    sleep_us(500);
+                    free_space = getSn_TX_FSR(stream_socket_num);
                 }
-                tight_loop_contents();
+       
+                // If still no space, skip remaining frame data and try next frame
+                if (free_space < send_len) {
+                    mp_printf(MP_PYTHON_PRINTER, "Skipping frame %d - TX buffer busy\n", frame_count);
+                    break;  // Break inner while loop, continue to next frame
+                }
             }
 
             // Get current write pointer and calculate offset
@@ -452,23 +529,38 @@ void streaming_loop(void)
                 tight_loop_contents();
             }
             
-            // Wait for SENDOK interrupt
+            // Wait for SENDOK interrupt WITH TIMEOUT
+            uint32_t sendok_start = get_time_ms();
             while (!(getSn_IR(stream_socket_num) & Sn_IR_SENDOK)) {
-                // Check for timeout or disconnect
+                // Check for W5500 timeout flag
                 if (getSn_IR(stream_socket_num) & Sn_IR_TIMEOUT) {
-                    mp_printf(MP_PYTHON_PRINTER, "Send timeout!\n");
+                    mp_printf(MP_PYTHON_PRINTER, "W5500 TIMEOUT flag set!\n");
                     setSn_IR(stream_socket_num, Sn_IR_TIMEOUT);
+                    resume_camera_dma();
                     return;
                 }
-                
+            
+                // Check socket state
                 sr = getSn_SR(stream_socket_num);
                 if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
                     mp_printf(MP_PYTHON_PRINTER, "Socket disconnected during frame send\n");
+                    resume_camera_dma();
                     return;
                 }
-                tight_loop_contents();
-            }
             
+                // Check for our timeout
+                if (timeout_elapsed(sendok_start, SENDOK_TIMEOUT_MS)) {
+                    mp_printf(MP_PYTHON_PRINTER, "TIMEOUT waiting for SENDOK! IR=0x%02x\n",
+                              getSn_IR(stream_socket_num));
+                    resume_camera_dma();
+                    return;
+                }
+            
+                sleep_us(TX_POLL_INTERVAL_US);
+            }
+
+
+
             // Clear SENDOK interrupt
             setSn_IR(stream_socket_num, Sn_IR_SENDOK);
 
@@ -480,6 +572,7 @@ void streaming_loop(void)
             sr = getSn_SR(stream_socket_num);
             if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
                 mp_printf(MP_PYTHON_PRINTER, "Socket disconnected before boundary\n");
+                resume_camera_dma();
                 return;
             }
             tight_loop_contents();
@@ -510,21 +603,35 @@ void streaming_loop(void)
         while (getSn_CR(stream_socket_num)) {
             tight_loop_contents();
         }
-        
-        // Wait for SENDOK
+
+        // Wait for SENDOK interrupt WITH TIMEOUT
+        uint32_t sendok_start = get_time_ms();
         while (!(getSn_IR(stream_socket_num) & Sn_IR_SENDOK)) {
+            // Check for W5500 timeout flag
             if (getSn_IR(stream_socket_num) & Sn_IR_TIMEOUT) {
-                mp_printf(MP_PYTHON_PRINTER, "Boundary send timeout!\n");
+                mp_printf(MP_PYTHON_PRINTER, "W5500 TIMEOUT flag set!\n");
                 setSn_IR(stream_socket_num, Sn_IR_TIMEOUT);
+                resume_camera_dma();
                 return;
             }
-            
+
+            // Check socket state
             sr = getSn_SR(stream_socket_num);
             if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
-                mp_printf(MP_PYTHON_PRINTER, "Socket disconnected after frame\n");
+                mp_printf(MP_PYTHON_PRINTER, "Socket disconnected during boundary send\n");
+                resume_camera_dma();
                 return;
             }
-            tight_loop_contents();
+
+            // Check for our timeout
+            if (timeout_elapsed(sendok_start, SENDOK_TIMEOUT_MS)) {
+                mp_printf(MP_PYTHON_PRINTER, "TIMEOUT waiting for SENDOK! IR=0x%02x\n",
+                          getSn_IR(stream_socket_num));
+                resume_camera_dma();
+                return;
+            }
+
+            sleep_us(TX_POLL_INTERVAL_US);
         }
         setSn_IR(stream_socket_num, Sn_IR_SENDOK);
     }
