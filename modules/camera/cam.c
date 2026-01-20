@@ -351,6 +351,12 @@ parameter:
 ********************************************************************************/
 void streaming_loop(void)
 {
+    // CRITICAL: Pause camera DMA FIRST, before any SPI or printf operations
+    // This prevents DMA conflicts between camera and W5500/USB
+    pause_camera_dma();
+    
+    mp_printf(MP_PYTHON_PRINTER, "Camera DMA paused, starting streaming setup\n");
+    
     // Send multipart boundary and headers first
     const char *boundary_header = "--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
     uint16_t boundary_len = strlen(boundary_header);
@@ -361,12 +367,8 @@ void streaming_loop(void)
     uint16_t tx_buffer_size = getSn_TxMAX(stream_socket_num);
     uint16_t tx_buffer_mask = tx_buffer_size - 1;  // For wraparound
     
-    mp_printf(MP_PYTHON_PRINTER, "Starting streaming loop on socket %d, TX buffer size: %d\n", 
+    mp_printf(MP_PYTHON_PRINTER, "Streaming on socket %d, TX buffer: %d bytes\n", 
               stream_socket_num, tx_buffer_size);
-    
-    // CRITICAL: Pause camera DMA to prevent conflict with W5500 SPI DMA
-    mp_printf(MP_PYTHON_PRINTER, "Pausing camera DMA to prevent SPI DMA conflict\n");
-    pause_camera_dma();
 
     // NEW: Verify W5500 socket configuration
     uint8_t socket_mode = getSn_MR(stream_socket_num);
