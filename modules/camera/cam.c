@@ -314,7 +314,7 @@ void start_streaming(uint8_t sock_num)
 }
 
 /********************************************************************************
-function:   Streaming loop (event loop style, no threads)
+function:   Streaming loop with proper W5500 flow control
 parameter:
 ********************************************************************************/
 void streaming_loop(void)
@@ -322,67 +322,212 @@ void streaming_loop(void)
     // Send multipart boundary and headers first
     const char *boundary_header = "--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
     uint16_t boundary_len = strlen(boundary_header);
+    const char *frame_boundary = "\r\n--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
+    uint16_t frame_boundary_len = strlen(frame_boundary);
+    
+    // Get TX buffer size (should be 16384 bytes)
+    uint16_t tx_buffer_size = getSn_TxMAX(stream_socket_num);
+    uint16_t tx_buffer_mask = tx_buffer_size - 1;  // For wraparound
+    
+    mp_printf(MP_PYTHON_PRINTER, "Starting streaming loop on socket %d, TX buffer size: %d\n", 
+              stream_socket_num, tx_buffer_size);
 
-    // Wait for buffer space
+    // Send initial boundary and headers
     while (getSn_TX_FSR(stream_socket_num) < boundary_len) {
-        // Spin wait
+        tight_loop_contents();
     }
-
+    
     uint16_t wr = getSn_TX_WR(stream_socket_num);
-    uint32_t addrsel = ((uint32_t)wr << 8) + (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
-    WIZCHIP_WRITE_BUF(addrsel, (uint8_t*)boundary_header, boundary_len);
+    uint16_t offset = wr & tx_buffer_mask;
+    
+    // Handle wraparound for boundary header
+    if (offset + boundary_len > tx_buffer_size) {
+        uint16_t first_part = tx_buffer_size - offset;
+        uint16_t second_part = boundary_len - first_part;
+        
+        uint32_t addrsel = ((uint32_t)offset << 8) + (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
+        WIZCHIP_WRITE_BUF(addrsel, (uint8_t*)boundary_header, first_part);
+        
+        addrsel = (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
+        WIZCHIP_WRITE_BUF(addrsel, (uint8_t*)boundary_header + first_part, second_part);
+    } else {
+        uint32_t addrsel = ((uint32_t)offset << 8) + (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
+        WIZCHIP_WRITE_BUF(addrsel, (uint8_t*)boundary_header, boundary_len);
+    }
+    
     setSn_TX_WR(stream_socket_num, (uint16_t)(wr + boundary_len));
     setSn_CR(stream_socket_num, Sn_CR_SEND);
+    
+    // Wait for SEND command to complete
+    while (getSn_CR(stream_socket_num)) {
+        tight_loop_contents();
+    }
+    
+    // Wait for SENDOK
+    while (!(getSn_IR(stream_socket_num) & Sn_IR_SENDOK)) {
+        uint8_t sr = getSn_SR(stream_socket_num);
+        if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
+            mp_printf(MP_PYTHON_PRINTER, "Socket disconnected during initial header send\n");
+            return;
+        }
+        tight_loop_contents();
+    }
+    setSn_IR(stream_socket_num, Sn_IR_SENDOK);
+
+    mp_printf(MP_PYTHON_PRINTER, "Initial header sent, starting frame loop\n");
+    
+    uint32_t frame_count = 0;
 
     while (1) {
+        // Check socket state
+        uint8_t sr = getSn_SR(stream_socket_num);
+        if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
+            mp_printf(MP_PYTHON_PRINTER, "Socket disconnected, state: 0x%02x\n", sr);
+            return;
+        }
+        
         // Wait for frame ready
         if (!buffer_ready) {
-            continue;  // Busy wait, or optionally sleep a few microseconds
+            tight_loop_contents();
+            continue;
         }
-        buffer_ready = false;  // Reset flag
+        buffer_ready = false;
+        
+        frame_count++;
+        if (frame_count % 10 == 0) {
+            mp_printf(MP_PYTHON_PRINTER, "Sending frame %d\n", frame_count);
+        }
 
-        // Send frame data in chunks
-        uint16_t chunk_size = 16384;  // 16KB chunks (fits in W5500 buffer)
+        // Send frame data in chunks with proper flow control
+        uint16_t chunk_size = 8192;  // 8KB chunks for safety
         uint32_t total_sent = 0;
+        
         while (total_sent < FRAME_SIZE) {
-            uint16_t send_len = (FRAME_SIZE - total_sent > chunk_size) ? chunk_size : (FRAME_SIZE - total_sent);
+            uint16_t remaining = FRAME_SIZE - total_sent;
+            uint16_t send_len = (remaining > chunk_size) ? chunk_size : remaining;
 
             // Wait for enough TX buffer space
-            while (getSn_TX_FSR(stream_socket_num) < send_len) {
-                // Spin wait for buffer space
+            uint16_t free_space;
+            while ((free_space = getSn_TX_FSR(stream_socket_num)) < send_len) {
+                // Check if socket is still connected while waiting
+                sr = getSn_SR(stream_socket_num);
+                if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
+                    mp_printf(MP_PYTHON_PRINTER, "Socket disconnected while waiting for TX space\n");
+                    return;
+                }
+                tight_loop_contents();
             }
 
-            // Get TX buffer write pointer
-            uint16_t wr = getSn_TX_WR(stream_socket_num);
-
-            // Calculate buffer address for direct write
-            uint32_t addrsel = ((uint32_t)wr << 8) + (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
-
-            // Write data directly to TX buffer
-            WIZCHIP_WRITE_BUF(addrsel, cam_ptr + total_sent, send_len);
+            // Get current write pointer and calculate offset
+            wr = getSn_TX_WR(stream_socket_num);
+            offset = wr & tx_buffer_mask;
+            
+            // Handle buffer wraparound
+            if (offset + send_len > tx_buffer_size) {
+                // Split transfer across buffer boundary
+                uint16_t first_part = tx_buffer_size - offset;
+                uint16_t second_part = send_len - first_part;
+                
+                // Write first part (to end of buffer)
+                uint32_t addrsel = ((uint32_t)offset << 8) + (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
+                WIZCHIP_WRITE_BUF(addrsel, cam_ptr + total_sent, first_part);
+                
+                // Write second part (from start of buffer)
+                addrsel = (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
+                WIZCHIP_WRITE_BUF(addrsel, cam_ptr + total_sent + first_part, second_part);
+            } else {
+                // No wraparound needed
+                uint32_t addrsel = ((uint32_t)offset << 8) + (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
+                WIZCHIP_WRITE_BUF(addrsel, cam_ptr + total_sent, send_len);
+            }
 
             // Update write pointer
             setSn_TX_WR(stream_socket_num, (uint16_t)(wr + send_len));
 
             // Issue SEND command
             setSn_CR(stream_socket_num, Sn_CR_SEND);
+            
+            // Wait for SEND command to complete
+            while (getSn_CR(stream_socket_num)) {
+                tight_loop_contents();
+            }
+            
+            // Wait for SENDOK interrupt
+            while (!(getSn_IR(stream_socket_num) & Sn_IR_SENDOK)) {
+                // Check for timeout or disconnect
+                if (getSn_IR(stream_socket_num) & Sn_IR_TIMEOUT) {
+                    mp_printf(MP_PYTHON_PRINTER, "Send timeout!\n");
+                    setSn_IR(stream_socket_num, Sn_IR_TIMEOUT);
+                    return;
+                }
+                
+                sr = getSn_SR(stream_socket_num);
+                if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
+                    mp_printf(MP_PYTHON_PRINTER, "Socket disconnected during frame send\n");
+                    return;
+                }
+                tight_loop_contents();
+            }
+            
+            // Clear SENDOK interrupt
+            setSn_IR(stream_socket_num, Sn_IR_SENDOK);
 
             total_sent += send_len;
         }
 
         // Send boundary for next frame
-        const char *frame_boundary = "\r\n--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
-        uint16_t frame_boundary_len = strlen(frame_boundary);
-
-        // Wait for buffer space
         while (getSn_TX_FSR(stream_socket_num) < frame_boundary_len) {
-            // Spin wait
+            sr = getSn_SR(stream_socket_num);
+            if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
+                mp_printf(MP_PYTHON_PRINTER, "Socket disconnected before boundary\n");
+                return;
+            }
+            tight_loop_contents();
         }
 
         wr = getSn_TX_WR(stream_socket_num);
-        addrsel = ((uint32_t)wr << 8) + (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
-        WIZCHIP_WRITE_BUF(addrsel, (uint8_t*)frame_boundary, frame_boundary_len);
+        offset = wr & tx_buffer_mask;
+        
+        // Handle wraparound for frame boundary
+        if (offset + frame_boundary_len > tx_buffer_size) {
+            uint16_t first_part = tx_buffer_size - offset;
+            uint16_t second_part = frame_boundary_len - first_part;
+            
+            uint32_t addrsel = ((uint32_t)offset << 8) + (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
+            WIZCHIP_WRITE_BUF(addrsel, (uint8_t*)frame_boundary, first_part);
+            
+            addrsel = (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
+            WIZCHIP_WRITE_BUF(addrsel, (uint8_t*)frame_boundary + first_part, second_part);
+        } else {
+            uint32_t addrsel = ((uint32_t)offset << 8) + (WIZCHIP_TXBUF_BLOCK(stream_socket_num) << 3);
+            WIZCHIP_WRITE_BUF(addrsel, (uint8_t*)frame_boundary, frame_boundary_len);
+        }
+        
         setSn_TX_WR(stream_socket_num, (uint16_t)(wr + frame_boundary_len));
         setSn_CR(stream_socket_num, Sn_CR_SEND);
+        
+        // Wait for SEND command to complete
+        while (getSn_CR(stream_socket_num)) {
+            tight_loop_contents();
+        }
+        
+        // Wait for SENDOK
+        while (!(getSn_IR(stream_socket_num) & Sn_IR_SENDOK)) {
+            if (getSn_IR(stream_socket_num) & Sn_IR_TIMEOUT) {
+                mp_printf(MP_PYTHON_PRINTER, "Boundary send timeout!\n");
+                setSn_IR(stream_socket_num, Sn_IR_TIMEOUT);
+                return;
+            }
+            
+            sr = getSn_SR(stream_socket_num);
+            if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
+                mp_printf(MP_PYTHON_PRINTER, "Socket disconnected after frame\n");
+                return;
+            }
+            tight_loop_contents();
+        }
+        setSn_IR(stream_socket_num, Sn_IR_SENDOK);
     }
 }
+
+
