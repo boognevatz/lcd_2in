@@ -1,0 +1,5518 @@
+# Actual problem
+
+Take the main_test04_svg_50kb.py, it is the micropython starting application, 
+study it thoroughly.
+Take the `micropython/extmod/network_wiznet5k.c`, study it from at least 3 different angles. 
+
+The main problem is the second request makes the micropython freeze.
+The w5500 chip do not freeze, as it responds to ping (icmp) requests, 
+however any real request (http /get) results in NS_ERROR_CONNECTION_REFUSED.
+
+The first request is fine, it returns data, the data is not corrupted.
+But when the second connection happens
+it can not read the actual data and it freezes.
+
+The two request is identical, also results the same socket state transitions:
+(listen, established, close_wait, listen, established (freeze))
+Also an important consideration:
+with lwIP path, there is no freeze. Just it is slow (cpu intensive packet choping).
+
+The socket close and reopen happens in python land (before was in C land), 
+but still the exact same problem.
+
+Please be  aware, the w5500 is a heavily modified driver, it does not use
+lwIP, rather hardware tcp/ip. And w5500 uses a single 16kB RX 16kB TX on
+socket  0, it is a single connection client-server architecture (the mcu,
+ie. the  w550 is the server, and the client is a webbrowser).
+
+Do not take any files from the internet. Everything is here included.
+
+# Your job
+
+Still we need to figure out why the freezing can happen.
+My hunch is some C variable points to old memory location, and simply freezes
+the micropython.
+
+Compare the two request logs, especially these two line:
+1. request: 
+[W5500] after MP_THREAD_GIL_EXIT, before WIZCHIP_EXPORT(recv): recv=10030659, sn=0, buf=20033180, len=8192
+
+2. request:
+[W5500] after MP_THREAD_GIL_EXIT, before WIZCHIP_EXPORT(recv): recv=10030659, sn=0, buf=20035220, len=8192
+
+This is the programcode:
+
+      DEBUG_PRINT("after MP_THREAD_GIL_EXIT, before WIZCHIP_EXPORT(recv): recv=%p, sn=%u, buf=%p, len=%u
+", 
+                  WIZCHIP_EXPORT(recv), sn, buf, (unsigned)len);
+
+      mp_hal_delay_ms(50);
+      mp_int_t ret = WIZCHIP_EXPORT(recv)(sn, buf, len);
+
+
+Is it alright? Why the recv is the same? And why the buf is different?
+
+
+cat main_test04_svg_50kb.py
+import machine
+import network
+import socket
+import time
+import gc
+
+# W5500 SPI pin configuration (matching working echo server):
+# GPIO 16 - MISO
+# GPIO 17 - CS (SCSN)
+# GPIO 18 - SCK (SCLK)
+# GPIO 19 - MOSI
+# GPIO 20 - RST (RSTN)
+
+cs = machine.Pin(17, machine.Pin.OUT)
+rst = machine.Pin(20, machine.Pin.OUT)
+cs.value(1)
+rst.value(0)
+time.sleep_ms(100)
+rst.value(1)
+time.sleep_ms(500)
+
+spi = machine.SPI(0, baudrate=20000000, polarity=0, phase=0,
+                  sck=machine.Pin(18), mosi=machine.Pin(19), miso=machine.Pin(16))
+
+# Define static IP configuration
+ip = '172.16.1.1'
+subnet = '255.255.255.0'
+gateway = '172.16.1.1'
+dns = '8.8.8.8'
+
+# Initialize W5500
+nic = network.WIZNET5K(spi, cs, rst)
+nic.active(True)
+nic.ifconfig((ip, subnet, gateway, dns))
+time.sleep_ms(1000)
+
+# Wait for link
+print("Waiting for Ethernet link...")
+while not nic.isconnected():
+    time.sleep(0.1)
+print("Connected. IP address:", nic.ifconfig()[0])
+
+# Socket will be created in the main loop
+print(f"Server will listen on {nic.ifconfig()[0]}:80")
+
+
+def generate_small_html_response():
+    """Generate HTML response just a small once."""
+    
+    html_content = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>W5500 Large Payload Test</title>
+    <link rel="icon" href="data:,">
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 20px; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+        }
+        .container { 
+            background: white; 
+            padding: 30px; 
+            border-radius: 10px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        h1 { 
+            color: #2c3e50; 
+            text-align: center; 
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>W5500 Small Payload Test Page</h1>
+        
+        
+        <div class="status">
+            <h2>System Status</h2>
+            <p><strong>Server:</strong> W5500 Ethernet Controller</p>
+            <p><strong>Payload Size:</strong> """
+    
+    # Add dynamic content
+    gc.collect()
+    free_mem = gc.mem_free()
+    alloc_mem = gc.mem_alloc()
+    
+    html_content += f"{len(html_content.encode())} bytes and growing</p>"
+    html_content += f"<p><strong>Free Memory:</strong> {free_mem} bytes</p>"
+    html_content += f"<p><strong>Allocated Memory:</strong> {alloc_mem} bytes</p>"
+    html_content += f"<p><strong>Timestamp:</strong> {time.ticks_ms()}</p>"
+    
+    html_content += """
+        </div>
+
+        <div class="metrics">
+            <div class="metric-card">
+                <div class="metric-value">1500+</div>
+                <div>Bytes Payload</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">W5500</div>
+                <div>Ethernet Chip</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">TCP/IP</div>
+                <div>Protocol Stack</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">Fragmented</div>
+                <div>Packet Transfer</div>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>"""
+
+    return html_content.encode()
+
+
+def generate_large_html_response():
+    """Generate HTML response >1500 bytes with meaningful content"""
+    
+    # Large content template with semantic structure and inline styling
+    html_content = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>W5500 Large Payload Test</title>
+    <link rel="icon" href="data:,">
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 20px; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+        }
+        .container { 
+            background: white; 
+            padding: 30px; 
+            border-radius: 10px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        h1 { 
+            color: #2c3e50; 
+            text-align: center; 
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+        .status { 
+            background: #ecf0f1; 
+            padding: 15px; 
+            border-radius: 5px; 
+            margin: 20px 0;
+            border-left: 5px solid #3498db;
+        }
+        .metrics { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+            gap: 20px; 
+            margin: 20px 0;
+        }
+        .metric-card { 
+            background: #f8f9fa; 
+            padding: 15px; 
+            border-radius: 8px; 
+            border: 1px solid #dee2e6;
+            text-align: center;
+        }
+        .metric-value { 
+            font-size: 24px; 
+            font-weight: bold; 
+            color: #3498db;
+        }
+        .footer { 
+            text-align: center; 
+            margin-top: 30px; 
+            padding-top: 20px;
+            border-top: 1px solid #bdc3c7;
+            color: #7f8c8d;
+        }
+        .tech-info {
+            background: #2c3e50;
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .tech-info h3 {
+            color: #3498db;
+            margin-top: 0;
+        }
+        .svg-display {
+            text-align: center;
+            margin: 20px 0;
+        }
+        .svg-display img {
+            border: 2px solid #3498db;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>W5500 Large Payload Test Page</h1>
+        
+        <div class="svg-display">
+            <h2>Rose SVG (50kB+)</h2>
+            <img src="/svg" width="300" height="300" alt="Detailed Rose SVG">
+        </div>
+        
+        <div class="status">
+            <h2>System Status</h2>
+            <p><strong>Server:</strong> W5500 Ethernet Controller</p>
+            <p><strong>Payload Size:</strong> """
+    
+    # Add dynamic content
+    gc.collect()
+    free_mem = gc.mem_free()
+    alloc_mem = gc.mem_alloc()
+    
+    html_content += f"{len(html_content.encode())} bytes and growing</p>"
+    html_content += f"<p><strong>Free Memory:</strong> {free_mem} bytes</p>"
+    html_content += f"<p><strong>Allocated Memory:</strong> {alloc_mem} bytes</p>"
+    html_content += f"<p><strong>Timestamp:</strong> {time.ticks_ms()}</p>"
+    
+    html_content += """
+        </div>
+
+        <div class="metrics">
+            <div class="metric-card">
+                <div class="metric-value">1500+</div>
+                <div>Bytes Payload</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">W5500</div>
+                <div>Ethernet Chip</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">TCP/IP</div>
+                <div>Protocol Stack</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">Fragmented</div>
+                <div>Packet Transfer</div>
+            </div>
+        </div>
+
+        <div class="tech-info">
+            <h3>Technical Information</h3>
+            <p>This page demonstrates the W5500 Ethernet controller's ability to handle HTTP responses larger than the standard Ethernet MTU (Maximum Transmission Unit) of 1500 bytes. The content you're reading right now is specifically designed to exceed this threshold, forcing proper TCP packet fragmentation and reassembly.</p>
+            
+            <p><strong>Key Features Tested:</strong></p>
+            <ul>
+                <li>Packet fragmentation handling by W5500 hardware</li>
+                <li>TCP flow control and buffer management</li>
+                <li>Large payload transmission over Ethernet</li>
+                <li>Memory management in MicroPython</li>
+                <li>HTTP protocol compliance for large responses</li>
+                <li>Serving large SVG graphics</li>
+            </ul>
+            
+            <p><strong>Performance Metrics:</strong></p>
+            <ul>
+                <li>Response generation time: < 10ms</li>
+                <li>Network transmission: Variable based on MTU</li>
+                <li>Memory overhead: ~20% of payload size</li>
+                <li>CPU utilization: Minimal during transmission</li>
+                <li>SVG size: 50kB+ for detailed graphics</li>
+            </ul>
+        </div>
+
+        <div style="background: #e8f5e8; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <h3 style="color: #27ae60; margin-top: 0;">Success Indicators</h3>
+            <p>If you can read this complete page without loading errors, it means:</p>
+            <ol>
+                <li>The W5500 successfully fragmented the large response</li>
+                <li>TCP reassembly worked correctly on the client side</li>
+                <li>HTTP headers were processed properly</li>
+                <li>Content-Length header matched actual payload</li>
+                <li>Connection was handled gracefully</li>
+                <li>The SVG loads and displays correctly</li>
+            </ol>
+        </div>
+
+        <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 5px solid #ffc107;">
+            <h3 style="color: #856404; margin-top: 0;">Debug Information</h3>
+            <p>This response contains multiple paragraphs, inline CSS styling, semantic HTML structure, and comprehensive technical documentation to ensure it exceeds the 1500-byte Ethernet MTU threshold. The content is intentionally detailed to test the fragmentation capabilities of the W5500 Ethernet controller and the underlying TCP/IP stack implementation. Additionally, a large SVG graphic is served at /svg endpoint.</p>
+        </div>
+
+        <div class="footer">
+            <p><em>Generated by W5500 Large Payload Test Server</em></p>
+            <p><small>Testing Ethernet MTU fragmentation and reassembly capabilities</small></p>
+        </div>
+    </div>
+</body>
+</html>"""
+
+    return html_content.encode()
+
+def generate_svg_response():
+    """Generate a large SVG response >50kB with a detailed rose graphic"""
+    svg_content = '<?xml version="1.0" encoding="UTF-8"?>\n<svg width="300" height="300" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg">\n'
+    
+    # Background
+    svg_content += '<rect width="300" height="300" fill="#f9f9f9"/>\n'
+    
+    # Stem
+    svg_content += '<path d="M 150 250 L 150 180" stroke="#228B22" stroke-width="4" fill="none"/>\n'
+    
+    # Leaves
+    svg_content += '<ellipse cx="130" cy="220" rx="15" ry="8" fill="#32CD32" transform="rotate(-30 130 220)"/>\n'
+    svg_content += '<ellipse cx="170" cy="210" rx="15" ry="8" fill="#32CD32" transform="rotate(30 170 210)"/>\n'
+    
+    # Petal template (detailed curve)
+    petal_base = '<path d="M 150 150 Q 165 135 180 150 Q 195 165 180 180 Q 165 195 150 180 Q 135 165 150 150" fill="#FF69B4" stroke="#DC143C" stroke-width="1"/>\n'
+    
+    # Generate many petals with variations to create a detailed rose (aiming for >50kB)
+    for layer in range(15):  # 5 layers
+        for petal in range(8):  # 8 petals per layer
+            angle = petal * 45 + layer * 10  # Slight rotation per layer
+            scale = 1 - layer * 0.1  # Smaller petals in outer layers
+            x_offset = layer * 5
+            y_offset = layer * 5
+            svg_content += f'<g transform="translate({x_offset},{y_offset}) rotate({angle} 150 150) scale({scale})">\n{petal_base}</g>\n'
+    
+    # Add additional detail elements to increase size
+    for detail in range(200):  # Add 200 small detail circles
+        x = 100 + (detail % 20) * 5
+        y = 100 + (detail // 20) * 5
+        svg_content += f'<circle cx="{x}" cy="{y}" r="0.5" fill="#FF1493" opacity="0.7"/>\n'
+    
+    # Add thorn details
+    for thorn in range(10):
+        y_pos = 180 + thorn * 10
+        svg_content += f'<polygon points="148,{y_pos} 152,{y_pos} 150,{y_pos+5}" fill="#8B4513"/>\n'
+    
+    # Add more detailed petals with more complex paths
+    complex_petal = '<path d="M 150 150 C 160 140 175 145 180 155 C 185 165 180 175 170 180 C 160 185 155 180 150 175 C 145 170 140 165 145 155 C 150 145 150 150 150 150" fill="#FFB6C1" stroke="#FF6347" stroke-width="1"/>\n'
+    
+    for extra in range(50):  # Add 50 complex petals
+        angle = extra * 7.2  # Even distribution
+        scale = 0.8 + (extra % 5) * 0.05
+        svg_content += f'<g transform="rotate({angle} 150 150) scale({scale})">\n{complex_petal}</g>\n'
+    
+    svg_content += '</svg>'
+    
+    return svg_content.encode()
+
+def create_server_socket():
+    """Create, bind and listen on a new server socket"""
+    server = socket.socket()
+    server.bind(("0.0.0.0", 80))
+    server.listen(5)
+    print(f"[MAIN] Server socket created and listening on port 80")
+    return server
+
+# Initial server socket
+s = create_server_socket()
+
+
+while True:
+    try:
+        print("[MAIN] ====== WAITING FOR CONNECTION ======")
+        cl, addr = s.accept()
+        print(f"[MAIN] accept() returned, addr={addr}")
+       
+        request = cl.recv(8192)
+        print(f"[MAIN] recv() returned {len(request)} bytes")
+
+        request_str = request.decode()
+        print(f"[MAIN] Request decoded, length={len(request_str)}")
+
+        request_lines = request_str.split('\r\n')
+        print(f"[MAIN] Request split into {len(request_lines)} lines")
+
+        request_line = request_lines[0]
+        print(f"[MAIN] First line: {request_line[:50]}...")
+
+        parts = request_line.split()
+        print(f"[MAIN] Split into {len(parts)} parts")
+
+        if len(parts) >= 2:
+            method, path = parts[0], parts[1]
+            print(f"[MAIN] Parsed: method={method}, path={path}")
+        else:
+            path = '/'
+            print("[MAIN] Using default path=/")
+
+        print(f"[MAIN] Request path: {path}")
+
+        # Generate response
+        if path == '/svg':
+            print("[MAIN] Calling generate_svg_response()")
+            response_body = generate_svg_response()
+            print(f"[MAIN] SVG generated, size={len(response_body)}")
+            content_type = 'image/svg+xml'
+        elif path == '/1':
+            print("[MAIN] Calling generate_small_html_response()")
+            response_body = generate_small_html_response()
+            print(f"[MAIN] HTML small generated, size={len(response_body)}")
+            content_type = 'text/html; charset=UTF-8'
+        else:
+            print("[MAIN] Calling generate_large_html_response()")
+            response_body = generate_large_html_response()
+            print(f"[MAIN] HTML generated, size={len(response_body)}")
+            content_type = 'text/html; charset=UTF-8'
+        
+        response_start = time.ticks_ms()
+        response_time = time.ticks_diff(time.ticks_ms(), response_start)
+            
+        # Create HTTP headers
+        response_header = b'HTTP/1.1 200 OK\r\nContent-Type: ' + content_type.encode() + b'\r\nContent-Length: ' + str(len(response_body)).encode() + b'\r\nConnection: close\r\nCache-Control: no-cache\r\nServer: W5500-Large-Payload-Test/1.0\r\n\r\n'
+            
+        full_response = response_header + response_body
+        print(f"Full response size: {len(full_response)} bytes (headers: {len(response_header)}, body: {len(response_body)})")
+        print(f"Response generation time: {response_time}ms")
+        print("[MAIN] cl.send() is about to be executed")
+        cl.send(full_response)
+
+        print("[MAIN] Calling cl.close()")
+        cl.close()
+        print("[MAIN] close() returned successfully")
+
+        # CRITICAL: Close the server socket and create a new one
+        # The C driver no longer auto-re-listens, so Python must handle this
+        print("[MAIN] Closing server socket and creating new one. ..")
+        s.close()
+        time.sleep_ms(100)  # Give W5500 time to fully close
+        gc.collect()  # Free memory from old socket
+        s = create_server_socket()
+        print("[MAIN] New server socket ready")
+
+
+    except Exception as e:
+        print("Error:", e)
+         # Try to recover by creating a new server socket
+        try:
+            s.close()
+        except Exception as _:
+            pass
+        time.sleep_ms(500)
+        gc.collect()
+        s = create_server_socket()
+
+
+
+
+
+
+cat micropython/extmod/network_wiznet5k.c
+/*
+ * This file is part of the MicroPython project, http://micropython.org/
+ *
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2014 Damien P. George
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
+/*
+ * CLAUDE FIX NOTES:
+ * This is a corrected version of network_wiznet5k.c with DMA circular buffer
+ * support.
+ *
+ * BUGS FIXED:
+ * 1. w5500_dma_write_async now properly follows W5500 SPI protocol:
+ *    - Asserts CS before transfer
+ *    - Sends 3-byte address/control header
+ *    - Performs DMA transfer
+ *    - Waits for completion
+ *    - Disables SPI DMA mode
+ *    - Deasserts CS
+ *
+ * 2. wiznet5k_socket_send now waits for transfer completion (synchronous)
+ *    - No longer returns immediately for async transfers
+ *    - Properly reports errors back to caller
+ *
+ * 3. DMA channel initialization moved earlier in init sequence
+ *    - dma_tx_chan claimed before any SPI operations that might use burst mode
+ *
+ * 4. Proper SPI DMA mode cleanup
+ *    - dmacr register properly cleared after each DMA operation
+ */
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "py/mperrno.h"
+#include "py/mphal.h"
+#include "py/runtime.h"
+#include "py/stream.h"
+
+// RP2-specific: needed for SPI DMA burst (W5500, no lwIP)
+#include "hardware/dma.h"
+#include "hardware/spi.h"
+
+#if MICROPY_PY_NETWORK_WIZNET5K
+
+#include "drivers/bus/spi.h"
+#include "extmod/modmachine.h"
+#include "extmod/modnetwork.h"
+#include "extmod/virtpin.h"
+#include "modmachine.h"
+#include "shared/netutils/netutils.h"
+
+#include "lib/wiznet5k/Ethernet/wizchip_conf.h"
+
+// The WIZNET5K module supports two usage modes:
+// * Raw ethernet transport with LwIP integrated in micropython
+// * Provided TCP Stack on controller presented as modnetwork / socket interface
+
+#define WIZNET5K_WITH_LWIP_STACK (MICROPY_PY_LWIP)
+#define WIZNET5K_PROVIDED_STACK (!MICROPY_PY_LWIP)
+
+// Minimal local mirror of rp2 machine.SPI object (needed for DMA burst in
+// provided stack)
+typedef struct _machine_spi_obj_t {
+  mp_obj_base_t base;
+  spi_inst_t *spi_inst;
+} machine_spi_obj_t;
+
+#if WIZNET5K_WITH_LWIP_STACK
+// Uses LwIP for TCP Stack with Wiznet in MACRAW mode
+
+#include "hardware/dma.h"
+#include "lib/wiznet5k/Ethernet/wizchip_conf.h"
+#include "shared/netutils/netutils.h"
+
+#include "lib/wiznet5k/Ethernet/socket.h"
+#include "lwip/apps/mdns.h"
+#include "lwip/dhcp.h"
+#include "lwip/dns.h"
+#include "lwip/err.h"
+#include "lwip/ethip6.h"
+#include "netif/etharp.h"
+
+#define TRACE_ETH_TX (0x0002)
+#define TRACE_ETH_RX (0x0004)
+
+#else // WIZNET5K_PROVIDED_STACK
+// Uses TCP Stack provided in Wiznet controller
+
+#include "lib/wiznet5k/Ethernet/socket.h"
+#include "lib/wiznet5k/Internet/DHCP/dhcp.h"
+#include "lib/wiznet5k/Internet/DNS/dns.h"
+
+#endif
+
+extern const mp_obj_type_t mod_network_nic_type_wiznet5k;
+
+#ifndef printf
+#define printf(...) mp_printf(MP_PYTHON_PRINTER, __VA_ARGS__)
+#endif
+
+#ifndef MICROPY_HW_WIZNET_SPI_BAUDRATE
+#define MICROPY_HW_WIZNET_SPI_BAUDRATE (2000000)
+#endif
+
+#ifndef WIZCHIP_SREG_ADDR
+#if (_WIZCHIP_ == 5500)
+#define WIZCHIP_SREG_ADDR(sn, addr)                                            \
+  (_W5500_IO_BASE_ + (addr << 8) + (WIZCHIP_SREG_BLOCK(sn) << 3))
+#else
+#define WIZCHIP_SREG_ADDR(sn, addr)                                            \
+  (_WIZCHIP_IO_BASE_ + WIZCHIP_SREG_BLOCK(sn) + (addr))
+#endif
+#endif
+
+// ===== DEBUG CONFIGURATION =====
+#define W5500_DEBUG 1 // Set to 1 to enable debug prints
+
+#if W5500_DEBUG
+#define DEBUG_PRINT(...) mp_printf(MP_PYTHON_PRINTER, "[W5500] " __VA_ARGS__)
+#else
+#define DEBUG_PRINT(...)
+#endif
+
+// ===== W5500 SPI SNIFFING CONFIGURATION (Step 1.1) =====
+#ifndef W5500_SPI_DEBUG
+#define W5500_SPI_DEBUG 0 // Set to 1 to enable SPI sniffing, 0 to disable
+#endif
+
+// ===== W5500 RAW SPI BYTE LOGGING =====
+#ifndef W5500_SPI_RAW_LOG
+#define W5500_SPI_RAW_LOG 0 // Set to 1 to enable raw SPI byte logging
+#endif
+
+static const char *sn_sr_str(uint8_t state) {
+  switch (state) {
+  case 0x00:
+    return "CLOSED";
+  case 0x13:
+    return "INIT";
+  case 0x14:
+    return "LISTEN";
+  case 0x17:
+    return "ESTABLISHED";
+  case 0x1C:
+    return "CLOSE_WAIT";
+  case 0x22:
+    return "UDP";
+  case 0x32:
+    return "MACRAW";
+  default:
+    return "UNKNOWN";
+  }
+}
+
+#if W5500_SPI_DEBUG
+
+static void dump_w5500_state(const char *context) {
+  uint8_t gw[4], subnet[4], sip[4], mac[6];
+  getGAR(gw);
+  getSUBR(subnet);
+  getSIPR(sip);
+  getSHAR(mac);
+  uint8_t Sn_SR = getSn_SR(0);
+  uint16_t port = getSn_PORT(0);
+  uint16_t dport = getSn_DPORT(0);
+  uint16_t tx_fsr = getSn_TX_FSR(0);
+  uint16_t tx_wr = getSn_TX_WR(0);
+  uint16_t tx_rd = getSn_TX_RD(0);
+  uint16_t rx_rsr = getSn_RX_RSR(0);
+  uint16_t rx_rd = getSn_RX_RD(0);
+  uint16_t rx_wr = getSn_RX_WR(0);
+
+  printf("\n");
+  printf("========================================================\n");
+  printf("           W5500 REGISTER STATE DUMP                    \n");
+  printf("========================================================\n");
+  printf(" Context: %s\n", context);
+  printf("--------------------------------------------------------\n");
+  printf(" [COMMON REGISTERS]\n");
+  printf("   Mode Register (MR):           0x%02X\n", getMR());
+  printf("   Gateway Address:              %d.%d.%d.%d\n", gw[0], gw[1], gw[2], gw[3]);
+  printf("   Subnet Mask:                  %d.%d.%d.%d\n", subnet[0], subnet[1], subnet[2], subnet[3]);
+  printf("   Source IP:                    %d.%d.%d.%d\n", sip[0], sip[1], sip[2], sip[3]);
+  printf("   MAC Address:                  %02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  printf("   Interrupt Register (IR):      0x%02X\n", getIR());
+  printf("   Interrupt Mask (IMR):         0x%02X\n", getIMR());
+  printf("   PHY Config (PHYCFGR):         0x%02X\n", getPHYCFGR());
+  printf("   Version (VERSIONR):           0x%02X\n", getVERSIONR());
+  printf("--------------------------------------------------------\n");
+  printf(" [SOCKET 0 REGISTERS]\n");
+  printf("   Mode (Sn_MR):                 0x%02X\n", getSn_MR(0));
+  printf("   Command (Sn_CR):              0x%02X\n", getSn_CR(0));
+  printf("   Status (Sn_SR):               0x%02X [%s]\n", Sn_SR, sn_sr_str(Sn_SR));
+  printf("   Interrupt (Sn_IR):            0x%02X\n", getSn_IR(0));
+  printf("   Interrupt Mask (Sn_IMR):      0x%02X\n", getSn_IMR(0));
+  printf("   Source Port (Sn_PORT):        %5d (0x%04X)\n", port, port);
+  printf("   Dest Port (Sn_DPORT):         %5d (0x%04X)\n", dport, dport);
+  printf("--------------------------------------------------------\n");
+  printf(" [TX BUFFER STATE]\n");
+  printf("   TX Free Size (FSR):           %5d bytes (0x%04X)\n", tx_fsr, tx_fsr);
+  printf("   TX Write Pointer (WR):        0x%04X\n", tx_wr);
+  printf("   TX Read Pointer (RD):         0x%04X\n", tx_rd);
+  printf("   TX Buffer Used:               %5d bytes\n", (uint16_t)(tx_wr - tx_rd));
+  printf("   TX Buffer Capacity:           16384 bytes\n");
+  printf("--------------------------------------------------------\n");
+  printf(" [RX BUFFER STATE]\n");
+  printf("   RX Received Size (RSR):       %5d bytes (0x%04X)\n", rx_rsr, rx_rsr);
+  printf("   RX Read Pointer (RD):         0x%04X\n", rx_rd);
+  printf("   RX Write Pointer (WR):        0x%04X\n", rx_wr);
+  printf("   RX Buffer Available:          %5d bytes\n", rx_rsr);
+  printf("   RX Buffer Capacity:           16384 bytes\n");
+  printf("========================================================\n\n");
+}
+
+static void dump_data_preview(const char *label, const uint8_t *data,
+                              size_t len) {
+  if (len == 0) {
+    printf("[%s] No data\n", label);
+    return;
+  }
+  printf("[%s] Length: %zu bytes: ", label, len);
+  size_t preview_len = (len < 4) ? len : 4;
+  for (size_t i = 0; i < preview_len; i++) {
+    printf("%02X ", data[i]);
+  }
+  printf("\n");
+}
+
+static void log_spi_transaction(const char *operation, uint32_t addr,
+                                const uint8_t *tx_data, uint8_t *rx_data,
+                                size_t len) {
+  printf("[SPI] %s | Addr: 0x%08lX | Len: %zu\n", operation, (unsigned long)addr, len);
+  if (tx_data) { dump_data_preview("TX", tx_data, len); }
+  if (rx_data) { dump_data_preview("RX", rx_data, len); }
+}
+
+#endif // W5500_SPI_DEBUG
+
+// ===== RAW SPI BYTE LOGGING FUNCTION =====
+#if W5500_SPI_RAW_LOG
+
+static void log_raw_spi_bytes(const char *direction, const uint8_t *data, size_t len) {
+  static char buffer[256];
+  static int pos = 0;
+  const char hex_map[] = "0123456789ABCDEF";
+
+  // Skip counters for frequent polling packets
+  static int skip_count_0308 = 0; // Counter for 0x00 03 08
+  static int skip_count_0208 = 0; // Counter for 0x00 02 08
+  static int skip_count_rx   = 0; // Counter for RX
+    
+  // Get timestamp (milliseconds since startup)
+  mp_uint_t timestamp_ms = mp_hal_ticks_ms();
+  char skipped_str[32] = "";
+
+  // Check if this is a TX BURST of 3 bytes matching the polling patterns
+  if (direction[0] == 'T') { // TX or TX BURST
+
+    if (len == 3) { 
+      // Check for 0x00 03 08 pattern
+      if (data[0] == 0x00 && data[1] == 0x03 && data[2] == 0x08) {
+        skip_count_0308++;
+        if (skip_count_0308 < 100) {
+          return; // Skip this packet
+        }
+      }
+      else if (data[0] == 0x00 && data[1] == 0x02 && data[2] == 0x08) {
+        skip_count_0208++;
+        if (skip_count_0208 < 100) {
+          return; // Skip this packet
+        }
+      }
+    }
+
+
+    if (skip_count_0308 >= 100 || skip_count_0208 >= 100) {
+      snprintf(skipped_str, sizeof(skipped_str), ", %d %d 0x000208 0x000308 skipped", skip_count_0208, skip_count_0308);
+      skip_count_0308 = 0;
+      skip_count_0208 = 0;
+    }
+    pos += sprintf(buffer + pos, " [%lu ms] [SPI %s, len: %zu %s] 0x ",
+                   (unsigned long)timestamp_ms, direction, len, skipped_str);
+
+    // Write hex data (Fast way)
+    size_t to_print = (len < 4) ? len : 4;
+    for (size_t i = 0; i < to_print; i++) {
+      if (i > 0)
+        buffer[pos++] = ' ';
+      buffer[pos++] = hex_map[data[i] >> 4];
+      buffer[pos++] = hex_map[data[i] & 0x0F];
+    }
+
+  } else if (direction[0] == 'R') {
+    skip_count_rx++;
+    if (skip_count_rx >= 100) {
+      snprintf(skipped_str, sizeof(skipped_str), ", %d skipped", skip_count_rx);
+      pos += sprintf(buffer + pos, "[%lu ms] [SPI %s, len: %zu %s] 0x%02x  ",
+                   (unsigned long)timestamp_ms, direction, len, skipped_str, data[0]);
+      skip_count_rx = 0;
+    } else {
+      return;
+    }
+  }
+    buffer[pos++] = '|';
+    buffer[pos++] = '\n';
+
+  if (pos > 200) {
+    printf("%s", buffer);
+    pos = 0;
+  }
+}
+#endif // W5500_SPI_RAW_LOG
+
+typedef struct _wiznet5k_socket_state_t {
+  uint16_t port;
+  uint8_t type;
+  bool is_listening;
+} wiznet5k_socket_state_t;
+
+typedef struct _wiznet5k_obj_t {
+  mp_obj_base_t base;
+  mp_uint_t cris_state;
+  mp_obj_base_t *spi;
+  void (*spi_transfer)(mp_obj_base_t *obj, size_t len, const uint8_t *src,
+                       uint8_t *dest);
+  mp_hal_pin_obj_t cs;
+  mp_hal_pin_obj_t rst;
+#if WIZNET5K_WITH_LWIP_STACK
+  mp_hal_pin_obj_t pin_intn;
+  bool use_interrupt;
+  uint8_t eth_frame[1514];
+  uint32_t trace_flags;
+  struct netif netif;
+  struct dhcp dhcp_struct;
+#else // WIZNET5K_PROVIDED_STACK
+  wiz_NetInfo netinfo;
+  uint8_t socket_used;
+  wiznet5k_socket_state_t socket_states[_WIZCHIP_SOCK_NUM_];
+  bool active;
+#endif
+} wiznet5k_obj_t;
+
+// DMA channel for TX - CLAUDE FIX: Initialize to -1 to indicate unclaimed
+static int dma_tx_chan = -1;
+
+// Transfer state machine for large async transfers
+typedef enum {
+  TX_IDLE,
+  TX_WAITING_BUFFER_SPACE,
+  TX_TRANSFERRING_CHUNK,
+  TX_SENDING_PACKET,
+  TX_COMPLETE,
+  TX_ERROR
+} tx_state_t;
+
+// Zero-copy transfer descriptor
+typedef struct w5500_tx_transfer {
+  const uint8_t *data_ptr;        // Source data - NO COPY
+  uint32_t total_size;            // Total bytes to send
+  uint32_t bytes_sent;            // Progress tracking
+  uint16_t chunk_size;            // Current chunk size to send
+  uint8_t socket_num;             // Target socket
+  tx_state_t state;               // Current state
+  struct w5500_tx_transfer *next; // For linked list queue
+} w5500_tx_transfer_t;
+
+// Transfer queue management
+static w5500_tx_transfer_t *active_transfers = NULL;
+static w5500_tx_transfer_t *transfer_pool = NULL;
+static w5500_tx_transfer_t
+    transfer_pool_data[8]; // Support up to 8 concurrent transfers
+
+// Reentrance guard to prevent double-SEND bug
+static volatile bool tx_service_active = false;
+
+// Forward declarations for transfer functions
+static void w5500_tx_service(void);
+static void w5500_dma_write_to_txbuf(uint8_t sn, uint16_t offset,
+                                     const uint8_t *data, uint16_t len);
+
+#if WIZNET5K_WITH_LWIP_STACK
+#define IS_ACTIVE(self) (self->netif.flags & NETIF_FLAG_UP)
+#else // WIZNET5K_PROVIDED_STACK
+#define IS_ACTIVE(self) (self->active)
+#endif
+
+// Global object holding the Wiznet5k state
+static wiznet5k_obj_t wiznet5k_obj;
+
+static void wiz_cris_enter(void) {
+  wiznet5k_obj.cris_state = MICROPY_BEGIN_ATOMIC_SECTION();
+}
+
+static void wiz_cris_exit(void) {
+  MICROPY_END_ATOMIC_SECTION(wiznet5k_obj.cris_state);
+}
+
+static void wiz_cs_select(void) { mp_hal_pin_low(wiznet5k_obj.cs); }
+
+static void wiz_cs_deselect(void) { mp_hal_pin_high(wiznet5k_obj.cs); }
+
+void mpy_wiznet_yield(void) {
+// Used in socket.c via -DWIZCHIP_YIELD=mpy_wiznet_yield in make/cmake
+#if MICROPY_PY_THREAD
+  MICROPY_THREAD_YIELD();
+#else
+  mp_handle_pending(true);
+#endif
+
+  // Service zero-copy transfers
+  w5500_tx_service();
+}
+
+static uint8_t wiz_spi_readbyte() {
+  uint8_t buf = 0;
+  wiznet5k_obj.spi_transfer(wiznet5k_obj.spi, 1, &buf, &buf);
+#if W5500_SPI_RAW_LOG
+  log_raw_spi_bytes("RX", &buf, 1);
+#endif
+  return buf;
+}
+
+static void wiz_spi_writebyte(const uint8_t buf) {
+  wiznet5k_obj.spi_transfer(wiznet5k_obj.spi, 1, &buf, NULL);
+#if W5500_SPI_RAW_LOG
+  printf("wiz_spi_writebyte->[SPI RAW TX BYTE] 0x%02x\n", buf);
+#endif
+}
+
+static void wiz_spi_readburst(uint8_t *buf, uint16_t len) {
+// #if W5500_SPI_RAW_LOG
+//   log_raw_spi_bytes("RX", buf, len);
+// #endif
+  wiznet5k_obj.spi_transfer(wiznet5k_obj.spi, len, buf, buf);
+}
+
+static void wiz_spi_writeburst(const uint8_t *pBuf, uint16_t len) {
+#if W5500_SPI_RAW_LOG
+  log_raw_spi_bytes("TX BURST", pBuf, len);
+#endif
+
+  if (len >= 1024 && dma_tx_chan >= 0) {
+    // printf("DMA3 used for %d bytes\n", len);
+    machine_spi_obj_t *spi_obj = (machine_spi_obj_t *)wiznet5k_obj.spi;
+    spi_inst_t *spi_inst = spi_obj->spi_inst;
+
+    // Claim RX channel to drain SPI RX FIFO
+    int dma_rx_chan = dma_claim_unused_channel(true);
+    if (dma_rx_chan < 0) {
+      // Fallback to normal SPI if no RX channel available
+      wiznet5k_obj.spi_transfer(wiznet5k_obj.spi, len, pBuf, NULL);
+      return;
+    }
+
+    uint8_t dev_null; // Dummy variable for RX data
+
+    // Configure TX channel
+    dma_channel_config c = dma_channel_get_default_config(dma_tx_chan);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
+    channel_config_set_read_increment(&c, true);
+    channel_config_set_write_increment(&c, false);
+    channel_config_set_dreq(&c, spi_get_dreq(spi_inst, true));
+    dma_channel_configure(dma_tx_chan, &c, &spi_get_hw(spi_inst)->dr, pBuf, len,
+                          false);
+
+    // Configure RX channel to drain RX FIFO
+    c = dma_channel_get_default_config(dma_rx_chan);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
+    channel_config_set_read_increment(&c, false);
+    channel_config_set_write_increment(&c, false);
+    channel_config_set_dreq(&c, spi_get_dreq(spi_inst, false));
+    dma_channel_configure(dma_rx_chan, &c, &dev_null, &spi_get_hw(spi_inst)->dr,
+                          len, false);
+
+    // Enable SPI DMA for transfer
+    spi_get_hw(spi_obj->spi_inst)->dmacr = (1 << 1) | (1 << 0);
+    __compiler_memory_barrier();
+    dma_start_channel_mask((1u << dma_rx_chan) | (1u << dma_tx_chan));
+    dma_channel_wait_for_finish_blocking(dma_rx_chan);
+    dma_channel_wait_for_finish_blocking(dma_tx_chan);
+    __compiler_memory_barrier();
+    // Disable SPI DMA
+    spi_get_hw(spi_obj->spi_inst)->dmacr = 0;
+
+    dma_channel_unclaim(dma_rx_chan);
+    // printf("DMA is finished\n", len);
+  } else {
+    wiznet5k_obj.spi_transfer(wiznet5k_obj.spi, len, pBuf, NULL);
+  }
+}
+
+
+static void wiznet5k_get_mac_address(wiznet5k_obj_t *self, uint8_t mac[6]) {
+  (void)self;
+  getSHAR(mac);
+}
+
+// Initialize transfer pool only (DMA channel claimed earlier)
+static void w5500_tx_pool_init(void) {
+  // Initialize transfer pool
+  for (int i = 0; i < 8; i++) {
+    transfer_pool_data[i].next = transfer_pool;
+    transfer_pool = &transfer_pool_data[i];
+  }
+  DEBUG_PRINT("w5500_tx_pool_init: initialized transfer pool\n");
+}
+
+// Claim DMA channel early, before any SPI operations
+static void w5500_dma_init(void) {
+  if (dma_tx_chan < 0) {
+    dma_tx_chan = dma_claim_unused_channel(true);
+    DEBUG_PRINT("w5500_dma_init: claimed TX channel %d\n", dma_tx_chan);
+  }
+}
+
+// Get free transfer descriptor from pool
+static w5500_tx_transfer_t *w5500_get_transfer(void) {
+  if (transfer_pool) {
+    w5500_tx_transfer_t *transfer = transfer_pool;
+    transfer_pool = transfer->next;
+    memset(transfer, 0, sizeof(w5500_tx_transfer_t));
+    return transfer;
+  }
+  return NULL; // Pool exhausted
+}
+
+// Return transfer descriptor to pool
+static void w5500_release_transfer(w5500_tx_transfer_t *transfer) {
+  transfer->next = transfer_pool;
+  transfer_pool = transfer;
+}
+
+// Add transfer to active queue
+static void w5500_queue_transfer(w5500_tx_transfer_t *transfer) {
+  transfer->next = active_transfers;
+  active_transfers = transfer;
+}
+
+// Remove transfer from active queue
+static void w5500_dequeue_transfer(w5500_tx_transfer_t *transfer) {
+  w5500_tx_transfer_t **current = &active_transfers;
+  while (*current) {
+    if (*current == transfer) {
+      *current = transfer->next;
+      return;
+    }
+    current = &(*current)->next;
+  }
+}
+
+/*
+ * Complete rewrite of w5500_dma_write_to_txbuf
+ *
+ * This function properly follows the W5500 SPI protocol:
+ * 1. Assert CS
+ * 2. Send 3-byte header (address high, address low, control byte)
+ * 3. Send data payload via DMA
+ * 4. Wait for DMA completion
+ * 5. Disable SPI DMA mode
+ * 6. Deassert CS
+ *
+ * Parameters:
+ *   sn - socket number (0-7)
+ *   offset - offset within the TX buffer (handles wraparound internally)
+ *   data - pointer to data to write
+ *   len - number of bytes to write
+ */
+static void w5500_dma_write_to_txbuf(uint8_t sn, uint16_t offset,
+                                     const uint8_t *data, uint16_t len) {
+  if (len == 0 || dma_tx_chan < 0)
+    return;
+
+#if W5500_SPI_DEBUG
+  // Calculate address for logging: upper bits = offset, lower bits = block
+  // select
+  uint32_t addr = ((uint32_t)offset << 8) | (WIZCHIP_TXBUF_BLOCK(sn) << 3);
+  log_spi_transaction("DMA Write to TX Buffer", addr, data, NULL, len);
+#endif
+
+  // Get SPI object
+  machine_spi_obj_t *spi_obj = (machine_spi_obj_t *)wiznet5k_obj.spi;
+  spi_inst_t *spi_inst = spi_obj->spi_inst;
+
+  // Calculate W5500 address for TX buffer write
+  // W5500 address format: [15:0] = offset, sent as: addr_high, addr_low,
+  // control Control byte for socket n TX buffer write: (WIZCHIP_TXBUF_BLOCK(sn)
+  // << 3) | 0x04 The 0x04 indicates write mode (VDM mode)
+  uint8_t control = (WIZCHIP_TXBUF_BLOCK(sn) << 3) | 0x04;
+
+  // Build header: address high, address low, control byte
+  uint8_t header[3] = {
+      (offset >> 8) & 0xFF, // Address high byte
+      offset & 0xFF,        // Address low byte
+      control               // Control byte (block select + write)
+  };
+
+  // Claim RX channel to drain SPI RX FIFO during DMA
+  int dma_rx_chan =
+      dma_claim_unused_channel(false); // false = don't panic if unavailable
+
+  // === ASSERT CS ===
+  wiz_cs_select();
+
+  // === SEND 3-BYTE HEADER (using normal SPI transfer) ===
+#if W5500_SPI_RAW_LOG
+  log_raw_spi_bytes("TX HDR", header, 3);
+#endif
+  wiznet5k_obj.spi_transfer(wiznet5k_obj.spi, 3, header, NULL);
+
+#if W5500_SPI_RAW_LOG
+  log_raw_spi_bytes("TX DMA DATA", data, len);
+#endif
+
+  // === SEND DATA PAYLOAD VIA DMA ===
+  if (dma_rx_chan >= 0 && len >= 64) {
+    // Use DMA for larger transfers
+    static uint8_t dev_null; // Dummy variable for RX data
+
+    // Configure TX channel
+    dma_channel_config c = dma_channel_get_default_config(dma_tx_chan);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
+    channel_config_set_read_increment(&c, true);   // Read from source memory
+    channel_config_set_write_increment(&c, false); // Write to SPI register
+    channel_config_set_dreq(&c, spi_get_dreq(spi_inst, true));
+    dma_channel_configure(dma_tx_chan, &c, &spi_get_hw(spi_inst)->dr, data, len,
+                          false);
+
+    // Configure RX channel to drain RX FIFO
+    c = dma_channel_get_default_config(dma_rx_chan);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
+    channel_config_set_read_increment(&c, false);
+    channel_config_set_write_increment(&c, false);
+    channel_config_set_dreq(&c, spi_get_dreq(spi_inst, false));
+    dma_channel_configure(dma_rx_chan, &c, &dev_null, &spi_get_hw(spi_inst)->dr,
+                          len, false);
+
+    // Enable SPI DMA for transfer
+    spi_get_hw(spi_inst)->dmacr = (1 << 1) | (1 << 0);
+    __compiler_memory_barrier();
+
+    // Start both DMA channels
+    dma_start_channel_mask((1u << dma_rx_chan) | (1u << dma_tx_chan));
+
+    // Wait for completion
+    dma_channel_wait_for_finish_blocking(dma_rx_chan);
+    dma_channel_wait_for_finish_blocking(dma_tx_chan);
+
+    __compiler_memory_barrier();
+
+    // === DISABLE SPI DMA MODE (CRITICAL!) ===
+    spi_get_hw(spi_inst)->dmacr = 0;
+
+    // Release RX channel
+    dma_channel_unclaim(dma_rx_chan);
+  } else {
+    // Use normal SPI transfer for smaller data or if no RX channel available
+    wiznet5k_obj.spi_transfer(wiznet5k_obj.spi, len, data, NULL);
+
+    // Release RX channel if we claimed it
+    if (dma_rx_chan >= 0) {
+      dma_channel_unclaim(dma_rx_chan);
+    }
+  }
+
+  // === DEASSERT CS ===
+  wiz_cs_deselect();
+
+  DEBUG_PRINT(
+      "w5500_dma_write_to_txbuf: wrote %d bytes to socket %d offset %d\n", len,
+      sn, offset);
+}
+
+// Handle W5500 TX buffer wrap-around for chunk transfers
+// Use the corrected w5500_dma_write_to_txbuf function
+static void w5500_send_chunk(uint8_t sn, const uint8_t *data, uint16_t len,
+                             uint16_t tx_wr_ptr) {
+  uint32_t buffer_size = getSn_TxMAX(sn);
+  uint16_t buffer_mask = buffer_size - 1; // Assumes power of 2
+  uint16_t offset = tx_wr_ptr & buffer_mask;
+  uint16_t space_to_end = buffer_size - offset;
+
+  DEBUG_PRINT("w5500_send_chunk: sn=%d, len=%d, tx_wr_ptr=%d, offset=%d, "
+              "space_to_end=%d\n",
+              sn, len, tx_wr_ptr, offset, space_to_end);
+
+  if (len <= space_to_end) {
+    // Single transfer - no wraparound needed
+    w5500_dma_write_to_txbuf(sn, offset, data, len);
+  } else {
+    // Split across buffer boundary (wraparound)
+    // First part: write to end of buffer
+    w5500_dma_write_to_txbuf(sn, offset, data, space_to_end);
+
+    // Second part: write from start of buffer
+    w5500_dma_write_to_txbuf(sn, 0, data + space_to_end, len - space_to_end);
+  }
+}
+
+// Background transfer service - called periodically
+static void w5500_tx_service(void) {
+  // Prevent reentrant calls that cause W5500 double-SEND corruption
+  if (tx_service_active) {
+    return;
+  }
+  tx_service_active = true;
+
+  w5500_tx_transfer_t *transfer = active_transfers;
+
+  while (transfer) {
+    w5500_tx_transfer_t *next =
+        transfer->next; // Save next pointer in case transfer is removed
+
+    // NEW: Validate socket is still in a valid state for transfers
+    uint8_t sr = getSn_SR(transfer->socket_num);
+    if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
+      DEBUG_PRINT("w5500_tx_service: socket %d no longer valid (state=0x%02x), "
+                  "aborting transfer\n",
+                  transfer->socket_num, sr);
+      transfer->state = TX_ERROR;
+      w5500_dequeue_transfer(transfer);
+      w5500_release_transfer(transfer);
+      transfer = next;
+      continue;
+    }
+
+    switch (transfer->state) {
+    case TX_WAITING_BUFFER_SPACE: {
+      uint16_t free_space = getSn_TX_FSR(transfer->socket_num);
+      uint8_t sr = getSn_SR(transfer->socket_num);
+
+      if ((sr != SOCK_ESTABLISHED) && (sr != SOCK_CLOSE_WAIT)) {
+        DEBUG_PRINT(
+            "w5500_tx_service: socket %d not connected, cancelling transfer\n",
+            transfer->socket_num);
+        transfer->state = TX_ERROR;
+        break;
+      }
+
+      if (free_space >= transfer->chunk_size) {
+        // Start DMA transfer
+        uint16_t tx_wr = getSn_TX_WR(transfer->socket_num);
+        const uint8_t *data_ptr = transfer->data_ptr + transfer->bytes_sent;
+
+        w5500_send_chunk(transfer->socket_num, data_ptr, transfer->chunk_size,
+                         tx_wr);
+        transfer->state = TX_TRANSFERRING_CHUNK;
+
+        DEBUG_PRINT("w5500_tx_service: started DMA for %d bytes on socket %d\n",
+                    transfer->chunk_size, transfer->socket_num);
+      }
+      break;
+    }
+
+    case TX_TRANSFERRING_CHUNK: {
+      // Transfer is now synchronous, so we can immediately proceed
+      // DMA is completed before w5500_send_chunk returns
+
+      // Update write pointer and send command
+      uint16_t new_tx_wr =
+          getSn_TX_WR(transfer->socket_num) + transfer->chunk_size;
+      setSn_TX_WR(transfer->socket_num, new_tx_wr);
+      setSn_CR(transfer->socket_num, Sn_CR_SEND);
+
+      // CRITICAL: Change state BEFORE yield to prevent double-SEND on reentry
+      transfer->state = TX_SENDING_PACKET;
+
+      // Wait for command to register
+      while (getSn_CR(transfer->socket_num)) {
+        mpy_wiznet_yield();
+      }
+      DEBUG_PRINT(
+          "w5500_tx_service: DMA complete, SEND command issued on socket %d\n",
+          transfer->socket_num);
+      break;
+    }
+
+    case TX_SENDING_PACKET: {
+      uint8_t ir = getSn_IR(transfer->socket_num);
+      if (ir & Sn_IR_SENDOK) {
+        setSn_IR(transfer->socket_num, Sn_IR_SENDOK);
+
+        transfer->bytes_sent += transfer->chunk_size;
+        DEBUG_PRINT("w5500_tx_service: SENDOK, %d/%d bytes sent on socket %d\n",
+                    transfer->bytes_sent, transfer->total_size,
+                    transfer->socket_num);
+
+        if (transfer->bytes_sent >= transfer->total_size) {
+          transfer->state = TX_COMPLETE;
+        } else {
+          // Calculate next chunk size
+          uint16_t remaining = transfer->total_size - transfer->bytes_sent;
+          uint16_t buffer_free = getSn_TX_FSR(transfer->socket_num);
+          transfer->chunk_size =
+              (remaining < buffer_free) ? remaining : buffer_free;
+          // Cap chunk size to buffer size
+          uint16_t max_chunk = getSn_TxMAX(transfer->socket_num);
+          if (transfer->chunk_size > max_chunk) {
+            transfer->chunk_size = max_chunk;
+          }
+          transfer->state = TX_WAITING_BUFFER_SPACE;
+        }
+      } else if (ir & Sn_IR_TIMEOUT) {
+        DEBUG_PRINT("w5500_tx_service: TIMEOUT on socket %d\n",
+                    transfer->socket_num);
+        transfer->state = TX_ERROR;
+      }
+      break;
+    }
+
+    case TX_COMPLETE:
+      DEBUG_PRINT(
+          "w5500_tx_service: Transfer complete on socket %d, %d bytes sent\n",
+          transfer->socket_num, transfer->bytes_sent);
+      w5500_dequeue_transfer(transfer);
+      w5500_release_transfer(transfer);
+      break;
+
+    case TX_ERROR:
+      DEBUG_PRINT("w5500_tx_service: Transfer error on socket %d\n",
+                  transfer->socket_num);
+      w5500_dequeue_transfer(transfer);
+      w5500_release_transfer(transfer);
+      break;
+
+    default:
+      break;
+    }
+
+    transfer = next;
+  }
+
+  tx_service_active = false;
+}
+
+// CLAUDE FIX: Helper function to wait for a specific transfer to complete
+static int w5500_wait_transfer_complete(w5500_tx_transfer_t *transfer,
+                                        uint32_t timeout_ms) {
+  uint32_t start = mp_hal_ticks_ms();
+
+  while (transfer->state != TX_COMPLETE && transfer->state != TX_ERROR) {
+    w5500_tx_service();
+
+    if (timeout_ms > 0 && (mp_hal_ticks_ms() - start) >= timeout_ms) {
+      DEBUG_PRINT("w5500_wait_transfer_complete: timeout\n");
+      return -1; // Timeout
+    }
+
+    mp_hal_delay_ms(1);
+  }
+
+  return (transfer->state == TX_COMPLETE) ? 0 : -1;
+}
+
+#if WIZNET5K_WITH_LWIP_STACK
+
+void wiznet5k_try_poll(void);
+static void wiznet5k_lwip_init(wiznet5k_obj_t *self);
+
+static mp_obj_t mpy_wiznet_read_int(mp_obj_t none_in) {
+  (void)none_in;
+  // Handle incoming data, unless the SPI bus is busy
+  if (mp_hal_pin_read(wiznet5k_obj.cs)) {
+    wiznet5k_try_poll();
+  }
+  return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(mpy_wiznet_read_int_obj, mpy_wiznet_read_int);
+
+static void wiznet5k_config_interrupt(bool enabled) {
+  if (!wiznet5k_obj.use_interrupt) {
+    return;
+  }
+  mp_hal_pin_interrupt(
+      wiznet5k_obj.pin_intn, MP_OBJ_FROM_PTR(&mpy_wiznet_read_int_obj),
+      (enabled) ? MP_HAL_PIN_TRIGGER_FALL : MP_HAL_PIN_TRIGGER_NONE, true);
+}
+
+void wiznet5k_deinit(void) {
+  for (struct netif *netif = netif_list; netif != NULL; netif = netif->next) {
+    if (netif == &wiznet5k_obj.netif) {
+#if LWIP_MDNS_RESPONDER
+      mdns_resp_remove_netif(&wiznet5k_obj.netif);
+#endif
+      netif_remove(netif);
+      netif->flags = 0;
+      break;
+    }
+  }
+}
+
+static void wiznet5k_init(void) {
+  // CLAUDE FIX: Claim DMA channel FIRST, before any SPI operations
+  w5500_dma_init();
+
+// Configure wiznet for raw ethernet frame usage.
+
+// Configure 16k buffers for fast MACRAW
+#if _WIZCHIP_ < W5200
+  uint8_t sn_size[8] = {8, 0, 0, 0, 8, 0, 0, 0};
+#else
+  uint8_t sn_size[16] = {16, 0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0};
+#endif
+  ctlwizchip(CW_INIT_WIZCHIP, sn_size);
+
+  if (wiznet5k_obj.use_interrupt) {
+    // Enable Wiznet interrupts for socket 0
+    wizchip_setinterruptmask(IK_SOCK_0);
+    // Enable data receive interrupt
+    setSn_IMR(0, Sn_IR_RECV);
+#if _WIZCHIP_ == W5100S
+    // Enable interrupt pin
+    setMR2(getMR2() | MR2_G_IEN);
+#endif
+
+    mp_hal_pin_input(wiznet5k_obj.pin_intn);
+    wiznet5k_config_interrupt(true);
+  }
+
+  // Deinit before a new init to clear the state from a previous activation
+  wiznet5k_deinit();
+
+  // Hook the Wiznet into lwIP
+  wiznet5k_lwip_init(&wiznet5k_obj);
+
+  netif_set_link_up(&wiznet5k_obj.netif);
+  netif_set_up(&wiznet5k_obj.netif);
+
+  // register with network module
+  mod_network_register_nic(&wiznet5k_obj);
+
+  // Initialize transfer pool
+  w5500_tx_pool_init();
+}
+
+static void wiznet5k_send_ethernet(wiznet5k_obj_t *self, size_t len,
+                                   const uint8_t *buf) {
+  uint8_t ip[4] = {1, 1, 1, 1};                                  // dummy
+  int ret = WIZCHIP_EXPORT(sendto)(0, (byte *)buf, len, ip, 11); // dummy port
+  if (ret != len) {
+    printf("wiznet5k_send_ethernet: fatal error %d\n", ret);
+    netif_set_link_down(&self->netif);
+    netif_set_down(&self->netif);
+  }
+}
+
+// Stores the frame in self->eth_frame and returns number of bytes in the frame,
+// 0 for no frame
+static uint16_t wiznet5k_recv_ethernet(wiznet5k_obj_t *self) {
+  uint16_t len = getSn_RX_RSR(0);
+  if (len == 0) {
+    return 0;
+  }
+
+  byte ip[4];
+  uint16_t port;
+  int ret = WIZCHIP_EXPORT(recvfrom)(0, self->eth_frame, 1514, ip, &port);
+  if (ret <= 0) {
+    printf("wiznet5k_recv_ethernet: fatal error len=%u ret=%d\n", len, ret);
+    netif_set_link_down(&self->netif);
+    netif_set_down(&self->netif);
+    return 0;
+  }
+
+  return ret;
+}
+
+/*******************************************************************************/
+// Wiznet5k lwIP interface
+
+static err_t wiznet5k_netif_output(struct netif *netif, struct pbuf *p) {
+  wiznet5k_obj_t *self = netif->state;
+  const uint8_t *buf = self->eth_frame;
+  if (p->next == NULL && p->len == p->tot_len) {
+    buf = p->payload;
+  } else {
+    pbuf_copy_partial(p, self->eth_frame, p->tot_len, 0);
+  }
+  if (self->trace_flags & TRACE_ETH_TX) {
+    netutils_ethernet_trace(MP_PYTHON_PRINTER, p->tot_len, buf,
+                            NETUTILS_TRACE_IS_TX | NETUTILS_TRACE_NEWLINE);
+  }
+  wiznet5k_send_ethernet(self, p->tot_len, buf);
+  return ERR_OK;
+}
+
+static err_t wiznet5k_netif_init(struct netif *netif) {
+  netif->linkoutput = wiznet5k_netif_output;
+  netif->output = etharp_output;
+  netif->mtu = 1500;
+  netif->flags = NETIF_FLAG_BROADCAST | NETIF_FLAG_ETHARP |
+                 NETIF_FLAG_ETHERNET | NETIF_FLAG_IGMP;
+  wiznet5k_get_mac_address(netif->state, netif->hwaddr);
+  netif->hwaddr_len = sizeof(netif->hwaddr);
+  int ret = WIZCHIP_EXPORT(socket)(0, Sn_MR_MACRAW, 0, 0);
+  if (ret != 0) {
+    printf("WIZNET fatal error in netif_init: %d\n", ret);
+    return ERR_IF;
+  }
+
+  // Enable MAC filtering so we only get frames destined for us, to reduce load
+  // on lwIP
+  setSn_MR(0, getSn_MR(0) | Sn_MR_MFEN);
+
+#if LWIP_IPV6
+  netif->output_ip6 = ethip6_output;
+  netif->flags |= NETIF_FLAG_MLD6;
+#else
+  // Drop IPv6 packets if firmware does not support it
+  setSn_MR(0, getSn_MR(0) | Sn_MR_MIP6B);
+#endif
+
+  return ERR_OK;
+}
+
+static void wiznet5k_lwip_init(wiznet5k_obj_t *self) {
+  ip_addr_t ipconfig[4];
+  IP_ADDR4(&ipconfig[0], 0, 0, 0, 0);
+  IP_ADDR4(&ipconfig[1], 0, 0, 0, 0);
+  IP_ADDR4(&ipconfig[2], 0, 0, 0, 0);
+  IP_ADDR4(&ipconfig[3], 0, 0, 0, 0);
+  netif_add(&self->netif, ip_2_ip4(&ipconfig[0]), ip_2_ip4(&ipconfig[1]),
+            ip_2_ip4(&ipconfig[2]), self, wiznet5k_netif_init, ethernet_input);
+  self->netif.name[0] = 'e';
+  self->netif.name[1] = '0';
+  netif_set_default(&self->netif);
+  dns_setserver(0, &ipconfig[3]);
+  dhcp_set_struct(&self->netif, &self->dhcp_struct);
+  // Setting NETIF_FLAG_UP then clearing it is a workaround for dhcp_start and
+  // the LWIP_DHCP_CHECK_LINK_UP option, so that the DHCP client schedules
+  // itself to automatically start when the interface later goes up.
+  self->netif.flags |= NETIF_FLAG_UP;
+  dhcp_start(&self->netif);
+  self->netif.flags &= ~NETIF_FLAG_UP;
+
+#if LWIP_MDNS_RESPONDER
+  // NOTE: interface is removed in ::wiznet5k_deinit(), which is called as
+  // part of the init sequence.
+  mdns_resp_add_netif(&self->netif, mod_network_hostname_data);
+#endif
+}
+
+void wiznet5k_poll(void) {
+  wiznet5k_obj_t *self = &wiznet5k_obj;
+  if ((self->netif.flags & (NETIF_FLAG_UP | NETIF_FLAG_LINK_UP)) ==
+      (NETIF_FLAG_UP | NETIF_FLAG_LINK_UP)) {
+    uint16_t len;
+    while ((len = wiznet5k_recv_ethernet(self)) > 0) {
+      if (self->trace_flags & TRACE_ETH_RX) {
+        netutils_ethernet_trace(MP_PYTHON_PRINTER, len, self->eth_frame,
+                                NETUTILS_TRACE_NEWLINE);
+      }
+      struct pbuf *p = pbuf_alloc(PBUF_RAW, len, PBUF_POOL);
+      if (p != NULL) {
+        pbuf_take(p, self->eth_frame, len);
+        if (self->netif.input(p, &self->netif) != ERR_OK) {
+          pbuf_free(p);
+        }
+      }
+    }
+  }
+  wizchip_clrinterrupt(IK_SOCK_0);
+#if _WIZCHIP_ == W5100S
+  setSn_IR(0, Sn_IR_RECV); // W5100S driver bug: must write to the Sn_IR
+                           // register to reset the IRQ signal
+#endif
+}
+
+#endif // MICROPY_PY_LWIP
+
+#if WIZNET5K_PROVIDED_STACK
+
+static void wiz_dhcp_assign(void) {
+  getIPfromDHCP(wiznet5k_obj.netinfo.ip);
+  getGWfromDHCP(wiznet5k_obj.netinfo.gw);
+  getSNfromDHCP(wiznet5k_obj.netinfo.sn);
+  getDNSfromDHCP(wiznet5k_obj.netinfo.dns);
+  ctlnetwork(CN_SET_NETINFO, (void *)&wiznet5k_obj.netinfo);
+}
+
+static void wiz_dhcp_update(void) { ; }
+
+static void wiz_dhcp_conflict(void) { ; }
+
+static void wiznet5k_init(void) {
+  DEBUG_PRINT("wiznet5k_init: initializing with provided TCP stack\n");
+
+  // CLAUDE FIX: Claim DMA channel FIRST, before any SPI operations
+  w5500_dma_init();
+
+  // Configure wiznet provided TCP / socket interface
+
+  reg_dhcp_cbfunc(wiz_dhcp_assign, wiz_dhcp_update, wiz_dhcp_conflict);
+
+  // 16k RX + 16k TX, the correct order is:
+  // [ RX0, RX1, RX2, RX3, RX4, RX5, RX6, RX7,
+  // TX0, TX1, TX2, TX3, TX4, TX5, TX6, TX7 ]
+  uint8_t sn_size[16] = {16, 0, 0, 0, 0, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0};
+  DEBUG_PRINT("wiznet5k_init: calling ctlwizchip(CW_INIT_WIZCHIP, ...)\n");
+  ctlwizchip(CW_INIT_WIZCHIP, sn_size);
+
+  DEBUG_PRINT("wiznet5k_init: calling ctlnetwork(CN_SET_NETINFO, ...)\n");
+  ctlnetwork(CN_SET_NETINFO, (void *)&wiznet5k_obj.netinfo);
+
+  // set some sensible default values; they are configurable using ifconfig
+  // method
+  wiz_NetInfo netinfo = {
+      .mac = {0, 0, 0, 0, 0, 0},
+      .ip = {192, 168, 0, 18},
+      .sn = {255, 255, 255, 0},
+      .gw = {192, 168, 0, 1},
+      .dns = {8, 8, 8, 8}, // Google public DNS
+      .dhcp = NETINFO_STATIC,
+  };
+  wiznet5k_obj.netinfo = netinfo;
+
+  DEBUG_PRINT("wiznet5k_init: registering with network module\n");
+  // register with network module
+  mod_network_register_nic(&wiznet5k_obj);
+
+  // Initialize socket state tracking
+  for (int i = 0; i < _WIZCHIP_SOCK_NUM_; i++) {
+    wiznet5k_obj.socket_states[i].port = 0;
+    wiznet5k_obj.socket_states[i].type = 0;
+    wiznet5k_obj.socket_states[i].is_listening = false;
+  }
+
+  wiznet5k_obj.active = true;
+
+  // Initialize transfer pool (DMA channel already claimed above)
+  w5500_tx_pool_init();
+
+  DEBUG_PRINT("wiznet5k_init: done, active=true\n");
+
+#if W5500_SPI_DEBUG
+  dump_w5500_state("After wiznet5k_init (Initialization Complete)");
+#endif
+}
+
+static int wiznet5k_gethostbyname(mp_obj_t nic, const char *name, mp_uint_t len,
+                                  uint8_t *out_ip) {
+  uint8_t dns_ip[MOD_NETWORK_IPADDR_BUF_SIZE] = {8, 8, 8, 8};
+  uint8_t *buf = m_new(uint8_t, MAX_DNS_BUF_SIZE);
+  DNS_init(2, buf);
+  if (wiznet5k_obj.netinfo.dns[0]) {
+    memcpy(dns_ip, wiznet5k_obj.netinfo.dns, MOD_NETWORK_IPADDR_BUF_SIZE);
+  }
+  mp_int_t ret = DNS_run(dns_ip, (uint8_t *)name, out_ip);
+  m_del(uint8_t, buf, MAX_DNS_BUF_SIZE);
+  if (ret == 1) {
+    // success
+    return 0;
+  } else {
+    // failure
+    return -2;
+  }
+}
+
+static int wiznet5k_socket_socket(mod_network_socket_obj_t *socket,
+                                  int *_errno) {
+  DEBUG_PRINT("socket_socket: domain=%d, type=%d, proto=%d\n", socket->domain,
+              socket->type, socket->proto);
+
+  if (socket->domain != MOD_NETWORK_AF_INET) {
+    DEBUG_PRINT("socket_socket: unsupported domain %d\n", socket->domain);
+    *_errno = MP_EAFNOSUPPORT;
+    return -1;
+  }
+
+  switch (socket->type) {
+  case MOD_NETWORK_SOCK_STREAM:
+    socket->type = Sn_MR_TCP;
+    DEBUG_PRINT("socket_socket: TCP socket\n");
+    break;
+  case MOD_NETWORK_SOCK_DGRAM:
+    socket->type = Sn_MR_UDP;
+    DEBUG_PRINT("socket_socket: UDP socket\n");
+    break;
+  default:
+    DEBUG_PRINT("socket_socket: unsupported type %d\n", socket->type);
+    *_errno = MP_EINVAL;
+    return -1;
+  }
+
+  if (socket->fileno == -1) {
+    // get first unused socket number
+    for (mp_uint_t sn = 0; sn < _WIZCHIP_SOCK_NUM_; sn++) {
+      if ((wiznet5k_obj.socket_used & (1 << sn)) == 0) {
+        wiznet5k_obj.socket_used |= (1 << sn);
+        socket->fileno = sn;
+        DEBUG_PRINT("socket_socket: assigned socket number %d\n", sn);
+        break;
+      }
+    }
+    if (socket->fileno == -1) {
+      DEBUG_PRINT("socket_socket: no free sockets (socket_used=0x%02x)\n",
+                  wiznet5k_obj.socket_used);
+      *_errno = MP_EMFILE;
+      return -1;
+    }
+  }
+
+  // WIZNET does not have a concept of pure "open socket".  You need to know
+  // if it's a server or client at the time of creation of the socket.
+  // So, we defer the open until we know what kind of socket we want.
+
+  // use "domain" to indicate that this socket has not yet been opened
+  socket->domain = 0;
+  DEBUG_PRINT("socket_socket: success, fileno=%d\n", socket->fileno);
+
+  return 0;
+}
+
+static void wiznet5k_socket_close(mod_network_socket_obj_t *socket) {
+  uint8_t sn = (uint8_t)socket->fileno;
+  DEBUG_PRINT("socket_close: socket %d\n", sn);
+
+#if W5500_SPI_DEBUG
+  dump_w5500_state("Before socket_close");
+#endif
+
+  if (sn < _WIZCHIP_SOCK_NUM_) {
+    // Cancel any active transfers on this socket FIRST
+    w5500_tx_transfer_t *transfer = active_transfers;
+    w5500_tx_transfer_t *prev = NULL;
+
+    while (transfer) {
+      w5500_tx_transfer_t *next = transfer->next;
+
+      if (transfer->socket_num == sn) {
+        DEBUG_PRINT("socket_close: cancelling active transfer on socket %d\n",
+                    sn);
+
+        // Remove from active list
+        if (prev) {
+          prev->next = next;
+        } else {
+          active_transfers = next;
+        }
+
+        // Mark as error and release
+        transfer->state = TX_ERROR;
+        w5500_release_transfer(transfer);
+      } else {
+        prev = transfer;
+      }
+
+      transfer = next;
+    }
+
+    DEBUG_PRINT("socket_close: calling WIZCHIP_EXPORT(close) on socket %d\n",
+                sn);
+
+    // Check state before closing
+    uint8_t sr_before = getSn_SR(sn);
+    DEBUG_PRINT("socket_close: before - state=0x%02x (%s)\n", sr_before,
+                sn_sr_str(sr_before));
+
+    // SIMPLIFIED: Just close the socket, let Python handle re-listening
+    // This prevents the freeze issue on second request
+    
+    // Mark socket as unused
+    wiznet5k_obj.socket_used &= ~(1 << sn);
+    
+    // Graceful disconnect if in ESTABLISHED or CLOSE_WAIT state
+    if (sr_before == SOCK_ESTABLISHED || sr_before == SOCK_CLOSE_WAIT) {
+      WIZCHIP_EXPORT(disconnect)(sn);
+      // Wait for transition to CLOSED, with timeout
+      uint32_t start = mp_hal_ticks_ms();
+      while (getSn_SR(sn) != SOCK_CLOSED && mp_hal_ticks_ms() - start < 250) {
+        mp_hal_delay_ms(5);
+      }
+    }
+    
+    // Close the socket
+    WIZCHIP_EXPORT(close)(sn);
+    mp_hal_delay_ms(50);
+
+    // Verify socket reached CLOSED state
+    uint8_t sr_after_close = getSn_SR(sn);
+    int close_wait_count = 0;
+    while (sr_after_close != SOCK_CLOSED && close_wait_count < 20) {
+      mp_hal_delay_ms(25);
+      sr_after_close = getSn_SR(sn);
+      close_wait_count++;
+    }
+
+    if (sr_after_close != SOCK_CLOSED) {
+      DEBUG_PRINT(
+          "socket_close: WARNING - socket not fully closed, state=0x%02x\n",
+          sr_after_close);
+      // Force close
+      WIZCHIP_EXPORT(close)(sn);
+      mp_hal_delay_ms(10);
+    }
+
+    DEBUG_PRINT("socket_close: after - state=0x%02x (%s)\n", sr_after_close,
+                sn_sr_str(sr_after_close));
+
+    // Clear socket state - Python will handle re-listening
+    wiznet5k_obj.socket_states[sn].is_listening = false;
+    wiznet5k_obj.socket_states[sn].port = 0;
+    wiznet5k_obj.socket_states[sn].type = 0;
+    
+    DEBUG_PRINT("socket_close: done, Python should handle re-listen\n");
+  } else {
+    DEBUG_PRINT("socket_close: invalid socket number %d\n", sn);
+  }
+
+#if W5500_SPI_DEBUG
+  dump_w5500_state("After socket_close");
+#endif
+}
+
+static int wiznet5k_socket_bind(mod_network_socket_obj_t *socket, byte *ip,
+                                mp_uint_t port, int *_errno) {
+  uint8_t sn = (uint8_t)socket->fileno;
+  DEBUG_PRINT("socket_bind: socket=%d, port=%d, type=0x%02x\n", sn, port,
+              socket->type);
+
+  // Check if socket is already opened/bound
+  uint8_t sr_before = getSn_SR(sn);
+  if (sr_before != SOCK_CLOSED && sr_before != 0x00) {
+    DEBUG_PRINT("socket_bind: socket already in state 0x%02x (%s)\n", sr_before,
+                sn_sr_str(sr_before));
+    *_errno = MP_EINVAL;
+    return -1;
+  }
+
+  // Open the socket in server mode (if port != 0)
+  mp_int_t ret = WIZCHIP_EXPORT(socket)(socket->fileno, socket->type, port, 0);
+  DEBUG_PRINT("socket_bind: WIZCHIP_EXPORT(socket) returned %d\n", ret);
+
+  if (ret < 0) {
+    DEBUG_PRINT("socket_bind: failed, closing socket\n");
+    wiznet5k_socket_close(socket);
+    *_errno = -ret;
+    return -1;
+  }
+
+  // Check socket state - should be INIT after successful bind
+  uint8_t sr = getSn_SR(sn);
+  DEBUG_PRINT("socket_bind: socket %d state after open: 0x%02x (%s)\n", sn, sr,
+              sn_sr_str(sr));
+
+  if (sr != SOCK_INIT) {
+    DEBUG_PRINT("socket_bind: socket not in INIT state after bind\n");
+    wiznet5k_socket_close(socket);
+    *_errno = MP_EIO;
+    return -1;
+  }
+
+  // Indicate that this socket has been opened
+  socket->domain = 1;
+  DEBUG_PRINT("socket_bind: success\n");
+
+  return 0;
+}
+
+static int wiznet5k_socket_listen(mod_network_socket_obj_t *socket,
+                                  mp_int_t backlog, int *_errno) {
+  uint8_t sn = (uint8_t)socket->fileno;
+  DEBUG_PRINT("socket_listen: socket=%d, backlog=%d\n", sn, backlog);
+
+  // Check current socket state - must be INIT (after bind)
+  uint8_t sr_before = getSn_SR(sn);
+  DEBUG_PRINT("socket_listen: before - socket %d state: 0x%02x (%s)\n", sn,
+              sr_before, sn_sr_str(sr_before));
+
+  // Don't allow listen on already connected or closed sockets
+  if (sr_before == SOCK_ESTABLISHED || sr_before == SOCK_CLOSE_WAIT) {
+    DEBUG_PRINT("socket_listen: socket already connected, cannot listen\n");
+    *_errno = MP_EINVAL;
+    return -1;
+  }
+
+  mp_int_t ret = WIZCHIP_EXPORT(listen)(socket->fileno);
+  DEBUG_PRINT("socket_listen: WIZCHIP_EXPORT(listen) returned %d\n", ret);
+
+  if (ret < 0) {
+    DEBUG_PRINT("socket_listen: failed, closing socket\n");
+    wiznet5k_socket_close(socket);
+    *_errno = -ret;
+    return -1;
+  }
+
+  // Check socket state after listen - should be in LISTEN state
+  uint8_t sr_after = getSn_SR(sn);
+  DEBUG_PRINT("socket_listen: after - socket %d state: 0x%02x (%s)\n", sn,
+              sr_after, sn_sr_str(sr_after));
+
+  if (sr_after != SOCK_LISTEN) {
+    DEBUG_PRINT(
+        "socket_listen: socket not in LISTEN state after listen call\n");
+    wiznet5k_socket_close(socket);
+    *_errno = MP_EIO;
+    return -1;
+  }
+
+  // Save socket state for potential re-listening
+  wiznet5k_obj.socket_states[sn].port = getSn_PORT(sn);
+  wiznet5k_obj.socket_states[sn].type = socket->type & 0x0F;
+  wiznet5k_obj.socket_states[sn].is_listening = true;
+  DEBUG_PRINT("socket_listen: saved state - port=%d, type=0x%02x\n",
+              wiznet5k_obj.socket_states[sn].port,
+              wiznet5k_obj.socket_states[sn].type);
+
+#if W5500_SPI_DEBUG
+  dump_w5500_state("After socket_listen (Listening Started)");
+#endif
+
+  DEBUG_PRINT("socket_listen: success\n");
+  return 0;
+}
+
+
+
+static int wiznet5k_socket_accept(mod_network_socket_obj_t *socket,
+                                  mod_network_socket_obj_t *socket2,
+                                  byte *ip, mp_uint_t *port, int *_errno) {
+  uint8_t sn = (uint8_t)socket->fileno;
+  DEBUG_PRINT("socket_accept: socket=%d, timeout=%d\n", sn, socket->timeout);
+
+  // ---- Initial state check (single read) ----
+  uint8_t sr = getSn_SR(sn);
+  DEBUG_PRINT("socket_accept: initial SR=0x%02x (%s)\n", sr, sn_sr_str(sr));
+
+  if (sr != SOCK_LISTEN && sr != SOCK_ESTABLISHED) {
+    DEBUG_PRINT( "socket_accept: socket not in LISTEN or ESTABLISHED state (0x%02x)\n", sr);
+    if (sr == SOCK_CLOSED && socket->domain == 1) {
+      uint16_t saved_port = wiznet5k_obj.socket_states[sn].port;
+      uint8_t saved_type = wiznet5k_obj.socket_states[sn].type;
+
+      if (saved_port == 0) {
+        *_errno = MP_EINVAL;
+        return -1;
+      }
+
+      DEBUG_PRINT("socket_accept: re-listen on port %d\n", saved_port);
+
+      mp_int_t ret = WIZCHIP_EXPORT(socket)(sn, saved_type, saved_port, 0);
+      if (ret < 0) {
+        *_errno = -ret;
+        return -1;
+      }
+
+      ret = WIZCHIP_EXPORT(listen)(sn);
+      if (ret < 0) {
+        *_errno = -ret;
+        return -1;
+      }
+
+    } else {
+      *_errno = MP_EINVAL;
+      return -1;
+    }
+  }
+
+  // ---- Immediate accept if already connected ----
+  if (sr == SOCK_ESTABLISHED) {
+    getSn_DIPR(sn, ip);
+    *port = getSn_DPORT(sn);
+
+    socket2->domain  = socket->domain;
+    socket2->type  = socket->type;
+    socket2->fileno  = sn;
+    socket2->timeout = socket->timeout;
+
+    DEBUG_PRINT("socket_accept: client IP: %d.%d.%d.%d, port: %d\n", ip[0],
+                ip[1], ip[2], ip[3], *port);
+    return 0;
+  }
+
+  // ---- Non-blocking ----
+  if (socket->timeout == 0) {
+    DEBUG_PRINT("socket_accept: non-blocking, no connection pending\n");
+    *_errno = MP_EAGAIN;
+    return -1;
+  }
+
+  uint32_t start_time = mp_hal_ticks_ms();
+  uint32_t timeout_ms = (socket->timeout == -1)
+              ? 0x7FFFFFFF
+              : socket->timeout;
+
+  int loop_counter = 0;
+
+  // ---- Accept loop ----
+  for (;;) {
+    loop_counter++;
+
+    if (socket->timeout != -1 &&
+      (mp_hal_ticks_ms() - start_time) >= timeout_ms) {
+      DEBUG_PRINT("socket_accept: timeout after %d ms\n", timeout_ms);
+      *_errno = MP_ETIMEDOUT;
+      return -1;
+    }
+
+    // ---- Single snapshot per iteration ----
+    sr = getSn_SR(sn);
+    mp_hal_delay_ms(10);
+    uint8_t ir = getSn_IR(sn);
+
+    if (loop_counter % 100 == 0) {
+      DEBUG_PRINT(
+        "socket_accept: loop %d SR=0x%02x (%s) IR=0x%02x\n",
+        loop_counter, sr, sn_sr_str(sr), ir);
+    }
+
+    // Clear connection interrupt (edge notification only)
+    if (ir & Sn_IR_CON) {
+      setSn_IR(sn, Sn_IR_CON);
+    }
+
+    // Stable state decision
+    if (sr == SOCK_ESTABLISHED) {
+      getSn_DIPR(sn, ip);
+      *port = getSn_DPORT(sn);
+
+      socket2->domain  = socket->domain;
+      socket2->type  = socket->type;
+      socket2->fileno  = sn;
+      socket2->timeout = socket->timeout;
+
+#if W5500_SPI_DEBUG
+      dump_w5500_state("After socket_accept (ESTABLISHED)");
+#endif
+
+      DEBUG_PRINT("socket_accept: success\n");
+      uint16_t rx_rsr = getSn_RX_RSR(sn);
+      uint8_t sr = getSn_SR(sn);
+      uint8_t ir = getSn_IR(sn);
+      DEBUG_PRINT("socket_accept: after accept - SR=0x%02x RX_RSR=%u IR=0x%02x\n", sr, rx_rsr, ir);
+
+      return 0;
+    }
+
+    if (sr == SOCK_CLOSED) {
+      *_errno = MP_ENOTCONN;
+      return -1;
+    }
+
+    mp_hal_delay_ms(90);
+    mpy_wiznet_yield();
+  }
+}
+
+
+
+static int wiznet5k_socket_connect(mod_network_socket_obj_t *socket, byte *ip,
+                                   mp_uint_t port, int *_errno) {
+  // use "bind" function to open the socket in client mode
+  if (wiznet5k_socket_bind(socket, ip, 0, _errno) != 0) {
+    return -1;
+  }
+
+  // now connect
+  MP_THREAD_GIL_EXIT();
+  mp_int_t ret = WIZCHIP_EXPORT(connect)(socket->fileno, ip, port);
+  MP_THREAD_GIL_ENTER();
+
+  if (ret < 0) {
+    wiznet5k_socket_close(socket);
+    *_errno = -ret;
+    return -1;
+  }
+
+  // success
+  return 0;
+}
+
+/*
+ * CLAUDE FIX: Rewritten socket_send to be synchronous
+ *
+ * For large transfers (>= 1KB), this function now:
+ * 1. Queues the transfer
+ * 2. WAITS for the transfer to complete
+ * 3. Returns actual bytes sent (or error)
+ *
+ * This ensures buffer safety (caller's buffer won't be freed while DMA is
+ * running) and proper error propagation.
+ */
+static mp_uint_t wiznet5k_socket_send(mod_network_socket_obj_t *socket,
+                                      const byte *buf, mp_uint_t len,
+                                      int *_errno) {
+  uint8_t sn = (uint8_t)socket->fileno;
+  DEBUG_PRINT("socket_send: socket=%d, len=%d\n", sn, len);
+
+#if W5500_SPI_DEBUG
+  dump_data_preview("SEND DATA", buf, len);
+  dump_w5500_state("Before socket_send");
+#endif
+
+  // For small transfers (< 1KB), use original blocking method
+  if (len < 1024) {
+    MP_THREAD_GIL_EXIT();
+    mp_int_t ret = WIZCHIP_EXPORT(send)(socket->fileno, (byte *)buf, len);
+    MP_THREAD_GIL_ENTER();
+
+    if (ret < 0) {
+      DEBUG_PRINT("socket_send: small transfer failed, ret=%d\n", ret);
+      wiznet5k_socket_close(socket);
+      *_errno = -ret;
+      return -1;
+    }
+    DEBUG_PRINT("socket_send: small transfer success, sent %d bytes\n", ret);
+    return ret;
+  }
+
+  // For large transfers (>= 1KB), use DMA with circular buffer
+  DEBUG_PRINT("socket_send: using DMA transfer for %d bytes\n", len);
+
+  // Get transfer descriptor
+  w5500_tx_transfer_t *transfer = w5500_get_transfer();
+  if (!transfer) {
+    DEBUG_PRINT(
+        "socket_send: transfer pool exhausted, falling back to blocking\n");
+    MP_THREAD_GIL_EXIT();
+    mp_int_t ret = WIZCHIP_EXPORT(send)(socket->fileno, (byte *)buf, len);
+    MP_THREAD_GIL_ENTER();
+
+    if (ret < 0) {
+      wiznet5k_socket_close(socket);
+      *_errno = -ret;
+      return -1;
+    }
+    return ret;
+  }
+
+  // Initialize transfer descriptor
+  transfer->data_ptr = buf;
+  transfer->total_size = len;
+  transfer->bytes_sent = 0;
+  transfer->socket_num = sn;
+  transfer->state = TX_WAITING_BUFFER_SPACE;
+
+  // Initial chunk size based on available buffer space
+  uint16_t free_space = getSn_TX_FSR(sn);
+  uint16_t max_chunk = getSn_TxMAX(sn);
+  transfer->chunk_size = (len < free_space) ? len : free_space;
+  if (transfer->chunk_size > max_chunk) {
+    transfer->chunk_size = max_chunk;
+  }
+
+  // Queue transfer
+  w5500_queue_transfer(transfer);
+
+  DEBUG_PRINT("socket_send: queued transfer, initial chunk size=%d\n",
+              transfer->chunk_size);
+
+  // CLAUDE FIX: Wait for transfer to complete (synchronous!)
+  // Use socket timeout or a reasonable default
+  uint32_t timeout_ms =
+      (socket->timeout > 0) ? socket->timeout : 30000; // 30 second default
+
+  int result = w5500_wait_transfer_complete(transfer, timeout_ms);
+
+  if (result < 0 || transfer->state == TX_ERROR) {
+    DEBUG_PRINT("socket_send: transfer failed\n");
+    // Transfer already dequeued and released by w5500_tx_service
+    *_errno = MP_EIO;
+    return -1;
+  }
+
+  uint32_t bytes_sent = transfer->bytes_sent;
+  // Transfer already dequeued and released by w5500_tx_service
+
+#if W5500_SPI_DEBUG
+  dump_w5500_state("After socket_send (Transfer Complete)");
+#endif
+
+  DEBUG_PRINT("socket_send: transfer complete, sent %d bytes\n", bytes_sent);
+  return bytes_sent;
+}
+
+static mp_uint_t wiznet5k_socket_recv(mod_network_socket_obj_t *socket,
+                                      byte *buf, mp_uint_t len, int *_errno) {
+  mp_hal_delay_ms(50);
+  uint8_t sn = (uint8_t)socket->fileno;
+  mp_hal_delay_ms(50);
+  DEBUG_PRINT("socket_recv: ENTRY socket=%d, len=%d, timeout=%d\n", sn, len,
+              socket->timeout);
+  mp_hal_delay_ms(50);
+  uint32_t start_time = mp_hal_ticks_ms();
+  mp_hal_delay_ms(50);
+  int loop_counter = 0;
+  mp_hal_delay_ms(50);
+
+  while (1) {
+    mp_hal_delay_ms(50);
+    // First, check if data is available
+    mp_hal_delay_ms(50);
+    uint16_t rx_rsr = getSn_RX_RSR(sn);
+    mp_hal_delay_ms(50);
+    if (loop_counter % 100 == 0) {
+      mp_hal_delay_ms(50);
+      DEBUG_PRINT("socket_recv: checking, RX_RSR=%d\n", rx_rsr);
+      mp_hal_delay_ms(50);
+    }
+    mp_hal_delay_ms(50);
+
+    if (rx_rsr > 0) {
+      mp_hal_delay_ms(50);
+      // Data is available, call recv
+      DEBUG_PRINT("socket_recv: data available (%d bytes), calling recv\n",
+                  rx_rsr);
+
+#if W5500_SPI_DEBUG
+      mp_hal_delay_ms(50);
+      dump_w5500_state("Before socket_recv (Data Available)");
+#endif
+
+      mp_hal_delay_ms(50);
+      DEBUG_PRINT("before MP_THREAD_GIL_EXIT\n");
+      mp_hal_delay_ms(50);
+      MP_THREAD_GIL_EXIT();
+      mp_hal_delay_ms(50);
+      DEBUG_PRINT("after MP_THREAD_GIL_EXIT, before WIZCHIP_EXPORT(recv): recv=%p, sn=%u, buf=%p, len=%u\n", 
+                  WIZCHIP_EXPORT(recv), sn, buf, (unsigned)len);
+
+      mp_hal_delay_ms(50);
+      mp_int_t ret = WIZCHIP_EXPORT(recv)(sn, buf, len);
+      mp_hal_delay_ms(50);
+      DEBUG_PRINT("before MP_THREAD_GIL_ENTER\n");
+      mp_hal_delay_ms(50);
+      MP_THREAD_GIL_ENTER();
+      mp_hal_delay_ms(50);
+      DEBUG_PRINT("after MP_THREAD_GIL_ENTER\n");
+      mp_hal_delay_ms(50);
+
+      DEBUG_PRINT("socket_recv: WIZCHIP_EXPORT(recv) returned %d\n", ret);
+      mp_hal_delay_ms(50);
+
+      if (ret < 0) {
+        DEBUG_PRINT("socket_recv: recv failed: %d\n", ret);
+        wiznet5k_socket_close(socket);
+        *_errno = -ret;
+        return -1;
+      }
+
+#if W5500_SPI_DEBUG
+      dump_data_preview("RECV DATA", buf, ret);
+      dump_w5500_state("After socket_recv (Data Received)");
+#endif
+
+      DEBUG_PRINT("socket_recv: success, received %d bytes\n", ret);
+      return ret;
+    }
+
+    // Check if socket is still connected
+    uint8_t sr = getSn_SR(sn);
+    if (loop_counter % 100 == 0) {
+      DEBUG_PRINT("socket_recv: socket state=0x%02x (%s)\n", sr,
+                  sn_sr_str(sr));
+    }
+
+    if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
+      DEBUG_PRINT("socket_recv: socket not in valid state for recv\n");
+      *_errno = MP_ENOTCONN;
+      return -1;
+    }
+
+    // Check for timeout
+    if (socket->timeout > 0) {
+      uint32_t elapsed = mp_hal_ticks_ms() - start_time;
+      if (elapsed >= socket->timeout) {
+        DEBUG_PRINT("socket_recv: timeout after %d ms\n", elapsed);
+        *_errno = MP_ETIMEDOUT;
+        return -1;
+      }
+    } else if (socket->timeout == 0) {
+      // Non-blocking mode - return immediately if no data
+      DEBUG_PRINT("socket_recv: non-blocking mode, no data available\n");
+      *_errno = MP_EAGAIN;
+      return -1;
+    }
+
+    // Small delay to prevent busy-waiting
+    mp_hal_delay_ms(10);
+    loop_counter++;
+  }
+}
+
+static mp_uint_t wiznet5k_socket_sendto(mod_network_socket_obj_t *socket,
+                                        const byte *buf, mp_uint_t len,
+                                        byte *ip, mp_uint_t port, int *_errno) {
+  if (socket->domain == 0) {
+    // socket not opened; use "bind" function to open the socket in client mode
+    if (wiznet5k_socket_bind(socket, ip, 0, _errno) != 0) {
+      return -1;
+    }
+  }
+
+  MP_THREAD_GIL_EXIT();
+  mp_int_t ret =
+      WIZCHIP_EXPORT(sendto)(socket->fileno, (byte *)buf, len, ip, port);
+  MP_THREAD_GIL_ENTER();
+
+  if (ret < 0) {
+    wiznet5k_socket_close(socket);
+    *_errno = -ret;
+    return -1;
+  }
+  return ret;
+}
+
+static mp_uint_t wiznet5k_socket_recvfrom(mod_network_socket_obj_t *socket,
+                                          byte *buf, mp_uint_t len, byte *ip,
+                                          mp_uint_t *port, int *_errno) {
+  uint16_t port2;
+  MP_THREAD_GIL_EXIT();
+  mp_int_t ret = WIZCHIP_EXPORT(recvfrom)(socket->fileno, buf, len, ip, &port2);
+  MP_THREAD_GIL_ENTER();
+  *port = port2;
+  if (ret < 0) {
+    wiznet5k_socket_close(socket);
+    *_errno = -ret;
+    return -1;
+  }
+  return ret;
+}
+
+static int wiznet5k_socket_setsockopt(mod_network_socket_obj_t *socket,
+                                      mp_uint_t level, mp_uint_t opt,
+                                      const void *optval, mp_uint_t optlen,
+                                      int *_errno) {
+  DEBUG_PRINT("socket_setsockopt: socket=%d, level=%d, opt=%d, optlen=%d\n",
+              socket->fileno, level, opt, optlen);
+
+  if (level == 1) { // SOL_SOCKET
+    switch (opt) {
+    case 2: // SO_REUSEADDR
+      DEBUG_PRINT("socket_setsockopt: SO_REUSEADDR - accepting as no-op\n");
+      return 0; // Accept as no-op
+
+    case 20: // SO_RCVTIMEO or similar (timeout)
+      DEBUG_PRINT("socket_setsockopt: timeout option\n");
+      // Might be setting timeout via setsockopt instead of settimeout
+      return 0; // Accept
+
+    default:
+      DEBUG_PRINT("socket_setsockopt: unsupported SOL_SOCKET option %d\n", opt);
+      *_errno = MP_EINVAL;
+      return -1;
+    }
+  }
+
+  DEBUG_PRINT("socket_setsockopt: unsupported level %d\n", level);
+  *_errno = MP_EINVAL;
+  return -1;
+}
+
+static int wiznet5k_socket_settimeout(mod_network_socket_obj_t *socket,
+                                      mp_uint_t timeout_ms, int *_errno) {
+  DEBUG_PRINT("socket_settimeout: socket=%d, timeout_ms=%d\n", socket->fileno,
+              timeout_ms);
+
+  // Store the timeout in the socket structure
+  socket->timeout = timeout_ms;
+  DEBUG_PRINT("socket_settimeout: set to %d ms\n", timeout_ms);
+  return 0; // Success
+}
+
+static int wiznet5k_socket_ioctl(mod_network_socket_obj_t *socket,
+                                 mp_uint_t request, mp_uint_t arg,
+                                 int *_errno) {
+  static int ioctl_call_count = 0;
+  ioctl_call_count++;
+  if (ioctl_call_count % 100 == 0) {
+    DEBUG_PRINT("socket_ioctl: request=0x%x, arg=0x%x, socket=%d\n", request,
+                arg, socket->fileno);
+  }
+
+  if (request == MP_STREAM_POLL) {
+    int ret = 0;
+    uint8_t sn = (uint8_t)socket->fileno;
+
+    // Check RX buffer
+    uint16_t rx_rsr = getSn_RX_RSR(sn);
+    uint16_t tx_fsr = getSn_TX_FSR(sn);
+    uint8_t sr = getSn_SR(sn);
+
+    if (ioctl_call_count % 100 == 0) {
+      DEBUG_PRINT(
+          "socket_ioctl: socket %d - state=0x%02x (%s), RX_RSR=%d, TX_FSR=%d\n",
+          sn, sr, sn_sr_str(sr), rx_rsr, tx_fsr);
+    }
+
+    if (arg & MP_STREAM_POLL_RD) {
+      if (sr == SOCK_LISTEN) {
+        // For listening sockets, check interrupt register for pending
+        // connections
+        uint8_t ir = getSn_IR(sn);
+        if (ioctl_call_count % 100 == 0) {
+          DEBUG_PRINT("socket_ioctl: listening socket, ir=0x%02x\n", ir);
+        }
+        if (ir & Sn_IR_CON) {
+          ret |= MP_STREAM_POLL_RD;
+          if (ioctl_call_count % 100 == 0) {
+            DEBUG_PRINT("socket_ioctl: connection pending!\n");
+          }
+        }
+      } else if (sr == SOCK_ESTABLISHED || sr == SOCK_CLOSE_WAIT) {
+        // Check for received data
+        uint16_t rx_rsr = getSn_RX_RSR(sn);
+        if (rx_rsr > 0) {
+          ret |= MP_STREAM_POLL_RD;
+          if (ioctl_call_count % 100 == 0) {
+            DEBUG_PRINT("socket_ioctl: data available (RX_RSR=%d)\n", rx_rsr);
+          }
+        }
+      }
+    }
+
+    if (arg & MP_STREAM_POLL_WR) {
+      if (sr == SOCK_ESTABLISHED || sr == SOCK_CLOSE_WAIT) {
+        uint16_t tx_fsr = getSn_TX_FSR(sn);
+        if (tx_fsr > 0) {
+          ret |= MP_STREAM_POLL_WR;
+          if (ioctl_call_count % 100 == 0) {
+            DEBUG_PRINT("socket_ioctl: can write (TX_FSR=%d)\n", tx_fsr);
+          }
+        }
+      } else if (sr == SOCK_INIT || sr == SOCK_LISTEN) {
+        // Socket can accept writes (for connecting/listening)
+        ret |= MP_STREAM_POLL_WR;
+        if (ioctl_call_count % 100 == 0) {
+          DEBUG_PRINT("socket_ioctl: socket ready for connect/listen\n");
+        }
+      }
+    }
+
+    if (ioctl_call_count % 100 == 0) {
+      DEBUG_PRINT("socket_ioctl: returning 0x%x\n", ret);
+    }
+    return ret;
+  } else {
+    if (ioctl_call_count % 100 == 0) {
+      DEBUG_PRINT("socket_ioctl: unsupported request 0x%x\n", request);
+    }
+    *_errno = MP_EINVAL;
+    return MP_STREAM_ERROR;
+  }
+}
+
+static void wiznet5k_dhcp_init(wiznet5k_obj_t *self) {
+  uint8_t test_buf[2048];
+  uint8_t ret = 0;
+  uint8_t dhcp_retry = 0;
+
+  while (ret != DHCP_IP_LEASED) {
+    mp_uint_t timeout = mp_hal_ticks_ms() + 3000;
+    DHCP_init(1, test_buf);
+
+    while (1) {
+      ret = DHCP_run();
+      if (ret == DHCP_IP_LEASED) {
+        break;
+      } else if (ret == DHCP_FAILED || mp_hal_ticks_ms() > timeout) {
+        dhcp_retry++;
+        break;
+      }
+      mpy_wiznet_yield();
+    }
+
+    if (dhcp_retry > 3) {
+      mp_raise_msg(&mp_type_OSError,
+                   MP_ERROR_TEXT("timeout waiting for DHCP to get IP address"));
+      break;
+    }
+  }
+
+  if (ret == DHCP_IP_LEASED) {
+    ctlnetwork(CN_GET_NETINFO, &self->netinfo);
+  }
+}
+
+#endif // WIZNET5K_PROVIDED_STACK
+
+/*******************************************************************************/
+// MicroPython bindings
+
+// WIZNET5K(spi, pin_cs, pin_rst[, pin_intn])
+// Create and return a WIZNET5K object.
+static mp_obj_t wiznet5k_make_new(const mp_obj_type_t *type, size_t n_args,
+                                  size_t n_kw, const mp_obj_t *args) {
+  mp_obj_base_t *spi;
+  mp_hal_pin_obj_t cs;
+  mp_hal_pin_obj_t rst;
+
+#if WIZNET5K_WITH_LWIP_STACK
+  mp_hal_pin_obj_t pin_intn = (mp_hal_pin_obj_t)NULL;
+  bool use_interrupt = false;
+
+  // Bring down interface while configuring
+  wiznet5k_obj.netif.flags = 0;
+#endif
+
+#ifdef MICROPY_HW_WIZNET_SPI_ID
+  // Allow auto-configuration of SPI if defined for board and no args passed
+  if (n_args == 0 && n_kw == 0) {
+    // Initialize SPI.
+    mp_obj_t spi_obj = MP_OBJ_NEW_SMALL_INT(MICROPY_HW_WIZNET_SPI_SCK);
+    mp_obj_t miso_obj = MP_OBJ_NEW_SMALL_INT(MICROPY_HW_WIZNET_SPI_MISO);
+    mp_obj_t mosi_obj = MP_OBJ_NEW_SMALL_INT(MICROPY_HW_WIZNET_SPI_MOSI);
+    mp_obj_t args[] = {
+        MP_OBJ_NEW_SMALL_INT(MICROPY_HW_WIZNET_SPI_ID),
+        MP_OBJ_NEW_SMALL_INT(MICROPY_HW_WIZNET_SPI_BAUDRATE),
+        MP_ROM_QSTR(MP_QSTR_sck),
+        mp_pin_make_new(NULL, 1, 0, &spi_obj),
+        MP_ROM_QSTR(MP_QSTR_miso),
+        mp_pin_make_new(NULL, 1, 0, &miso_obj),
+        MP_ROM_QSTR(MP_QSTR_mosi),
+        mp_pin_make_new(NULL, 1, 0, &mosi_obj),
+    };
+    spi = MP_OBJ_TO_PTR(MP_OBJ_TYPE_GET_SLOT(&machine_spi_type, make_new)(
+        (mp_obj_t)&machine_spi_type, 2, 3, args));
+
+    cs = mp_hal_get_pin_obj(mp_pin_make_new(
+        NULL, 1, 0,
+        (mp_obj_t[]){MP_OBJ_NEW_SMALL_INT(MICROPY_HW_WIZNET_PIN_CS)}));
+    rst = mp_hal_get_pin_obj(mp_pin_make_new(
+        NULL, 1, 0,
+        (mp_obj_t[]){MP_OBJ_NEW_SMALL_INT(MICROPY_HW_WIZNET_PIN_RST)}));
+#if WIZNET5K_WITH_LWIP_STACK && defined(MICROPY_HW_WIZNET_PIN_INTN)
+    pin_intn = mp_hal_get_pin_obj(mp_pin_make_new(
+        NULL, 1, 0,
+        (mp_obj_t[]){MP_OBJ_NEW_SMALL_INT(MICROPY_HW_WIZNET_PIN_INTN)}));
+    use_interrupt = true;
+#endif
+
+  } else
+#endif
+  {
+// If passing in args, must supply spi, pin_cs, pin_rst and optionally pin_intn
+#if WIZNET5K_WITH_LWIP_STACK
+    mp_arg_check_num(n_args, n_kw, 3, 4, false);
+#else
+    mp_arg_check_num(n_args, n_kw, 3, 3, false);
+#endif
+    spi = mp_hal_get_spi_obj(args[0]);
+    cs = mp_hal_get_pin_obj(args[1]);
+    rst = mp_hal_get_pin_obj(args[2]);
+#if WIZNET5K_WITH_LWIP_STACK
+    if (n_args > 3) {
+      pin_intn = mp_hal_get_pin_obj(args[3]);
+      use_interrupt = true;
+    }
+#endif
+  }
+
+  mp_hal_pin_output(cs);
+  mp_hal_pin_output(rst);
+
+  // Init the wiznet5k object
+  wiznet5k_obj.base.type = (mp_obj_type_t *)&mod_network_nic_type_wiznet5k;
+  wiznet5k_obj.cris_state = 0;
+  wiznet5k_obj.spi = spi;
+  wiznet5k_obj.spi_transfer =
+      ((mp_machine_spi_p_t *)MP_OBJ_TYPE_GET_SLOT(spi->type, protocol))
+          ->transfer;
+  wiznet5k_obj.cs = cs;
+  wiznet5k_obj.rst = rst;
+#if WIZNET5K_WITH_LWIP_STACK
+  wiznet5k_obj.pin_intn = pin_intn;
+  wiznet5k_obj.use_interrupt = use_interrupt;
+  wiznet5k_obj.trace_flags = 0;
+#else // WIZNET5K_PROVIDED_STACK
+  wiznet5k_obj.active = false;
+  wiznet5k_obj.socket_used = 0;
+#endif
+
+  // Return wiznet5k object
+  return MP_OBJ_FROM_PTR(&wiznet5k_obj);
+}
+
+// regs()
+// Dump WIZNET5K registers.
+static mp_obj_t wiznet5k_regs(mp_obj_t self_in) {
+  (void)self_in;
+  printf("Wiz CREG:");
+  for (int i = 0; i < 0x50; ++i) {
+    if (i % 16 == 0) {
+      printf("\n  %04x:", i);
+    }
+#if _WIZCHIP_ == 5500
+    uint32_t reg = _W5500_IO_BASE_ | i << 8;
+#else
+    uint32_t reg = i;
+#endif
+    printf(" %02x", WIZCHIP_READ(reg));
+  }
+  for (int sn = 0; sn < 4; ++sn) {
+    printf("\nWiz SREG[%d]:", sn);
+    for (int i = 0; i < 0x30; ++i) {
+      if (i % 16 == 0) {
+        printf("\n  %04x:", i);
+      }
+#if _WIZCHIP_ == 5500
+      uint32_t reg = _W5500_IO_BASE_ | i << 8 | WIZCHIP_SREG_BLOCK(sn) << 3;
+#else
+      uint32_t reg = WIZCHIP_SREG_ADDR(sn, i);
+#endif
+      printf(" %02x", WIZCHIP_READ(reg));
+    }
+  }
+  printf("\n");
+  return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(wiznet5k_regs_obj, wiznet5k_regs);
+
+static mp_obj_t wiznet5k_isconnected(mp_obj_t self_in) {
+  wiznet5k_obj_t *self = MP_OBJ_TO_PTR(self_in);
+  return mp_obj_new_bool(wizphy_getphylink() == PHY_LINK_ON && IS_ACTIVE(self)
+#if WIZNET5K_WITH_LWIP_STACK
+                         && ip_2_ip4(&self->netif.ip_addr)->addr != 0
+#endif
+  );
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(wiznet5k_isconnected_obj,
+                                 wiznet5k_isconnected);
+
+static mp_obj_t wiznet5k_active(size_t n_args, const mp_obj_t *args) {
+  wiznet5k_obj_t *self = MP_OBJ_TO_PTR(args[0]);
+  DEBUG_PRINT("wiznet5k_active: n_args=%d, IS_ACTIVE=%d\n", n_args,
+              IS_ACTIVE(self));
+
+  if (n_args == 1) {
+    DEBUG_PRINT("wiznet5k_active: getting state\n");
+    return mp_obj_new_bool(IS_ACTIVE(self));
+  } else {
+    if (mp_obj_is_true(args[1])) {
+      if (!IS_ACTIVE(self)) {
+        DEBUG_PRINT("wiznet5k_active: activating...\n");
+
+        /*!< Wiznet initialisation */
+        // Reset the chip
+        mp_hal_pin_low(wiznet5k_obj.rst);
+        mp_hal_delay_ms(1); // datasheet says 2us
+        mp_hal_pin_high(wiznet5k_obj.rst);
+        mp_hal_delay_ms(160); // datasheet says 150ms
+
+        // CLAUDE FIX: Claim DMA channel BEFORE registering SPI callbacks
+        // This ensures dma_tx_chan is valid if wiz_spi_writeburst is called
+        w5500_dma_init();
+
+        // Set physical interface callbacks
+        reg_wizchip_cris_cbfunc(wiz_cris_enter, wiz_cris_exit);
+        reg_wizchip_cs_cbfunc(wiz_cs_select, wiz_cs_deselect);
+        reg_wizchip_spi_cbfunc(wiz_spi_readbyte, wiz_spi_writebyte);
+        reg_wizchip_spiburst_cbfunc(wiz_spi_readburst, wiz_spi_writeburst);
+
+        // SPI DMA will be enabled only during DMA transfers
+
+        // Configure lwip/provided specific settings
+        DEBUG_PRINT("wiznet5k_active: calling wiznet5k_init()\n");
+        wiznet5k_init();
+
+// If the device doesn't have a MAC address then set one
+#if WIZNET5K_WITH_LWIP_STACK
+        uint8_t *mac = self->netif.hwaddr;
+#else // WIZNET5K_PROVIDED_STACK
+        uint8_t *mac = wiznet5k_obj.netinfo.mac;
+#endif
+        getSHAR(mac);
+        if ((mac[0] | mac[1] | mac[2] | mac[3] | mac[4] | mac[5]) == 0) {
+          mp_hal_get_mac(MP_HAL_MAC_ETH0, mac);
+          setSHAR(mac);
+        }
+
+#if WIZNET5K_WITH_LWIP_STACK && LWIP_IPV6
+        netif_create_ip6_linklocal_address(&self->netif, 1);
+#endif
+
+        // seems we need a small delay after init
+        mp_hal_delay_ms(250);
+      }
+    } else {
+      DEBUG_PRINT("wiznet5k_active: deactivating...\n");
+#if WIZNET5K_WITH_LWIP_STACK
+      netif_set_down(&self->netif);
+      netif_set_link_down(&self->netif);
+      wiznet5k_deinit();
+#else // WIZNET5K_PROVIDED_STACK
+      self->active = false;
+      wizchip_sw_reset();
+#endif
+    }
+    return mp_const_none;
+  }
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(wiznet5k_active_obj, 1, 2,
+                                           wiznet5k_active);
+
+#if WIZNET5K_PROVIDED_STACK
+// ifconfig([(ip, subnet, gateway, dns)])
+// Get/set IP address, subnet mask, gateway and DNS.
+static mp_obj_t wiznet5k_ifconfig(size_t n_args, const mp_obj_t *args) {
+  wiz_NetInfo netinfo;
+  wiznet5k_obj_t *self = MP_OBJ_TO_PTR(args[0]);
+  ctlnetwork(CN_GET_NETINFO, &netinfo);
+  if (n_args == 1) {
+    // Get IP addresses
+    mp_obj_t tuple[4] = {
+        netutils_format_ipv4_addr(netinfo.ip, NETUTILS_BIG),
+        netutils_format_ipv4_addr(netinfo.sn, NETUTILS_BIG),
+        netutils_format_ipv4_addr(netinfo.gw, NETUTILS_BIG),
+        netutils_format_ipv4_addr(netinfo.dns, NETUTILS_BIG),
+    };
+    return mp_obj_new_tuple(4, tuple);
+  } else if (args[1] == MP_OBJ_NEW_QSTR(MP_QSTR_dhcp)) {
+    // Start the DHCP client
+    self->netinfo.dhcp = NETINFO_DHCP;
+    wiznet5k_dhcp_init((void *)self);
+    mp_obj_t tuple[4] = {
+        netutils_format_ipv4_addr(self->netinfo.ip, NETUTILS_BIG),
+        netutils_format_ipv4_addr(self->netinfo.sn, NETUTILS_BIG),
+        netutils_format_ipv4_addr(self->netinfo.gw, NETUTILS_BIG),
+        netutils_format_ipv4_addr(self->netinfo.dns, NETUTILS_BIG),
+
+    };
+    return mp_obj_new_tuple(4, tuple);
+
+  } else {
+    // Set static IP addresses
+    self->netinfo.dhcp = NETINFO_STATIC;
+    mp_obj_t *items;
+    mp_obj_get_array_fixed_n(args[1], 4, &items);
+    netutils_parse_ipv4_addr(items[0], netinfo.ip, NETUTILS_BIG);
+    netutils_parse_ipv4_addr(items[1], netinfo.sn, NETUTILS_BIG);
+    netutils_parse_ipv4_addr(items[2], netinfo.gw, NETUTILS_BIG);
+    netutils_parse_ipv4_addr(items[3], netinfo.dns, NETUTILS_BIG);
+    ctlnetwork(CN_SET_NETINFO, &netinfo);
+    return mp_const_none;
+  }
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(wiznet5k_ifconfig_obj, 1, 2,
+                                           wiznet5k_ifconfig);
+#endif // WIZNET5K_PROVIDED_STACK
+
+#if WIZNET5K_WITH_LWIP_STACK
+
+static mp_obj_t wiznet5k_ifconfig(size_t n_args, const mp_obj_t *args) {
+  wiznet5k_obj_t *self = MP_OBJ_TO_PTR(args[0]);
+  return mod_network_nic_ifconfig(&self->netif, n_args - 1, args + 1);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(wiznet5k_ifconfig_obj, 1, 2,
+                                           wiznet5k_ifconfig);
+
+static mp_obj_t network_wiznet5k_ipconfig(size_t n_args, const mp_obj_t *args,
+                                          mp_map_t *kwargs) {
+  wiznet5k_obj_t *self = MP_OBJ_TO_PTR(args[0]);
+  return mod_network_nic_ipconfig(&self->netif, n_args - 1, args + 1, kwargs);
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(wiznet5k_ipconfig_obj, 1,
+                                  network_wiznet5k_ipconfig);
+
+static mp_obj_t send_ethernet_wrapper(mp_obj_t self_in, mp_obj_t buf_in) {
+  wiznet5k_obj_t *self = MP_OBJ_TO_PTR(self_in);
+  mp_buffer_info_t buf;
+  mp_get_buffer_raise(buf_in, &buf, MP_BUFFER_READ);
+  wiznet5k_send_ethernet(self, buf.len, buf.buf);
+  return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(send_ethernet_obj, send_ethernet_wrapper);
+
+#endif // MICROPY_PY_LWIP
+
+static mp_obj_t wiznet5k_status(size_t n_args, const mp_obj_t *args) {
+  wiznet5k_obj_t *self = MP_OBJ_TO_PTR(args[0]);
+  (void)self;
+
+  if (n_args == 1) {
+    // No arguments: return link status
+    if (wizphy_getphylink() == PHY_LINK_ON) {
+      if (IS_ACTIVE(self)) {
+        return MP_OBJ_NEW_SMALL_INT(2);
+      } else {
+        return MP_OBJ_NEW_SMALL_INT(1);
+      }
+    } else {
+      return MP_OBJ_NEW_SMALL_INT(0);
+    }
+  }
+  mp_raise_ValueError(MP_ERROR_TEXT("unknown status param"));
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(wiznet5k_status_obj, 1, 2,
+                                           wiznet5k_status);
+
+static mp_obj_t wiznet5k_config(size_t n_args, const mp_obj_t *args,
+                                mp_map_t *kwargs) {
+  wiznet5k_obj_t *self = MP_OBJ_TO_PTR(args[0]);
+
+  if (kwargs->used == 0) {
+    // Get config value
+    if (n_args != 2) {
+      mp_raise_TypeError(MP_ERROR_TEXT("must query one param"));
+    }
+
+    switch (mp_obj_str_get_qstr(args[1])) {
+    case MP_QSTR_mac: {
+      uint8_t buf[6];
+      wiznet5k_get_mac_address(self, buf);
+      return mp_obj_new_bytes(buf, 6);
+    }
+    default:
+      mp_raise_ValueError(MP_ERROR_TEXT("unknown config param"));
+    }
+  } else {
+    // Set config value(s)
+    if (n_args != 1) {
+      mp_raise_TypeError(MP_ERROR_TEXT("can't specify pos and kw args"));
+    }
+
+    for (size_t i = 0; i < kwargs->alloc; ++i) {
+      if (MP_MAP_SLOT_IS_FILLED(kwargs, i)) {
+        mp_map_elem_t *e = &kwargs->table[i];
+        switch (mp_obj_str_get_qstr(e->key)) {
+        case MP_QSTR_mac: {
+          mp_buffer_info_t buf;
+          mp_get_buffer_raise(e->value, &buf, MP_BUFFER_READ);
+          if (buf.len != 6) {
+            mp_raise_ValueError(NULL);
+          }
+          setSHAR(buf.buf);
+#if WIZNET5K_WITH_LWIP_STACK
+          memcpy(self->netif.hwaddr, buf.buf, 6);
+#endif
+          break;
+        }
+#if WIZNET5K_WITH_LWIP_STACK
+        case MP_QSTR_trace: {
+          self->trace_flags = mp_obj_get_int(e->value);
+          break;
+        }
+#endif
+        default:
+          mp_raise_ValueError(MP_ERROR_TEXT("unknown config param"));
+        }
+      }
+    }
+
+    return mp_const_none;
+  }
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(wiznet5k_config_obj, 1, wiznet5k_config);
+
+static const mp_rom_map_elem_t wiznet5k_locals_dict_table[] = {
+    {MP_ROM_QSTR(MP_QSTR_regs), MP_ROM_PTR(&wiznet5k_regs_obj)},
+    {MP_ROM_QSTR(MP_QSTR_isconnected), MP_ROM_PTR(&wiznet5k_isconnected_obj)},
+    {MP_ROM_QSTR(MP_QSTR_active), MP_ROM_PTR(&wiznet5k_active_obj)},
+    {MP_ROM_QSTR(MP_QSTR_ifconfig), MP_ROM_PTR(&wiznet5k_ifconfig_obj)},
+#if WIZNET5K_WITH_LWIP_STACK
+    {MP_ROM_QSTR(MP_QSTR_ipconfig), MP_ROM_PTR(&wiznet5k_ipconfig_obj)},
+#endif
+    {MP_ROM_QSTR(MP_QSTR_status), MP_ROM_PTR(&wiznet5k_status_obj)},
+    {MP_ROM_QSTR(MP_QSTR_config), MP_ROM_PTR(&wiznet5k_config_obj)},
+#if WIZNET5K_WITH_LWIP_STACK
+    {MP_ROM_QSTR(MP_QSTR_send_ethernet), MP_ROM_PTR(&send_ethernet_obj)},
+#endif
+};
+static MP_DEFINE_CONST_DICT(wiznet5k_locals_dict, wiznet5k_locals_dict_table);
+
+#if WIZNET5K_WITH_LWIP_STACK
+#define NIC_TYPE_WIZNET_PROTOCOL
+#else // WIZNET5K_PROVIDED_STACK
+const mod_network_nic_protocol_t mod_network_nic_protocol_wiznet = {
+    .gethostbyname = wiznet5k_gethostbyname,
+    .socket = wiznet5k_socket_socket,
+    .close = wiznet5k_socket_close,
+    .bind = wiznet5k_socket_bind,
+    .listen = wiznet5k_socket_listen,
+    .accept = wiznet5k_socket_accept,
+    .connect = wiznet5k_socket_connect,
+    .send = wiznet5k_socket_send,
+    .recv = wiznet5k_socket_recv,
+    .sendto = wiznet5k_socket_sendto,
+    .recvfrom = wiznet5k_socket_recvfrom,
+    .setsockopt = wiznet5k_socket_setsockopt,
+    .settimeout = wiznet5k_socket_settimeout,
+    .ioctl = wiznet5k_socket_ioctl,
+};
+#define NIC_TYPE_WIZNET_PROTOCOL protocol, &mod_network_nic_protocol_wiznet,
+#endif
+
+MP_DEFINE_CONST_OBJ_TYPE(mod_network_nic_type_wiznet5k, MP_QSTR_WIZNET5K,
+                         MP_TYPE_FLAG_NONE, make_new, wiznet5k_make_new,
+                         NIC_TYPE_WIZNET_PROTOCOL locals_dict,
+                         &wiznet5k_locals_dict);
+
+#endif // MICROPY_PY_NETWORK_WIZNET5K
+cat micropython/lib/wiznet5k/Ethernet/wizchip_conf.h
+//*****************************************************************************
+//
+//! \file wizchip_conf.h
+//! \brief WIZCHIP Config Header File.
+//! \version 1.0.0
+//! \date 2013/10/21
+//! \par  Revision history
+//!       <2015/02/05> Notice
+//!        The version history is not updated after this point.
+//!        Download the latest version directly from GitHub. Please visit the our GitHub repository for ioLibrary.
+//!        >> https://github.com/Wiznet/ioLibrary_Driver
+//!       <2013/10/21> 1st Release
+//! \author MidnightCow
+//! \copyright
+//!
+//! Copyright (c)  2013, WIZnet Co., LTD.
+//! All rights reserved.
+//! 
+//! Redistribution and use in source and binary forms, with or without 
+//! modification, are permitted provided that the following conditions 
+//! are met: 
+//! 
+//!     * Redistributions of source code must retain the above copyright 
+//! notice, this list of conditions and the following disclaimer. 
+//!     * Redistributions in binary form must reproduce the above copyright
+//! notice, this list of conditions and the following disclaimer in the
+//! documentation and/or other materials provided with the distribution. 
+//!     * Neither the name of the <ORGANIZATION> nor the names of its 
+//! contributors may be used to endorse or promote products derived 
+//! from this software without specific prior written permission. 
+//! 
+//! THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+//! AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE 
+//! IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+//! ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE 
+//! LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR 
+//! CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF 
+//! SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+//! INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+//! CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) 
+//! ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF 
+//! THE POSSIBILITY OF SUCH DAMAGE.
+//
+//*****************************************************************************
+
+/**
+ * @defgroup extra_functions 2. WIZnet Extra Functions
+ *
+ * @brief These functions is optional function. It could be replaced at WIZCHIP I/O function because they were made by WIZCHIP I/O functions.  
+ * @details There are functions of configuring WIZCHIP, network, interrupt, phy, network information and timer. \n
+ * 
+ */
+
+#ifndef  _WIZCHIP_CONF_H_
+#define  _WIZCHIP_CONF_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <stdint.h>
+/**
+ * @brief Select WIZCHIP.
+ * @todo You should select one, \b W5100, \b W5100S, \b W5200, \b W5300, \b W5500 or etc. \n\n
+ *       ex> <code> #define \_WIZCHIP_      W5500 </code>
+ */
+
+#define W5100						5100
+#define W5100S						5100+5
+#define W5200						5200
+#define W5300						5300
+#define W5500						5500
+
+#ifndef _WIZCHIP_
+#define _WIZCHIP_                      W5500   // W5100, W5100S, W5200, W5300, W5500
+#endif
+
+#if WIZCHIP_PREFIXED_EXPORTS
+// If enabled, all exported function names wll be prepended with
+// "wizchip_" to avoid global namespace clashes on functions, eg.
+// "close()" becomes "wiznet_close()"
+#define WIZCHIP_EXPORT(name) wizchip_ ## name
+#else
+#define WIZCHIP_EXPORT(name) name
+#endif
+
+#ifdef WIZCHIP_YIELD
+// This function macro can be overridden to run a function during any blocking while loops
+extern void WIZCHIP_YIELD(void);
+#else
+#define WIZCHIP_YIELD()
+#endif
+
+#define _WIZCHIP_IO_MODE_NONE_         0x0000
+#define _WIZCHIP_IO_MODE_BUS_          0x0100 /**< Bus interface mode */
+#define _WIZCHIP_IO_MODE_SPI_          0x0200 /**< SPI interface mode */
+//#define _WIZCHIP_IO_MODE_IIC_          0x0400
+//#define _WIZCHIP_IO_MODE_SDIO_         0x0800
+// Add to
+//
+
+#define _WIZCHIP_IO_MODE_BUS_DIR_      (_WIZCHIP_IO_MODE_BUS_ + 1) /**< BUS interface mode for direct  */
+#define _WIZCHIP_IO_MODE_BUS_INDIR_    (_WIZCHIP_IO_MODE_BUS_ + 2) /**< BUS interface mode for indirect */
+
+#define _WIZCHIP_IO_MODE_SPI_VDM_      (_WIZCHIP_IO_MODE_SPI_ + 1) /**< SPI interface mode for variable length data*/
+#define _WIZCHIP_IO_MODE_SPI_FDM_      (_WIZCHIP_IO_MODE_SPI_ + 2) /**< SPI interface mode for fixed length data mode*/
+#define _WIZCHIP_IO_MODE_SPI_5500_     (_WIZCHIP_IO_MODE_SPI_ + 3) /**< SPI interface mode for fixed length data mode*/
+
+#if   (_WIZCHIP_ == W5100)
+   #define _WIZCHIP_ID_                "W5100\0"
+/**
+ * @brief Define interface mode.
+ * @todo you should select interface mode as chip. Select one of @ref \_WIZCHIP_IO_MODE_SPI_ , @ref \_WIZCHIP_IO_MODE_BUS_DIR_ or @ref \_WIZCHIP_IO_MODE_BUS_INDIR_
+ */
+// 	#define _WIZCHIP_IO_MODE_           _WIZCHIP_IO_MODE_BUS_DIR_
+//	#define _WIZCHIP_IO_MODE_           _WIZCHIP_IO_MODE_BUS_INDIR_
+   	   #define _WIZCHIP_IO_MODE_           _WIZCHIP_IO_MODE_SPI_
+
+//A20150601 : Define the unit of IO DATA.   
+   typedef   uint8_t   iodata_t;
+//A20150401 : Indclude W5100.h file
+   #include "W5100/w5100.h"
+
+#elif (_WIZCHIP_ == W5100S)
+#define _WIZCHIP_ID_                "W5100S\0"
+/**
+* @brief Define interface mode.
+* @todo you should select interface mode as chip. Select one of @ref \_WIZCHIP_IO_MODE_SPI_ , @ref \_WIZCHIP_IO_MODE_BUS_DIR_ or @ref \_WIZCHIP_IO_MODE_BUS_INDIR_
+*/
+//	#define _WIZCHIP_IO_MODE_           _WIZCHIP_IO_MODE_BUS_INDIR_
+	//#define _WIZCHIP_IO_MODE_           _WIZCHIP_IO_MODE_SPI_5500_
+	#define _WIZCHIP_IO_MODE_           _WIZCHIP_IO_MODE_SPI_
+
+//A20150601 : Define the unit of IO DATA.
+   typedef   uint8_t   iodata_t;
+//A20150401 : Indclude W5100.h file
+	#include "W5100S/w5100s.h"
+#elif (_WIZCHIP_ == W5200)
+   #define _WIZCHIP_ID_                "W5200\0"
+/**
+ * @brief Define interface mode.
+ * @todo you should select interface mode as chip. Select one of @ref \_WIZCHIP_IO_MODE_SPI_ or @ref \	_WIZCHIP_IO_MODE_BUS_INDIR_
+ */
+#ifndef _WIZCHIP_IO_MODE_
+// #define _WIZCHIP_IO_MODE_           _WIZCHIP_IO_MODE_BUS_INDIR_
+   #define _WIZCHIP_IO_MODE_           _WIZCHIP_IO_MODE_SPI_
+#endif
+//A20150601 : Define the unit of IO DATA.   
+   typedef   uint8_t   iodata_t;
+   #include "W5200/w5200.h"
+#elif (_WIZCHIP_ == W5500)
+  #define _WIZCHIP_ID_                 "W5500\0"
+  
+/**
+ * @brief Define interface mode. \n
+ * @todo Should select interface mode as chip. 
+ *        - @ref \_WIZCHIP_IO_MODE_SPI_ \n
+ *          -@ref \_WIZCHIP_IO_MODE_SPI_VDM_ : Valid only in @ref \_WIZCHIP_ == W5500 \n
+ *          -@ref \_WIZCHIP_IO_MODE_SPI_FDM_ : Valid only in @ref \_WIZCHIP_ == W5500 \n
+ *        - @ref \_WIZCHIP_IO_MODE_BUS_ \n
+ *          - @ref \_WIZCHIP_IO_MODE_BUS_DIR_ \n
+ *          - @ref \_WIZCHIP_IO_MODE_BUS_INDIR_ \n
+ *        - Others will be defined in future. \n\n
+ *        ex> <code> #define \_WIZCHIP_IO_MODE_ \_WIZCHIP_IO_MODE_SPI_VDM_ </code>
+ *       
+ */
+#ifndef _WIZCHIP_IO_MODE_
+   //#define _WIZCHIP_IO_MODE_           _WIZCHIP_IO_MODE_SPI_FDM_
+   #define _WIZCHIP_IO_MODE_           _WIZCHIP_IO_MODE_SPI_VDM_
+#endif
+//A20150601 : Define the unit of IO DATA.   
+   typedef   uint8_t   iodata_t;
+   #include "W5500/w5500.h"
+#elif ( _WIZCHIP_ == W5300)
+   #define _WIZCHIP_ID_                 "W5300\0"
+/**
+ * @brief Define interface mode.
+ * @todo you should select interface mode as chip. Select one of @ref \_WIZCHIP_IO_MODE_SPI_ , @ref \_WIZCHIP_IO_MODE_BUS_DIR_ or @ref \_WIZCHIP_IO_MODE_BUS_INDIR_
+ */
+#ifndef _WIZCHIP_IO_MODE_
+   #define _WIZCHIP_IO_MODE_           _WIZCHIP_IO_MODE_BUS_DIR_
+// #define _WIZCHIP_IO_MODE_           _WIZCHIP_IO_MODE_BUS_INDIR_
+#endif
+
+//A20150601 : Define the unit and bus width of IO DATA. 
+   /**
+    * @brief Select the data width 8 or 16 bits.
+    * @todo you should select the bus width. Select one of 8 or 16.
+    */
+   #ifndef _WIZCHIP_IO_BUS_WIDTH_
+   #define _WIZCHIP_IO_BUS_WIDTH_       16  // 8
+   #endif
+   #if _WIZCHIP_IO_BUS_WIDTH_ == 8
+      typedef   uint8_t   iodata_t;
+   #elif _WIZCHIP_IO_BUS_WIDTH_ == 16
+      typedef   uint16_t   iodata_t;
+   #else
+      #error "Unknown _WIZCHIP_IO_BUS_WIDTH_. It should be 8 or 16."	
+   #endif
+//
+   #include "W5300/w5300.h"
+#else
+   #error "Unknown defined _WIZCHIP_. You should define one of 5100, 5200, and 5500 !!!"
+#endif
+
+#ifndef _WIZCHIP_IO_MODE_
+   #error "Undefined _WIZCHIP_IO_MODE_. You should define it !!!"
+#endif
+
+/**
+ * @brief Define I/O base address when BUS IF mode.
+ * @todo Should re-define it to fit your system when BUS IF Mode (@ref \_WIZCHIP_IO_MODE_BUS_,
+ *       @ref \_WIZCHIP_IO_MODE_BUS_DIR_, @ref \_WIZCHIP_IO_MODE_BUS_INDIR_). \n\n
+ *       ex> <code> #define \_WIZCHIP_IO_BASE_      0x00008000 </code>
+ */
+#if _WIZCHIP_IO_MODE_ & _WIZCHIP_IO_MODE_BUS_
+//	#define _WIZCHIP_IO_BASE_				0x60000000	// for 5100S IND
+	#define _WIZCHIP_IO_BASE_				0x68000000	// for W5300
+#elif _WIZCHIP_IO_MODE_ & _WIZCHIP_IO_MODE_SPI_
+	#define _WIZCHIP_IO_BASE_				0x00000000	// for 5100S SPI
+#endif
+
+#ifndef _WIZCHIP_IO_BASE_
+#define _WIZCHIP_IO_BASE_              0x00000000  // 0x8000
+#endif
+
+//M20150401 : Typing Error
+//#if _WIZCHIP_IO_MODE_ & _WIZCHIP_IO_MODE_BUS
+#if _WIZCHIP_IO_MODE_ & _WIZCHIP_IO_MODE_BUS_
+   #ifndef _WIZCHIP_IO_BASE_
+      #error "You should be define _WIZCHIP_IO_BASE to fit your system memory map."
+   #endif
+#endif   
+
+#if _WIZCHIP_ >= W5200
+   #define _WIZCHIP_SOCK_NUM_   8   ///< The count of independant socket of @b WIZCHIP
+#else
+   #define _WIZCHIP_SOCK_NUM_   4   ///< The count of independant socket of @b WIZCHIP
+#endif      
+
+
+/********************************************************
+* WIZCHIP BASIC IF functions for SPI, SDIO, I2C , ETC.
+*********************************************************/
+/**
+ * @ingroup DATA_TYPE
+ * @brief The set of callback functions for W5500:@ref WIZCHIP_IO_Functions W5200:@ref WIZCHIP_IO_Functions_W5200
+ */
+typedef struct __WIZCHIP
+{
+   uint16_t  if_mode;               ///< host interface mode
+   uint8_t   id[8];                 ///< @b WIZCHIP ID such as @b 5100, @b 5100S, @b 5200, @b 5500, and so on.
+   /**
+    * The set of critical section callback func.
+    */
+   struct _CRIS
+   {
+      void (*_enter)  (void);       ///< crtical section enter 
+      void (*_exit) (void);         ///< critial section exit  
+   }CRIS;  
+   /**
+    *  The set of @ref \_WIZCHIP_ select control callback func.
+    */
+   struct _CS
+   {
+      void (*_select)  (void);      ///< @ref \_WIZCHIP_ selected
+      void (*_deselect)(void);      ///< @ref \_WIZCHIP_ deselected
+   }CS;  
+   /**
+    * The set of interface IO callback func.
+    */
+   union _IF
+   {	 
+      /**
+       * For BUS interface IO
+       */
+      //M20156501 : Modify the function name for integrating with W5300
+      //struct
+      //{
+      //   uint8_t  (*_read_byte)  (uint32_t AddrSel);
+      //   void     (*_write_byte) (uint32_t AddrSel, uint8_t wb);
+      //}BUS;      
+      struct
+      {
+         iodata_t  (*_read_data)   (uint32_t AddrSel);
+         void      (*_write_data)  (uint32_t AddrSel, iodata_t wb);
+      }BUS;      
+
+      /**
+       * For SPI interface IO
+       */
+      struct
+      {
+         uint8_t (*_read_byte)   (void);
+         void    (*_write_byte)  (uint8_t wb);
+         void    (*_read_burst)  (uint8_t* pBuf, uint16_t len);
+         void    (*_write_burst) (const uint8_t* pBuf, uint16_t len);
+      }SPI;
+      // To be added
+      //
+   }IF;
+}_WIZCHIP;
+
+extern _WIZCHIP  WIZCHIP;
+
+/**
+ * @ingroup DATA_TYPE
+ *  WIZCHIP control type enumration used in @ref ctlwizchip().
+ */
+typedef enum
+{
+   CW_RESET_WIZCHIP,   ///< Resets WIZCHIP by softly
+   CW_INIT_WIZCHIP,    ///< Initializes to WIZCHIP with SOCKET buffer size 2 or 1 dimension array typed uint8_t.
+   CW_GET_INTERRUPT,   ///< Get Interrupt status of WIZCHIP
+   CW_CLR_INTERRUPT,   ///< Clears interrupt
+   CW_SET_INTRMASK,    ///< Masks interrupt
+   CW_GET_INTRMASK,    ///< Get interrupt mask
+   CW_SET_INTRTIME,    ///< Set interval time between the current and next interrupt. 
+   CW_GET_INTRTIME,    ///< Set interval time between the current and next interrupt. 
+   CW_GET_ID,          ///< Gets WIZCHIP name.
+
+//D20150601 : For no modification your application code
+//#if _WIZCHIP_ ==  W5500
+   CW_RESET_PHY,       ///< Resets internal PHY. Valid Only W5500
+   CW_SET_PHYCONF,     ///< When PHY configured by internal register, PHY operation mode (Manual/Auto, 10/100, Half/Full). Valid Only W5000
+   CW_GET_PHYCONF,     ///< Get PHY operation mode in internal register. Valid Only W5500
+   CW_GET_PHYSTATUS,   ///< Get real PHY status on operating. Valid Only W5500
+   CW_SET_PHYPOWMODE,  ///< Set PHY power mode as normal and down when PHYSTATUS.OPMD == 1. Valid Only W5500
+//#endif
+//D20150601 : For no modification your application code
+//#if _WIZCHIP_ == W5200 || _WIZCHIP_ == W5500
+   CW_GET_PHYPOWMODE,  ///< Get PHY Power mode as down or normal, Valid Only W5100, W5200
+   CW_GET_PHYLINK      ///< Get PHY Link status, Valid Only W5100, W5200
+//#endif
+}ctlwizchip_type;
+
+/**
+ * @ingroup DATA_TYPE
+ *  Network control type enumration used in @ref ctlnetwork().
+ */
+typedef enum
+{
+   CN_SET_NETINFO,  ///< Set Network with @ref wiz_NetInfo
+   CN_GET_NETINFO,  ///< Get Network with @ref wiz_NetInfo
+   CN_SET_NETMODE,  ///< Set network mode as WOL, PPPoE, Ping Block, and Force ARP mode
+   CN_GET_NETMODE,  ///< Get network mode as WOL, PPPoE, Ping Block, and Force ARP mode
+   CN_SET_TIMEOUT,  ///< Set network timeout as retry count and time.
+   CN_GET_TIMEOUT,  ///< Get network timeout as retry count and time.
+}ctlnetwork_type;
+
+/**
+ * @ingroup DATA_TYPE
+ *  Interrupt kind when CW_SET_INTRRUPT, CW_GET_INTERRUPT, CW_SET_INTRMASK
+ *  and CW_GET_INTRMASK is used in @ref ctlnetwork().
+ *  It can be used with OR operation.
+ */
+typedef enum
+{
+#if   _WIZCHIP_ == W5500
+   IK_WOL               = (1 << 4),   ///< Wake On Lan by receiving the magic packet. Valid in W500.
+#elif _WIZCHIP_ == W5300
+   IK_FMTU              = (1 << 4),   ///< Received a ICMP message (Fragment MTU)   
+#endif   
+
+   IK_PPPOE_TERMINATED  = (1 << 5),   ///< PPPoE Disconnected
+
+#if _WIZCHIP_ != W5200
+   IK_DEST_UNREACH      = (1 << 6),   ///< Destination IP & Port Unreachable, No use in W5200
+#endif   
+
+   IK_IP_CONFLICT       = (1 << 7),   ///< IP conflict occurred
+
+   IK_SOCK_0            = (1 << 8),   ///< Socket 0 interrupt
+   IK_SOCK_1            = (1 << 9),   ///< Socket 1 interrupt
+   IK_SOCK_2            = (1 << 10),  ///< Socket 2 interrupt
+   IK_SOCK_3            = (1 << 11),  ///< Socket 3 interrupt
+#if _WIZCHIP_ > W5100S
+   IK_SOCK_4            = (1 << 12),  ///< Socket 4 interrupt, No use in 5100
+   IK_SOCK_5            = (1 << 13),  ///< Socket 5 interrupt, No use in 5100
+   IK_SOCK_6            = (1 << 14),  ///< Socket 6 interrupt, No use in 5100
+   IK_SOCK_7            = (1 << 15),  ///< Socket 7 interrupt, No use in 5100
+#endif   
+
+#if _WIZCHIP_ > W5100S
+   IK_SOCK_ALL          = (0xFF << 8) ///< All Socket interrupt
+#else
+   IK_SOCK_ALL          = (0x0F << 8) ///< All Socket interrupt
+#endif      
+}intr_kind;
+
+#define PHY_CONFBY_HW            0     ///< Configured PHY operation mode by HW pin
+#define PHY_CONFBY_SW            1     ///< Configured PHY operation mode by SW register   
+#define PHY_MODE_MANUAL          0     ///< Configured PHY operation mode with user setting.
+#define PHY_MODE_AUTONEGO        1     ///< Configured PHY operation mode with auto-negotiation
+#define PHY_SPEED_10             0     ///< Link Speed 10
+#define PHY_SPEED_100            1     ///< Link Speed 100
+#define PHY_DUPLEX_HALF          0     ///< Link Half-Duplex
+#define PHY_DUPLEX_FULL          1     ///< Link Full-Duplex
+#define PHY_LINK_OFF             0     ///< Link Off
+#define PHY_LINK_ON              1     ///< Link On
+#define PHY_POWER_NORM           0     ///< PHY power normal mode
+#define PHY_POWER_DOWN           1     ///< PHY power down mode 
+
+
+#if _WIZCHIP_ == W5100S || _WIZCHIP_ == W5500
+/**
+ * @ingroup DATA_TYPE
+ *  It configures PHY configuration when CW_SET PHYCONF or CW_GET_PHYCONF in W5500,  
+ *  and it indicates the real PHY status configured by HW or SW in all WIZCHIP. \n
+ *  Valid only in W5500.
+ */
+typedef struct wiz_PhyConf_t
+{
+      uint8_t by;       ///< set by @ref PHY_CONFBY_HW or @ref PHY_CONFBY_SW
+      uint8_t mode;     ///< set by @ref PHY_MODE_MANUAL or @ref PHY_MODE_AUTONEGO
+      uint8_t speed;    ///< set by @ref PHY_SPEED_10 or @ref PHY_SPEED_100
+      uint8_t duplex;   ///< set by @ref PHY_DUPLEX_HALF @ref PHY_DUPLEX_FULL 
+      //uint8_t power;  ///< set by @ref PHY_POWER_NORM or @ref PHY_POWER_DOWN
+      //uint8_t link;   ///< Valid only in CW_GET_PHYSTATUS. set by @ref PHY_LINK_ON or PHY_DUPLEX_OFF 
+   }wiz_PhyConf;
+#endif   
+
+/**
+ * @ingroup DATA_TYPE
+ *  It used in setting dhcp_mode of @ref wiz_NetInfo.
+ */
+typedef enum
+{
+   NETINFO_STATIC = 1,    ///< Static IP configuration by manually.
+   NETINFO_DHCP           ///< Dynamic IP configruation from a DHCP sever
+}dhcp_mode;
+
+/**
+ * @ingroup DATA_TYPE
+ *  Network Information for WIZCHIP
+ */
+typedef struct wiz_NetInfo_t
+{
+   uint8_t mac[6];  ///< Source Mac Address
+   uint8_t ip[4];   ///< Source IP Address
+   uint8_t sn[4];   ///< Subnet Mask 
+   uint8_t gw[4];   ///< Gateway IP Address
+   uint8_t dns[4];  ///< DNS server IP Address
+   dhcp_mode dhcp;  ///< 1 - Static, 2 - DHCP
+}wiz_NetInfo;
+
+/**
+ * @ingroup DATA_TYPE
+ *  Network mode
+ */
+typedef enum
+{
+#if _WIZCHIP_ == W5500
+   NM_FORCEARP    = (1<<1),  ///< Force to APP send whenever udp data is sent. Valid only in W5500
+#endif   
+   NM_WAKEONLAN   = (1<<5),  ///< Wake On Lan 
+   NM_PINGBLOCK   = (1<<4),  ///< Block ping-request
+   NM_PPPOE       = (1<<3),  ///< PPPoE mode
+}netmode_type;
+
+/**
+ * @ingroup DATA_TYPE
+ *  Used in CN_SET_TIMEOUT or CN_GET_TIMEOUT of @ref ctlwizchip() for timeout configruation.
+ */
+typedef struct wiz_NetTimeout_t
+{
+   uint8_t  retry_cnt;     ///< retry count 
+   uint16_t time_100us;    ///< time unit 100us
+}wiz_NetTimeout;
+
+/**
+ *@brief Registers call back function for critical section of I/O functions such as
+ *\ref WIZCHIP_READ, @ref WIZCHIP_WRITE, @ref WIZCHIP_READ_BUF and @ref WIZCHIP_WRITE_BUF.
+ *@param cris_en : callback function for critical section enter.
+ *@param cris_ex : callback function for critical section exit.
+ *@todo Describe @ref WIZCHIP_CRITICAL_ENTER and @ref WIZCHIP_CRITICAL_EXIT marco or register your functions.
+ *@note If you do not describe or register, default functions(@ref wizchip_cris_enter & @ref wizchip_cris_exit) is called.
+ */
+void reg_wizchip_cris_cbfunc(void(*cris_en)(void), void(*cris_ex)(void));
+
+
+/**
+ *@brief Registers call back function for WIZCHIP select & deselect.
+ *@param cs_sel : callback function for WIZCHIP select
+ *@param cs_desel : callback fucntion for WIZCHIP deselect
+ *@todo Describe @ref wizchip_cs_select and @ref wizchip_cs_deselect function or register your functions.
+ *@note If you do not describe or register, null function is called.
+ */
+void reg_wizchip_cs_cbfunc(void(*cs_sel)(void), void(*cs_desel)(void));
+
+/**
+ *@brief Registers call back function for bus interface.
+ *@param bus_rb   : callback function to read byte data using system bus
+ *@param bus_wb   : callback function to write byte data using system bus
+ *@todo Describe @ref wizchip_bus_readbyte and @ref wizchip_bus_writebyte function
+ *or register your functions.
+ *@note If you do not describe or register, null function is called.
+ */
+//M20150601 : For integrating with W5300
+//void reg_wizchip_bus_cbfunc(uint8_t (*bus_rb)(uint32_t addr), void (*bus_wb)(uint32_t addr, uint8_t wb));
+void reg_wizchip_bus_cbfunc(iodata_t (*bus_rb)(uint32_t addr), void (*bus_wb)(uint32_t addr, iodata_t wb));
+
+/**
+ *@brief Registers call back function for SPI interface.
+ *@param spi_rb : callback function to read byte using SPI
+ *@param spi_wb : callback function to write byte using SPI
+ *@todo Describe \ref wizchip_spi_readbyte and \ref wizchip_spi_writebyte function
+ *or register your functions.
+ *@note If you do not describe or register, null function is called.
+ */
+void reg_wizchip_spi_cbfunc(uint8_t (*spi_rb)(void), void (*spi_wb)(uint8_t wb));
+
+/**
+ *@brief Registers call back function for SPI interface.
+ *@param spi_rb : callback function to burst read using SPI
+ *@param spi_wb : callback function to burst write using SPI
+ *@todo Describe \ref wizchip_spi_readbyte and \ref wizchip_spi_writebyte function
+ *or register your functions.
+ *@note If you do not describe or register, null function is called.
+ */
+void reg_wizchip_spiburst_cbfunc(void (*spi_rb)(uint8_t* pBuf, uint16_t len), void (*spi_wb)(const uint8_t* pBuf, uint16_t len));
+
+/**
+ * @ingroup extra_functions
+ * @brief Controls to the WIZCHIP.
+ * @details Resets WIZCHIP & internal PHY, Configures PHY mode, Monitor PHY(Link,Speed,Half/Full/Auto),
+ * controls interrupt & mask and so on.
+ * @param cwtype : Decides to the control type
+ * @param arg : arg type is dependent on cwtype.
+ * @return  0 : Success \n
+ *         -1 : Fail because of invalid \ref ctlwizchip_type or unsupported \ref ctlwizchip_type in WIZCHIP 
+ */          
+int8_t ctlwizchip(ctlwizchip_type cwtype, void* arg);
+
+/**
+ * @ingroup extra_functions
+ * @brief Controls to network.
+ * @details Controls to network environment, mode, timeout and so on.
+ * @param cntype : Input. Decides to the control type
+ * @param arg : Inout. arg type is dependent on cntype.
+ * @return -1 : Fail because of invalid \ref ctlnetwork_type or unsupported \ref ctlnetwork_type in WIZCHIP \n
+ *          0 : Success      
+ */          
+int8_t ctlnetwork(ctlnetwork_type cntype, void* arg);
+
+
+/* 
+ * The following functions are implemented for internal use. 
+ * but You can call these functions for code size reduction instead of ctlwizchip() and ctlnetwork().
+ */
+ 
+/**
+ * @ingroup extra_functions
+ * @brief Reset WIZCHIP by softly.
+ */ 
+void   wizchip_sw_reset(void);
+
+/**
+ * @ingroup extra_functions
+ * @brief Initializes WIZCHIP with socket buffer size
+ * @param txsize Socket tx buffer sizes. If null, initialized the default size 2KB.
+ * @param rxsize Socket rx buffer sizes. If null, initialized the default size 2KB.
+ * @return 0 : succcess \n
+ *        -1 : fail. Invalid buffer size
+ */
+int8_t wizchip_init(uint8_t* txsize, uint8_t* rxsize);
+
+/** 
+ * @ingroup extra_functions
+ * @brief Clear Interrupt of WIZCHIP.
+ * @param intr : @ref intr_kind value operated OR. It can type-cast to uint16_t.
+ */
+void wizchip_clrinterrupt(intr_kind intr);
+
+/** 
+ * @ingroup extra_functions
+ * @brief Get Interrupt of WIZCHIP.
+ * @return @ref intr_kind value operated OR. It can type-cast to uint16_t.
+ */
+intr_kind wizchip_getinterrupt(void);
+
+/** 
+ * @ingroup extra_functions
+ * @brief Mask or Unmask Interrupt of WIZCHIP.
+ * @param intr : @ref intr_kind value operated OR. It can type-cast to uint16_t.
+ */
+void wizchip_setinterruptmask(intr_kind intr);
+
+/** 
+ * @ingroup extra_functions
+ * @brief Get Interrupt mask of WIZCHIP.
+ * @return : The operated OR vaule of @ref intr_kind. It can type-cast to uint16_t.
+ */
+intr_kind wizchip_getinterruptmask(void);
+
+//todo
+#if _WIZCHIP_ > W5100
+   int8_t wizphy_getphylink(void);              ///< get the link status of phy in WIZCHIP. No use in W5100
+   int8_t wizphy_getphypmode(void);             ///< get the power mode of PHY in WIZCHIP. No use in W5100
+#endif
+
+#if _WIZCHIP_ == W5100S || _WIZCHIP_ == W5500
+   void   wizphy_reset(void);                   ///< Reset phy. Vailid only in W5500
+/**
+ * @ingroup extra_functions
+ * @brief Set the phy information for WIZCHIP without power mode
+ * @param phyconf : @ref wiz_PhyConf
+ */
+   void   wizphy_setphyconf(wiz_PhyConf* phyconf);  
+ /**
+ * @ingroup extra_functions
+ * @brief Get phy configuration information.
+ * @param phyconf : @ref wiz_PhyConf
+ */
+   void   wizphy_getphyconf(wiz_PhyConf* phyconf); 
+ /**
+ * @ingroup extra_functions
+ * @brief Get phy status.
+ * @param phyconf : @ref wiz_PhyConf
+ */ 
+   void   wizphy_getphystat(wiz_PhyConf* phyconf);
+ /**
+ * @ingroup extra_functions
+ * @brief set the power mode of phy inside WIZCHIP. Refer to @ref PHYCFGR in W5500, @ref PHYSTATUS in W5200
+ * @param pmode Settig value of power down mode.
+ */   
+   int8_t wizphy_setphypmode(uint8_t pmode);    
+#endif
+
+/**
+* @ingroup extra_functions
+ * @brief Set the network information for WIZCHIP
+ * @param pnetinfo : @ref wizNetInfo
+ */
+void wizchip_setnetinfo(wiz_NetInfo* pnetinfo);
+
+/**
+ * @ingroup extra_functions
+ * @brief Get the network information for WIZCHIP
+ * @param pnetinfo : @ref wizNetInfo
+ */
+void wizchip_getnetinfo(wiz_NetInfo* pnetinfo);
+
+#if _WIZCHIP_ == 5200   // for w5200 ARP errata
+uint8_t *wizchip_getsubn(void);
+#endif
+
+/**
+ * @ingroup extra_functions
+ * @brief Set the network mode such WOL, PPPoE, Ping Block, and etc. 
+ * @param pnetinfo Value of network mode. Refer to @ref netmode_type.
+ */
+int8_t wizchip_setnetmode(netmode_type netmode);
+
+/**
+ * @ingroup extra_functions
+ * @brief Get the network mode such WOL, PPPoE, Ping Block, and etc. 
+ * @return Value of network mode. Refer to @ref netmode_type.
+ */
+netmode_type wizchip_getnetmode(void);
+
+/**
+ * @ingroup extra_functions
+ * @brief Set retry time value(@ref _RTR_) and retry count(@ref _RCR_).
+ * @details @ref _RTR_ configures the retransmission timeout period and @ref _RCR_ configures the number of time of retransmission.  
+ * @param nettime @ref _RTR_ value and @ref _RCR_ value. Refer to @ref wiz_NetTimeout. 
+ */
+void wizchip_settimeout(wiz_NetTimeout* nettime);
+
+/**
+ * @ingroup extra_functions
+ * @brief Get retry time value(@ref _RTR_) and retry count(@ref _RCR_).
+ * @details @ref _RTR_ configures the retransmission timeout period and @ref _RCR_ configures the number of time of retransmission.  
+ * @param nettime @ref _RTR_ value and @ref _RCR_ value. Refer to @ref wiz_NetTimeout. 
+ */
+void wizchip_gettimeout(wiz_NetTimeout* nettime);
+#ifdef __cplusplus
+ }
+#endif
+
+#endif   // _WIZCHIP_CONF_H_
+cat micropython/lib/wiznet5k/Ethernet/wizchip_conf.c
+//****************************************************************************/ 
+//!
+//! \file wizchip_conf.c
+//! \brief WIZCHIP Config Header File.
+//! \version 1.0.1
+//! \date 2013/10/21
+//! \par  Revision history
+//!       <2015/02/05> Notice
+//!        The version history is not updated after this point.
+//!        Download the latest version directly from GitHub. Please visit the our GitHub repository for ioLibrary.
+//!        >> https://github.com/Wiznet/ioLibrary_Driver
+//!       <2014/05/01> V1.0.1  Refer to M20140501
+//!        1. Explicit type casting in wizchip_bus_readdata() & wizchip_bus_writedata()
+//            Issued by Mathias ClauBen.
+//!           uint32_t type converts into ptrdiff_t first. And then recoverting it into uint8_t*
+//!           For remove the warning when pointer type size is not 32bit.
+//!           If ptrdiff_t doesn't support in your complier, You should must replace ptrdiff_t into your suitable pointer type.
+//!       <2013/10/21> 1st Release
+//! \author MidnightCow
+//! \copyright
+//!
+//! Copyright (c)  2013, WIZnet Co., LTD.
+//! All rights reserved.
+//! 
+//! Redistribution and use in source and binary forms, with or without 
+//! modification, are permitted provided that the following conditions 
+//! are met: 
+//! 
+//!     * Redistributions of source code must retain the above copyright 
+//! notice, this list of conditions and the following disclaimer. 
+//!     * Redistributions in binary form must reproduce the above copyright
+//! notice, this list of conditions and the following disclaimer in the
+//! documentation and/or other materials provided with the distribution. 
+//!     * Neither the name of the <ORGANIZATION> nor the names of its 
+//! contributors may be used to endorse or promote products derived 
+//! from this software without specific prior written permission. 
+//! 
+//! THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+//! AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE 
+//! IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+//! ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE 
+//! LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR 
+//! CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF 
+//! SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+//! INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN 
+//! CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) 
+//! ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF 
+//! THE POSSIBILITY OF SUCH DAMAGE.
+//
+//*****************************************************************************/
+//A20140501 : for use the type - ptrdiff_t
+#include <stddef.h>
+//
+
+#include "wizchip_conf.h"
+#include "socket.h"
+
+/////////////
+//M20150401 : Remove ; in the default callback function such as wizchip_cris_enter(), wizchip_cs_select() and etc.
+/////////////
+
+/**
+ * @brief Default function to enable interrupt.
+ * @note This function help not to access wrong address. If you do not describe this function or register any functions,
+ * null function is called.
+ */
+//void 	  wizchip_cris_enter(void)           {};
+void 	  wizchip_cris_enter(void)           {}
+
+/**
+ * @brief Default function to disable interrupt.
+ * @note This function help not to access wrong address. If you do not describe this function or register any functions,
+ * null function is called.
+ */
+//void 	  wizchip_cris_exit(void)          {};
+void 	  wizchip_cris_exit(void)          {}
+
+/**
+ * @brief Default function to select chip.
+ * @note This function help not to access wrong address. If you do not describe this function or register any functions,
+ * null function is called.
+ */
+//void 	wizchip_cs_select(void)            {};
+void 	wizchip_cs_select(void)            {}
+
+/**
+ * @brief Default function to deselect chip.
+ * @note This function help not to access wrong address. If you do not describe this function or register any functions,
+ * null function is called.
+ */
+//void 	wizchip_cs_deselect(void)          {};
+void 	wizchip_cs_deselect(void)          {}
+
+/**
+ * @brief Default function to read in direct or indirect interface.
+ * @note This function help not to access wrong address. If you do not describe this function or register any functions,
+ * null function is called.
+ */
+ //M20150601 : Rename the function for integrating with W5300
+//uint8_t wizchip_bus_readbyte(uint32_t AddrSel) { return * ((volatile uint8_t *)((ptrdiff_t) AddrSel)); }
+iodata_t wizchip_bus_readdata(uint32_t AddrSel) { return * ((volatile iodata_t *)((ptrdiff_t) AddrSel)); }
+
+/**
+ * @brief Default function to write in direct or indirect interface.
+ * @note This function help not to access wrong address. If you do not describe this function or register any functions,
+ * null function is called.
+ */
+//M20150601 : Rename the function for integrating with W5300
+//void 	wizchip_bus_writebyte(uint32_t AddrSel, uint8_t wb)  { *((volatile uint8_t*)((ptrdiff_t)AddrSel)) = wb; }
+void 	wizchip_bus_writedata(uint32_t AddrSel, iodata_t wb)  { *((volatile iodata_t*)((ptrdiff_t)AddrSel)) = wb; }
+
+/**
+ * @brief Default function to read in SPI interface.
+ * @note This function help not to access wrong address. If you do not describe this function or register any functions,
+ * null function is called.
+ */
+//uint8_t wizchip_spi_readbyte(void)        {return 0;};
+uint8_t wizchip_spi_readbyte(void)        {return 0;}
+
+/**
+ * @brief Default function to write in SPI interface.
+ * @note This function help not to access wrong address. If you do not describe this function or register any functions,
+ * null function is called.
+ */
+//void 	wizchip_spi_writebyte(uint8_t wb) {};
+void 	wizchip_spi_writebyte(uint8_t wb) {}
+
+/**
+ * @brief Default function to burst read in SPI interface.
+ * @note This function help not to access wrong address. If you do not describe this function or register any functions,
+ * null function is called.
+ */
+//void 	wizchip_spi_readburst(uint8_t* pBuf, uint16_t len) 	{}; 
+void 	wizchip_spi_readburst(uint8_t* pBuf, uint16_t len) 	{}
+
+/**
+ * @brief Default function to burst write in SPI interface.
+ * @note This function help not to access wrong address. If you do not describe this function or register any functions,
+ * null function is called.
+ */
+//void 	wizchip_spi_writeburst(uint8_t* pBuf, uint16_t len) {};
+void 	wizchip_spi_writeburst(const uint8_t* pBuf, uint16_t len) {}
+
+/**
+ * @\ref _WIZCHIP instance
+ */
+//
+//M20150401 : For a compiler didnot support a member of structure
+//            Replace the assignment of struct members with the assingment of array
+//
+/*
+_WIZCHIP  WIZCHIP =
+      {
+      .id                  = _WIZCHIP_ID_,
+      .if_mode             = _WIZCHIP_IO_MODE_,
+      .CRIS._enter         = wizchip_cris_enter,
+      .CRIS._exit          = wizchip_cris_exit,
+      .CS._select          = wizchip_cs_select,
+      .CS._deselect        = wizchip_cs_deselect,
+      .IF.BUS._read_byte   = wizchip_bus_readbyte,
+      .IF.BUS._write_byte  = wizchip_bus_writebyte
+//    .IF.SPI._read_byte   = wizchip_spi_readbyte,
+//    .IF.SPI._write_byte  = wizchip_spi_writebyte
+      };
+*/      
+_WIZCHIP  WIZCHIP =
+{
+    _WIZCHIP_IO_MODE_,
+    _WIZCHIP_ID_ ,
+    {
+        wizchip_cris_enter,
+        wizchip_cris_exit
+    },
+    {
+        wizchip_cs_select,
+        wizchip_cs_deselect
+    },
+    {
+        {
+            //M20150601 : Rename the function 
+            //wizchip_bus_readbyte,
+            //wizchip_bus_writebyte
+            wizchip_bus_readdata,
+            wizchip_bus_writedata
+        },
+
+    }
+};
+
+
+
+#if _WIZCHIP_ == 5200   // for w5200 ARP errata
+static uint8_t    _SUBN_[4];     // subnet
+#endif
+static uint8_t    _DNS_[4];      // DNS server ip address
+static dhcp_mode  _DHCP_;        // DHCP mode
+
+void reg_wizchip_cris_cbfunc(void(*cris_en)(void), void(*cris_ex)(void))
+{
+   if(!cris_en || !cris_ex)
+   {
+      WIZCHIP.CRIS._enter = wizchip_cris_enter;
+      WIZCHIP.CRIS._exit  = wizchip_cris_exit;
+   }
+   else
+   {
+      WIZCHIP.CRIS._enter = cris_en;
+      WIZCHIP.CRIS._exit  = cris_ex;
+   }
+}
+
+void reg_wizchip_cs_cbfunc(void(*cs_sel)(void), void(*cs_desel)(void))
+{
+   if(!cs_sel || !cs_desel)
+   {
+      WIZCHIP.CS._select   = wizchip_cs_select;
+      WIZCHIP.CS._deselect = wizchip_cs_deselect;
+   }
+   else
+   {
+      WIZCHIP.CS._select   = cs_sel;
+      WIZCHIP.CS._deselect = cs_desel;
+   }
+}
+
+//M20150515 : For integrating with W5300
+//void reg_wizchip_bus_cbfunc(uint8_t(*bus_rb)(uint32_t addr), void (*bus_wb)(uint32_t addr, uint8_t wb))
+void reg_wizchip_bus_cbfunc(iodata_t(*bus_rb)(uint32_t addr), void (*bus_wb)(uint32_t addr, iodata_t wb))
+{
+   while(!(WIZCHIP.if_mode & _WIZCHIP_IO_MODE_BUS_));
+   //M20150601 : Rename call back function for integrating with W5300
+   /*
+   if(!bus_rb || !bus_wb)
+   {
+      WIZCHIP.IF.BUS._read_byte   = wizchip_bus_readbyte;
+      WIZCHIP.IF.BUS._write_byte  = wizchip_bus_writebyte;
+   }
+   else
+   {
+      WIZCHIP.IF.BUS._read_byte   = bus_rb;
+      WIZCHIP.IF.BUS._write_byte  = bus_wb;
+   }
+   */
+   if(!bus_rb || !bus_wb)
+   {
+      WIZCHIP.IF.BUS._read_data   = wizchip_bus_readdata;
+      WIZCHIP.IF.BUS._write_data  = wizchip_bus_writedata;
+   }
+   else
+   {
+      WIZCHIP.IF.BUS._read_data   = bus_rb;
+      WIZCHIP.IF.BUS._write_data  = bus_wb;
+   }
+}
+
+void reg_wizchip_spi_cbfunc(uint8_t (*spi_rb)(void), void (*spi_wb)(uint8_t wb))
+{
+   while(!(WIZCHIP.if_mode & _WIZCHIP_IO_MODE_SPI_));
+   
+   if(!spi_rb || !spi_wb)
+   {
+      WIZCHIP.IF.SPI._read_byte   = wizchip_spi_readbyte;
+      WIZCHIP.IF.SPI._write_byte  = wizchip_spi_writebyte;
+   }
+   else
+   {
+      WIZCHIP.IF.SPI._read_byte   = spi_rb;
+      WIZCHIP.IF.SPI._write_byte  = spi_wb;
+   }
+}
+
+// 20140626 Eric Added for SPI burst operations
+void reg_wizchip_spiburst_cbfunc(void (*spi_rb)(uint8_t* pBuf, uint16_t len), void (*spi_wb)(const uint8_t* pBuf, uint16_t len))
+{
+   while(!(WIZCHIP.if_mode & _WIZCHIP_IO_MODE_SPI_));
+
+   if(!spi_rb || !spi_wb)
+   {
+      WIZCHIP.IF.SPI._read_burst   = wizchip_spi_readburst;
+      WIZCHIP.IF.SPI._write_burst  = wizchip_spi_writeburst;
+   }
+   else
+   {
+      WIZCHIP.IF.SPI._read_burst   = spi_rb;
+      WIZCHIP.IF.SPI._write_burst  = spi_wb;
+   }
+}
+
+int8_t ctlwizchip(ctlwizchip_type cwtype, void* arg)
+{
+#if	_WIZCHIP_ == W5100S || _WIZCHIP_ == W5200 || _WIZCHIP_ == W5500
+   uint8_t tmp = 0;
+#endif
+   uint8_t* ptmp[2] = {0,0};
+   switch(cwtype)
+   {
+      case CW_RESET_WIZCHIP:
+         wizchip_sw_reset();
+         break;
+      case CW_INIT_WIZCHIP:
+         if(arg != 0) 
+         {
+            ptmp[0] = (uint8_t*)arg;
+            ptmp[1] = ptmp[0] + _WIZCHIP_SOCK_NUM_;
+         }
+         return wizchip_init(ptmp[0], ptmp[1]);
+      case CW_CLR_INTERRUPT:
+         wizchip_clrinterrupt(*((intr_kind*)arg));
+         break;
+      case CW_GET_INTERRUPT:
+        *((intr_kind*)arg) = wizchip_getinterrupt();
+         break;
+      case CW_SET_INTRMASK:
+         wizchip_setinterruptmask(*((intr_kind*)arg));
+         break;         
+      case CW_GET_INTRMASK:
+         *((intr_kind*)arg) = wizchip_getinterruptmask();
+         break;
+   //M20150601 : This can be supported by W5200, W5500
+   //#if _WIZCHIP_ > W5100
+   #if (_WIZCHIP_ == W5200 || _WIZCHIP_ == W5500)
+      case CW_SET_INTRTIME:
+         setINTLEVEL(*(uint16_t*)arg);
+         break;
+      case CW_GET_INTRTIME:
+         *(uint16_t*)arg = getINTLEVEL();
+         break;
+   #endif
+      case CW_GET_ID:
+         ((uint8_t*)arg)[0] = WIZCHIP.id[0];
+         ((uint8_t*)arg)[1] = WIZCHIP.id[1];
+         ((uint8_t*)arg)[2] = WIZCHIP.id[2];
+         ((uint8_t*)arg)[3] = WIZCHIP.id[3];
+         ((uint8_t*)arg)[4] = WIZCHIP.id[4];
+         ((uint8_t*)arg)[5] = WIZCHIP.id[5];
+         ((uint8_t*)arg)[6] = 0;
+         break;
+   #if _WIZCHIP_ == W5100S || _WIZCHIP_ == W5500
+      case CW_RESET_PHY:
+         wizphy_reset();
+         break;
+      case CW_SET_PHYCONF:
+         wizphy_setphyconf((wiz_PhyConf*)arg);
+         break;
+      case CW_GET_PHYCONF:
+         wizphy_getphyconf((wiz_PhyConf*)arg);
+         break;
+      case CW_GET_PHYSTATUS:
+         break;
+      case CW_SET_PHYPOWMODE:
+         return wizphy_setphypmode(*(uint8_t*)arg);
+   #endif
+   #if _WIZCHIP_ == W5100S || _WIZCHIP_ == W5200 || _WIZCHIP_ == W5500
+      case CW_GET_PHYPOWMODE:
+         tmp = wizphy_getphypmode();
+         if((int8_t)tmp == -1) return -1;
+         *(uint8_t*)arg = tmp;
+         break;
+      case CW_GET_PHYLINK:
+         tmp = wizphy_getphylink();
+         if((int8_t)tmp == -1) return -1;
+         *(uint8_t*)arg = tmp;
+         break;
+   #endif      
+      default:
+         return -1;
+   }
+   return 0;
+}
+
+
+int8_t ctlnetwork(ctlnetwork_type cntype, void* arg)
+{
+   
+   switch(cntype)
+   {
+      case CN_SET_NETINFO:
+         wizchip_setnetinfo((wiz_NetInfo*)arg);
+         break;
+      case CN_GET_NETINFO:
+         wizchip_getnetinfo((wiz_NetInfo*)arg);
+         break;
+      case CN_SET_NETMODE:
+         return wizchip_setnetmode(*(netmode_type*)arg);
+      case CN_GET_NETMODE:
+         *(netmode_type*)arg = wizchip_getnetmode();
+         break;
+      case CN_SET_TIMEOUT:
+         wizchip_settimeout((wiz_NetTimeout*)arg);
+         break;
+      case CN_GET_TIMEOUT:
+         wizchip_gettimeout((wiz_NetTimeout*)arg);
+         break;
+      default:
+         return -1;
+   }
+   return 0;
+}
+
+void wizchip_sw_reset(void)
+{
+   uint8_t gw[4], sn[4], sip[4];
+   uint8_t mac[6];
+//A20150601
+#if _WIZCHIP_IO_MODE_  == _WIZCHIP_IO_MODE_BUS_INDIR_
+   uint16_t mr = (uint16_t)getMR();
+   setMR(mr | MR_IND);
+#endif
+//
+   getSHAR(mac);
+   getGAR(gw);  getSUBR(sn);  getSIPR(sip);
+   setMR(MR_RST);
+   getMR(); // for delay
+//A2015051 : For indirect bus mode 
+#if _WIZCHIP_IO_MODE_  == _WIZCHIP_IO_MODE_BUS_INDIR_
+   setMR(mr | MR_IND);
+#endif
+//
+   setSHAR(mac);
+   setGAR(gw);
+   setSUBR(sn);
+   setSIPR(sip);
+}
+
+int8_t wizchip_init(uint8_t* txsize, uint8_t* rxsize)
+{
+   int8_t i;
+#if _WIZCHIP_ < W5200
+   int8_t j;
+#endif
+   int8_t tmp = 0;
+   wizchip_sw_reset();
+   if(txsize)
+   {
+      tmp = 0;
+   //M20150601 : For integrating with W5300
+   #if _WIZCHIP_ == W5300
+		for(i = 0 ; i < _WIZCHIP_SOCK_NUM_; i++)
+		{
+			if(txsize[i] >= 64) return -1;   //No use 64KB even if W5300 support max 64KB memory allocation
+			tmp += txsize[i];
+			if(tmp > 128) return -1;
+		}
+		if(tmp % 8) return -1;
+   #else
+		for(i = 0 ; i < _WIZCHIP_SOCK_NUM_; i++)
+		{
+			tmp += txsize[i];
+
+		#if _WIZCHIP_ < W5200	//2016.10.28 peter add condition for w5100 and w5100s
+			if(tmp > 8) return -1;
+		#else
+			if(tmp > 16) return -1;
+		#endif
+		}
+		for(i = 0 ; i < _WIZCHIP_SOCK_NUM_; i++)
+		{
+		#if _WIZCHIP_ < W5200	//2016.10.28 peter add condition for w5100
+			j = 0;
+			while((txsize[i] >> j != 1)&&(txsize[i] !=0)){j++;}
+			setSn_TXBUF_SIZE(i, j);
+		#else
+			setSn_TXBUF_SIZE(i, txsize[i]);
+		#endif
+		}
+
+	#endif
+   }
+
+   if(rxsize)
+   {
+      tmp = 0;
+   #if _WIZCHIP_ == W5300
+      for(i = 0 ; i < _WIZCHIP_SOCK_NUM_; i++)
+		{
+			if(rxsize[i] >= 64) return -1;   //No use 64KB even if W5300 support max 64KB memory allocation
+			tmp += rxsize[i];
+			if(tmp > 128) return -1;
+		}
+		if(tmp % 8) return -1;
+   #else
+		for(i = 0 ; i < _WIZCHIP_SOCK_NUM_; i++)
+		{
+			tmp += rxsize[i];
+		#if _WIZCHIP_ < W5200	//2016.10.28 peter add condition for w5100 and w5100s
+			if(tmp > 8) return -1;
+		#else
+			if(tmp > 16) return -1;
+		#endif
+		}
+
+		for(i = 0 ; i < _WIZCHIP_SOCK_NUM_; i++)
+		{
+		#if _WIZCHIP_ < W5200	// add condition for w5100
+			j = 0;
+			while((rxsize[i] >> j != 1)&&(txsize[i] !=0)){j++;}
+			setSn_RXBUF_SIZE(i, j);
+		#else
+			setSn_RXBUF_SIZE(i, rxsize[i]);
+		#endif
+		}
+	#endif
+   }
+
+   WIZCHIP_EXPORT(socket_reset)();
+
+   return 0;
+}
+
+void wizchip_clrinterrupt(intr_kind intr)
+{
+   uint8_t ir  = (uint8_t)intr;
+   uint8_t sir = (uint8_t)((uint16_t)intr >> 8);
+#if _WIZCHIP_ < W5500
+   ir |= (1<<4); // IK_WOL
+#endif
+#if _WIZCHIP_ == W5200
+   ir |= (1 << 6);
+#endif
+   
+#if _WIZCHIP_ < W5200
+   sir &= 0x0F;
+#endif
+
+#if _WIZCHIP_ <= W5100S
+   ir |= sir;
+   setIR(ir);
+//A20150601 : For integrating with W5300
+#elif _WIZCHIP_ == W5300
+   setIR( ((((uint16_t)ir) << 8) | (((uint16_t)sir) & 0x00FF)) );
+#else
+   setIR(ir);
+//M20200227 : For clear
+   //setSIR(sir);
+   for(ir=0; ir<8; ir++){
+       if(sir & (0x01 <<ir) ) setSn_IR(ir, 0xff);
+   }
+
+#endif   
+}
+
+intr_kind wizchip_getinterrupt(void)
+{
+   uint8_t ir  = 0;
+   uint8_t sir = 0;
+   uint16_t ret = 0;
+#if _WIZCHIP_ <= W5100S
+   ir = getIR();
+   sir = ir & 0x0F;
+//A20150601 : For integrating with W5300
+#elif _WIZCHIP_  == W5300
+   ret = getIR();
+   ir = (uint8_t)(ret >> 8);
+   sir = (uint8_t)ret;
+#else
+   ir  = getIR();
+   sir = getSIR();
+#endif         
+
+//M20150601 : For Integrating with W5300
+//#if _WIZCHIP_ < W5500
+#if _WIZCHIP_ < W5200
+   ir &= ~(1<<4); // IK_WOL
+#endif
+#if _WIZCHIP_ == W5200
+   ir &= ~(1 << 6);
+#endif
+  ret = sir;
+  ret = (ret << 8) + ir;
+  return (intr_kind)ret;
+}
+
+void wizchip_setinterruptmask(intr_kind intr)
+{
+   uint8_t imr  = (uint8_t)intr;
+   uint8_t simr = (uint8_t)((uint16_t)intr >> 8);
+#if _WIZCHIP_ < W5500
+   imr &= ~(1<<4); // IK_WOL
+#endif
+#if _WIZCHIP_ == W5200
+   imr &= ~(1 << 6);
+#endif
+   
+#if _WIZCHIP_ < W5200
+   simr &= 0x0F;
+   imr |= simr;
+   setIMR(imr);
+//A20150601 : For integrating with W5300
+#elif _WIZCHIP_ == W5300
+   setIMR( ((((uint16_t)imr) << 8) | (((uint16_t)simr) & 0x00FF)) );
+#else
+   setIMR(imr);
+   setSIMR(simr);
+#endif   
+}
+
+intr_kind wizchip_getinterruptmask(void)
+{
+   uint8_t imr  = 0;
+   uint8_t simr = 0;
+   uint16_t ret = 0;
+#if _WIZCHIP_ < W5200
+   imr  = getIMR();
+   simr = imr & 0x0F;
+//A20150601 : For integrating with W5300
+#elif _WIZCHIP_ == W5300
+   ret = getIMR();
+   imr = (uint8_t)(ret >> 8);
+   simr = (uint8_t)ret;
+#else
+   imr  = getIMR();
+   simr = getSIMR();
+#endif         
+
+#if _WIZCHIP_ < W5500
+   imr &= ~(1<<4); // IK_WOL
+#endif
+#if _WIZCHIP_ == W5200
+   imr &= ~(1 << 6);  // IK_DEST_UNREACH
+#endif
+  ret = simr;
+  ret = (ret << 8) + imr;
+  return (intr_kind)ret;
+}
+
+int8_t wizphy_getphylink(void)
+{
+   int8_t tmp = PHY_LINK_OFF;
+#if _WIZCHIP_ == W5100S
+   if(getPHYSR() & PHYSR_LNK)
+	   tmp = PHY_LINK_ON;
+#elif   _WIZCHIP_ == W5200
+   if(getPHYSTATUS() & PHYSTATUS_LINK)
+      tmp = PHY_LINK_ON;
+#elif _WIZCHIP_ == W5500
+   if(getPHYCFGR() & PHYCFGR_LNK_ON)
+      tmp = PHY_LINK_ON;
+
+#else
+   tmp = -1;
+#endif
+   return tmp;
+}
+
+#if _WIZCHIP_ > W5100
+
+int8_t wizphy_getphypmode(void)
+{
+   int8_t tmp = 0;
+   #if   _WIZCHIP_ == W5200
+      if(getPHYSTATUS() & PHYSTATUS_POWERDOWN)
+         tmp = PHY_POWER_DOWN;
+      else          
+         tmp = PHY_POWER_NORM;
+   #elif _WIZCHIP_ == 5500
+      if((getPHYCFGR() & PHYCFGR_OPMDC_ALLA) == PHYCFGR_OPMDC_PDOWN)
+         tmp = PHY_POWER_DOWN;
+      else 
+         tmp = PHY_POWER_NORM;
+   #else
+      tmp = -1;
+   #endif
+   return tmp;
+}
+#endif
+
+#if _WIZCHIP_ == W5100S
+void wizphy_reset(void)
+{
+	uint16_t tmp = wiz_mdio_read(PHYMDIO_BMCR);
+	tmp |= BMCR_RESET;
+	wiz_mdio_write(PHYMDIO_BMCR, tmp);
+	while(wiz_mdio_read(PHYMDIO_BMCR)&BMCR_RESET){}
+}
+
+void wizphy_setphyconf(wiz_PhyConf* phyconf)
+{
+   uint16_t tmp = wiz_mdio_read(PHYMDIO_BMCR);
+   if(phyconf->mode == PHY_MODE_AUTONEGO)
+      tmp |= BMCR_AUTONEGO;
+   else
+   {
+	  tmp &= ~BMCR_AUTONEGO;
+      if(phyconf->duplex == PHY_DUPLEX_FULL)
+      {
+    	  tmp |= BMCR_DUP;
+      }
+      else
+      {
+    	  tmp &= ~BMCR_DUP;
+      }
+      if(phyconf->speed == PHY_SPEED_100)
+      {
+    	  tmp |= BMCR_SPEED;
+      }
+      else
+      {
+    	  tmp &= ~BMCR_SPEED;
+      }
+   }
+   wiz_mdio_write(PHYMDIO_BMCR, tmp);
+}
+
+void wizphy_getphyconf(wiz_PhyConf* phyconf)
+{
+   uint16_t tmp = 0;
+   tmp = wiz_mdio_read(PHYMDIO_BMCR);
+   phyconf->by   = PHY_CONFBY_SW;
+   if(tmp & BMCR_AUTONEGO)
+   {
+	   phyconf->mode = PHY_MODE_AUTONEGO;
+   }
+   else
+   {
+	   phyconf->mode = PHY_MODE_MANUAL;
+	   if(tmp&BMCR_DUP) phyconf->duplex = PHY_DUPLEX_FULL;
+	   else phyconf->duplex = PHY_DUPLEX_HALF;
+	   if(tmp&BMCR_SPEED) phyconf->speed = PHY_SPEED_100;
+	   else phyconf->speed = PHY_SPEED_10;
+   }
+}
+
+int8_t wizphy_setphypmode(uint8_t pmode)
+{
+   uint16_t tmp = 0;
+   tmp = wiz_mdio_read(PHYMDIO_BMCR);
+   if( pmode == PHY_POWER_DOWN)
+   {
+      tmp |= BMCR_PWDN;
+   }
+   else
+   {
+	   tmp &= ~BMCR_PWDN;
+   }
+   wiz_mdio_write(PHYMDIO_BMCR, tmp);
+   tmp = wiz_mdio_read(PHYMDIO_BMCR);
+   if( pmode == PHY_POWER_DOWN)
+   {
+      if(tmp & BMCR_PWDN) return 0;
+   }
+   else
+   {
+      if((tmp & BMCR_PWDN) != BMCR_PWDN) return 0;
+   }
+   return -1;
+}
+
+#endif
+#if _WIZCHIP_ == W5500
+void wizphy_reset(void)
+{
+   uint8_t tmp = getPHYCFGR();
+   tmp &= PHYCFGR_RST;
+   setPHYCFGR(tmp);
+   tmp = getPHYCFGR();
+   tmp |= ~PHYCFGR_RST;
+   setPHYCFGR(tmp);
+}
+
+void wizphy_setphyconf(wiz_PhyConf* phyconf)
+{
+   uint8_t tmp = 0;
+   if(phyconf->by == PHY_CONFBY_SW)
+      tmp |= PHYCFGR_OPMD;
+   else
+      tmp &= ~PHYCFGR_OPMD;
+   if(phyconf->mode == PHY_MODE_AUTONEGO)
+      tmp |= PHYCFGR_OPMDC_ALLA;
+   else
+   {
+      if(phyconf->duplex == PHY_DUPLEX_FULL)
+      {
+         if(phyconf->speed == PHY_SPEED_100)
+            tmp |= PHYCFGR_OPMDC_100F;
+         else
+            tmp |= PHYCFGR_OPMDC_10F;
+      }   
+      else
+      {
+         if(phyconf->speed == PHY_SPEED_100)
+            tmp |= PHYCFGR_OPMDC_100H;
+         else
+            tmp |= PHYCFGR_OPMDC_10H;
+      }
+   }
+   setPHYCFGR(tmp);
+   wizphy_reset();
+}
+
+void wizphy_getphyconf(wiz_PhyConf* phyconf)
+{
+   uint8_t tmp = 0;
+   tmp = getPHYCFGR();
+   phyconf->by   = (tmp & PHYCFGR_OPMD) ? PHY_CONFBY_SW : PHY_CONFBY_HW;
+   switch(tmp & PHYCFGR_OPMDC_ALLA)
+   {
+      case PHYCFGR_OPMDC_ALLA:
+      case PHYCFGR_OPMDC_100FA: 
+         phyconf->mode = PHY_MODE_AUTONEGO;
+         break;
+      default:
+         phyconf->mode = PHY_MODE_MANUAL;
+         break;
+   }
+   switch(tmp & PHYCFGR_OPMDC_ALLA)
+   {
+      case PHYCFGR_OPMDC_100FA:
+      case PHYCFGR_OPMDC_100F:
+      case PHYCFGR_OPMDC_100H:
+         phyconf->speed = PHY_SPEED_100;
+         break;
+      default:
+         phyconf->speed = PHY_SPEED_10;
+         break;
+   }
+   switch(tmp & PHYCFGR_OPMDC_ALLA)
+   {
+      case PHYCFGR_OPMDC_100FA:
+      case PHYCFGR_OPMDC_100F:
+      case PHYCFGR_OPMDC_10F:
+         phyconf->duplex = PHY_DUPLEX_FULL;
+         break;
+      default:
+         phyconf->duplex = PHY_DUPLEX_HALF;
+         break;
+   }
+}
+
+void wizphy_getphystat(wiz_PhyConf* phyconf)
+{
+   uint8_t tmp = getPHYCFGR();
+   phyconf->duplex = (tmp & PHYCFGR_DPX_FULL) ? PHY_DUPLEX_FULL : PHY_DUPLEX_HALF;
+   phyconf->speed  = (tmp & PHYCFGR_SPD_100) ? PHY_SPEED_100 : PHY_SPEED_10;
+}
+
+int8_t wizphy_setphypmode(uint8_t pmode)
+{
+   uint8_t tmp = 0;
+   tmp = getPHYCFGR();
+   if((tmp & PHYCFGR_OPMD)== 0) return -1;
+   tmp &= ~PHYCFGR_OPMDC_ALLA;         
+   if( pmode == PHY_POWER_DOWN)
+      tmp |= PHYCFGR_OPMDC_PDOWN;
+   else
+      tmp |= PHYCFGR_OPMDC_ALLA;
+   setPHYCFGR(tmp);
+   wizphy_reset();
+   tmp = getPHYCFGR();
+   if( pmode == PHY_POWER_DOWN)
+   {
+      if(tmp & PHYCFGR_OPMDC_PDOWN) return 0;
+   }
+   else
+   {
+      if(tmp & PHYCFGR_OPMDC_ALLA) return 0;
+   }
+   return -1;
+}
+#endif
+
+
+void wizchip_setnetinfo(wiz_NetInfo* pnetinfo)
+{
+   setSHAR(pnetinfo->mac);
+   setGAR(pnetinfo->gw);
+   setSUBR(pnetinfo->sn);
+   setSIPR(pnetinfo->ip);
+#if _WIZCHIP_ == 5200   // for w5200 ARP errata
+   _SUBN_[0] = pnetinfo->sn[0];
+   _SUBN_[1] = pnetinfo->sn[1];
+   _SUBN_[2] = pnetinfo->sn[2];
+   _SUBN_[3] = pnetinfo->sn[3];
+#endif
+   _DNS_[0] = pnetinfo->dns[0];
+   _DNS_[1] = pnetinfo->dns[1];
+   _DNS_[2] = pnetinfo->dns[2];
+   _DNS_[3] = pnetinfo->dns[3];
+   _DHCP_   = pnetinfo->dhcp;
+}
+
+void wizchip_getnetinfo(wiz_NetInfo* pnetinfo)
+{
+   getSHAR(pnetinfo->mac);
+   getGAR(pnetinfo->gw);
+   getSUBR(pnetinfo->sn);
+   getSIPR(pnetinfo->ip);
+#if _WIZCHIP_ == 5200   // for w5200 ARP errata
+   pnetinfo->sn[0] = _SUBN_[0];
+   pnetinfo->sn[1] = _SUBN_[1];
+   pnetinfo->sn[2] = _SUBN_[2];
+   pnetinfo->sn[3] = _SUBN_[3];
+#endif
+   pnetinfo->dns[0]= _DNS_[0];
+   pnetinfo->dns[1]= _DNS_[1];
+   pnetinfo->dns[2]= _DNS_[2];
+   pnetinfo->dns[3]= _DNS_[3];
+   pnetinfo->dhcp  = _DHCP_;
+}
+
+#if _WIZCHIP_ == 5200   // for w5200 ARP errata
+uint8_t *wizchip_getsubn(void) {
+    return _SUBN_;
+}
+#endif
+
+int8_t wizchip_setnetmode(netmode_type netmode)
+{
+   uint8_t tmp = 0;
+#if _WIZCHIP_ != W5500
+   if(netmode & ~(NM_WAKEONLAN | NM_PPPOE | NM_PINGBLOCK)) return -1;
+#else
+   if(netmode & ~(NM_WAKEONLAN | NM_PPPOE | NM_PINGBLOCK | NM_FORCEARP)) return -1;
+#endif      
+   tmp = getMR();
+   tmp |= (uint8_t)netmode;
+   setMR(tmp);
+   return 0;
+}
+
+netmode_type wizchip_getnetmode(void)
+{
+   return (netmode_type) getMR();
+}
+
+void wizchip_settimeout(wiz_NetTimeout* nettime)
+{
+   setRCR(nettime->retry_cnt);
+   setRTR(nettime->time_100us);
+}
+
+void wizchip_gettimeout(wiz_NetTimeout* nettime)
+{
+   nettime->retry_cnt = getRCR();
+   nettime->time_100us = getRTR();
+}
+cat micropython/lib/wiznet5k/Ethernet/socket.c
+//*****************************************************************************
+//
+//! \file socket.c
+//! \brief SOCKET APIs Implements file.
+//! \details SOCKET APIs like as Berkeley Socket APIs. 
+//! \version 1.0.3
+//! \date 2013/10/21
+//! \par  Revision history
+//!       <2015/02/05> Notice
+//!        The version history is not updated after this point.
+//!        Download the latest version directly from GitHub. Please visit the our GitHub repository for ioLibrary.
+//!        >> https://github.com/Wiznet/ioLibrary_Driver
+//!       <2014/05/01> V1.0.3. Refer to M20140501
+//!         1. Implicit type casting -> Explicit type casting.
+//!         2. replace 0x01 with PACK_REMAINED in recvfrom()
+//!         3. Validation a destination ip in connect() & sendto(): 
+//!            It occurs a fatal error on converting unint32 address if uint8* addr parameter is not aligned by 4byte address.
+//!            Copy 4 byte addr value into temporary uint32 variable and then compares it.
+//!       <2013/12/20> V1.0.2 Refer to M20131220
+//!                    Remove Warning.
+//!       <2013/11/04> V1.0.1 2nd Release. Refer to "20131104".
+//!                    In sendto(), Add to clear timeout interrupt status (Sn_IR_TIMEOUT)
+//!       <2013/10/21> 1st Release
+//! \author MidnightCow
+//! \copyright
+//!
+//! Copyright (c)  2013, WIZnet Co., LTD.
+//! All rights reserved.
+//! 
+//! Redistribution and use in source and binary forms, with or without 
+//! modification, are permitted provided that the following conditions 
+//! are met: 
+//! 
+//!     * Redistributions of source code must retain the above copyright 
+//! notice, this list of conditions and the following disclaimer. 
+//!     * Redistributions in binary form must reproduce the above copyright
+//! notice, this list of conditions and the following disclaimer in the
+//! documentation and/or other materials provided with the distribution. 
+//!     * Neither the name of the <ORGANIZATION> nor the names of its 
+//! contributors may be used to endorse or promote products derived 
+//! from this software without specific prior written permission. 
+//! 
+//! THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+//! AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE 
+//! IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+//! ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE 
+//! LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR 
+//! CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF 
+//! SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+//! INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN 
+//! CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) 
+//! ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF 
+//! THE POSSIBILITY OF SUCH DAMAGE.
+//
+//*****************************************************************************
+#include <string.h>
+#include "socket.h"
+#include "wizchip_conf.h"
+
+//M20150401 : Typing Error
+//#define SOCK_ANY_PORT_NUM  0xC000;
+#define SOCK_ANY_PORT_NUM  0xC000
+
+static uint16_t sock_any_port = SOCK_ANY_PORT_NUM;
+static uint16_t sock_io_mode = 0;
+static uint16_t sock_is_sending = 0;
+
+static uint16_t sock_remained_size[_WIZCHIP_SOCK_NUM_] = {0,0,};
+
+
+//M20150601 : For extern decleation
+//static uint8_t  sock_pack_info[_WIZCHIP_SOCK_NUM_] = {0,};
+uint8_t  sock_pack_info[_WIZCHIP_SOCK_NUM_] = {0,};
+//
+
+#if _WIZCHIP_ == 5200
+   static uint16_t sock_next_rd[_WIZCHIP_SOCK_NUM_] ={0,};
+#endif
+
+//A20150601 : For integrating with W5300
+#if _WIZCHIP_ == 5300
+   uint8_t sock_remained_byte[_WIZCHIP_SOCK_NUM_] = {0,}; // set by wiz_recv_data()
+#endif
+
+
+#define CHECK_SOCKNUM()   \
+   do{                    \
+      if(sn > _WIZCHIP_SOCK_NUM_) return SOCKERR_SOCKNUM;   \
+   }while(0);             \
+
+#define CHECK_SOCKMODE(mode)  \
+   do{                     \
+      if((getSn_MR(sn) & 0x0F) != mode) return SOCKERR_SOCKMODE;  \
+   }while(0);              \
+
+#define CHECK_SOCKINIT()   \
+   do{                     \
+      if((getSn_SR(sn) != SOCK_INIT)) return SOCKERR_SOCKINIT; \
+   }while(0);              \
+
+#define CHECK_SOCKDATA()   \
+   do{                     \
+      if(len == 0) return SOCKERR_DATALEN;   \
+   }while(0);              \
+
+void WIZCHIP_EXPORT(socket_reset)(void) {
+    sock_any_port = SOCK_ANY_PORT_NUM;
+    sock_io_mode = 0;
+    sock_is_sending = 0;
+    /*
+    memset(sock_remained_size, 0, _WIZCHIP_SOCK_NUM_ * sizeof(uint16_t));
+    memset(sock_pack_info, 0, _WIZCHIP_SOCK_NUM_ * sizeof(uint8_t));
+    */
+
+#if _WIZCHIP_ == 5200
+    memset(sock_next_rd, 0, _WIZCHIP_SOCK_NUM_ * sizeof(uint16_t));
+#endif
+}
+
+int8_t WIZCHIP_EXPORT(socket)(uint8_t sn, uint8_t protocol, uint16_t port, uint8_t flag)
+{
+	CHECK_SOCKNUM();
+	switch(protocol)
+	{
+      case Sn_MR_TCP :
+         {
+            //M20150601 : Fixed the warning - taddr will never be NULL
+		    /*
+            uint8_t taddr[4];
+            getSIPR(taddr);
+            */
+            uint32_t taddr;
+            getSIPR((uint8_t*)&taddr);
+            if(taddr == 0) return SOCKERR_SOCKINIT;
+	    break;
+         }
+      case Sn_MR_UDP :
+      case Sn_MR_MACRAW :
+	  case Sn_MR_IPRAW :
+         break;
+   #if ( _WIZCHIP_ < 5200 )
+      case Sn_MR_PPPoE :
+         break;
+   #endif
+      default :
+         return SOCKERR_SOCKMODE;
+	}
+	//M20150601 : For SF_TCP_ALIGN & W5300
+	//if((flag & 0x06) != 0) return SOCKERR_SOCKFLAG;
+	if((flag & 0x04) != 0) return SOCKERR_SOCKFLAG;
+#if _WIZCHIP_ == 5200
+   if(flag & 0x10) return SOCKERR_SOCKFLAG;
+#endif
+	   
+	if(flag != 0)
+	{
+   	switch(protocol)
+   	{
+   	   case Sn_MR_TCP:
+   		  //M20150601 :  For SF_TCP_ALIGN & W5300
+          #if _WIZCHIP_ == 5300
+   		     if((flag & (SF_TCP_NODELAY|SF_IO_NONBLOCK|SF_TCP_ALIGN))==0) return SOCKERR_SOCKFLAG;
+          #else
+   		     if((flag & (SF_TCP_NODELAY|SF_IO_NONBLOCK))==0) return SOCKERR_SOCKFLAG;
+          #endif
+
+   	      break;
+   	   case Sn_MR_UDP:
+   	      if(flag & SF_IGMP_VER2)
+   	      {
+   	         if((flag & SF_MULTI_ENABLE)==0) return SOCKERR_SOCKFLAG;
+   	      }
+   	      #if _WIZCHIP_ == 5500
+      	      if(flag & SF_UNI_BLOCK)
+      	      {
+      	         if((flag & SF_MULTI_ENABLE) == 0) return SOCKERR_SOCKFLAG;
+      	      }
+   	      #endif
+   	      break;
+   	   default:
+   	      break;
+   	}
+   }
+	WIZCHIP_EXPORT(close)(sn);
+	//M20150601
+	#if _WIZCHIP_ == 5300
+	   setSn_MR(sn, ((uint16_t)(protocol | (flag & 0xF0))) | (((uint16_t)(flag & 0x02)) << 7) );
+    #else
+	   setSn_MR(sn, (protocol | (flag & 0xF0)));
+    #endif
+	if(!port)
+	{
+	   port = sock_any_port++;
+	   if(sock_any_port == 0xFFF0) sock_any_port = SOCK_ANY_PORT_NUM;
+	}
+   setSn_PORT(sn,port);	
+   setSn_CR(sn,Sn_CR_OPEN);
+   while(getSn_CR(sn));
+   //A20150401 : For release the previous sock_io_mode
+   sock_io_mode &= ~(1 <<sn);
+   //
+	sock_io_mode |= ((flag & SF_IO_NONBLOCK) << sn);   
+   sock_is_sending &= ~(1<<sn);
+   sock_remained_size[sn] = 0;
+   //M20150601 : repalce 0 with PACK_COMPLETED
+   //sock_pack_info[sn] = 0;
+   sock_pack_info[sn] = PACK_COMPLETED;
+   //
+   while(getSn_SR(sn) == SOCK_CLOSED);
+   return (int8_t)sn;
+}	   
+
+int8_t WIZCHIP_EXPORT(close)(uint8_t sn)
+{
+	CHECK_SOCKNUM();
+//A20160426 : Applied the erratum 1 of W5300
+#if   (_WIZCHIP_ == 5300) 
+   //M20160503 : Wrong socket parameter. s -> sn 
+   //if( ((getSn_MR(s)& 0x0F) == Sn_MR_TCP) && (getSn_TX_FSR(s) != getSn_TxMAX(s)) ) 
+   if( ((getSn_MR(sn)& 0x0F) == Sn_MR_TCP) && (getSn_TX_FSR(sn) != getSn_TxMAX(sn)) ) 
+   { 
+      uint8_t destip[4] = {0, 0, 0, 1};
+      // TODO
+      // You can wait for completing to sending data;
+      // wait about 1 second;
+      // if you have completed to send data, skip the code of erratum 1
+      // ex> wait_1s();
+      //     if (getSn_TX_FSR(s) == getSn_TxMAX(s)) continue;
+      // 
+      //M20160503 : The socket() of close() calls close() itself again. It occures a infinite loop - close()->socket()->close()->socket()-> ~
+      //socket(s,Sn_MR_UDP,0x3000,0);
+      //sendto(s,destip,1,destip,0x3000); // send the dummy data to an unknown destination(0.0.0.1).
+      setSn_MR(sn,Sn_MR_UDP);
+      setSn_PORTR(sn, 0x3000);
+      setSn_CR(sn,Sn_CR_OPEN);
+      while(getSn_CR(sn) != 0);
+      while(getSn_SR(sn) != SOCK_UDP);
+      sendto(sn,destip,1,destip,0x3000); // send the dummy data to an unknown destination(0.0.0.1).
+   };   
+#endif 
+	setSn_CR(sn,Sn_CR_CLOSE);
+   /* wait to process the command... */
+	while( getSn_CR(sn) );
+	/* clear all interrupt of the socket. */
+	setSn_IR(sn, 0xFF);
+	//A20150401 : Release the sock_io_mode of socket n.
+	sock_io_mode &= ~(1<<sn);
+	//
+	sock_is_sending &= ~(1<<sn);
+	sock_remained_size[sn] = 0;
+	sock_pack_info[sn] = 0;
+	while(getSn_SR(sn) != SOCK_CLOSED);
+	return SOCK_OK;
+}
+
+int8_t WIZCHIP_EXPORT(listen)(uint8_t sn)
+{
+	CHECK_SOCKNUM();
+   CHECK_SOCKMODE(Sn_MR_TCP);
+	CHECK_SOCKINIT();
+	setSn_CR(sn,Sn_CR_LISTEN);
+	while(getSn_CR(sn));
+   while(getSn_SR(sn) != SOCK_LISTEN)
+   {
+         WIZCHIP_EXPORT(close)(sn);
+         return SOCKERR_SOCKCLOSED;
+   }
+   return SOCK_OK;
+}
+
+
+int8_t WIZCHIP_EXPORT(connect)(uint8_t sn, uint8_t * addr, uint16_t port)
+{
+   CHECK_SOCKNUM();
+   CHECK_SOCKMODE(Sn_MR_TCP);
+   CHECK_SOCKINIT();
+   //M20140501 : For avoiding fatal error on memory align mismatched
+   //if( *((uint32_t*)addr) == 0xFFFFFFFF || *((uint32_t*)addr) == 0) return SOCKERR_IPINVALID;
+   {
+      uint32_t taddr;
+      taddr = ((uint32_t)addr[0] & 0x000000FF);
+      taddr = (taddr << 8) + ((uint32_t)addr[1] & 0x000000FF);
+      taddr = (taddr << 8) + ((uint32_t)addr[2] & 0x000000FF);
+      taddr = (taddr << 8) + ((uint32_t)addr[3] & 0x000000FF);
+      if( taddr == 0xFFFFFFFF || taddr == 0) return SOCKERR_IPINVALID;
+   }
+   //
+	
+	if(port == 0) return SOCKERR_PORTZERO;
+	setSn_DIPR(sn,addr);
+	setSn_DPORT(sn,port);
+   #if _WIZCHIP_ == 5200   // for w5200 ARP errata 
+    setSUBR(wizchip_getsubn());
+   #endif
+	setSn_CR(sn,Sn_CR_CONNECT);
+   while(getSn_CR(sn));
+   if(sock_io_mode & (1<<sn)) return SOCK_BUSY;
+   while(getSn_SR(sn) != SOCK_ESTABLISHED)
+   {
+		if (getSn_IR(sn) & Sn_IR_TIMEOUT)
+		{
+			setSn_IR(sn, Sn_IR_TIMEOUT);
+            #if _WIZCHIP_ == 5200   // for w5200 ARP errata 
+            setSUBR((uint8_t*)"\x00\x00\x00\x00");
+            #endif
+            return SOCKERR_TIMEOUT;
+		}
+
+        if (getSn_SR(sn) == SOCK_CLOSED) {
+            #if _WIZCHIP_ == 5200   // for w5200 ARP errata
+            setSUBR((uint8_t*)"\x00\x00\x00\x00");
+            #endif
+            return SOCKERR_SOCKCLOSED;
+        }
+
+        WIZCHIP_YIELD();
+	}
+    #if _WIZCHIP_ == 5200   // for w5200 ARP errata 
+    setSUBR((uint8_t*)"\x00\x00\x00\x00");
+    #endif
+   
+   return SOCK_OK;
+}
+
+int8_t WIZCHIP_EXPORT(disconnect)(uint8_t sn)
+{
+   CHECK_SOCKNUM();
+   CHECK_SOCKMODE(Sn_MR_TCP);
+	setSn_CR(sn,Sn_CR_DISCON);
+	/* wait to process the command... */
+	while(getSn_CR(sn));
+	sock_is_sending &= ~(1<<sn);
+   if(sock_io_mode & (1<<sn)) return SOCK_BUSY;
+	while(getSn_SR(sn) != SOCK_CLOSED)
+	{
+	   if(getSn_IR(sn) & Sn_IR_TIMEOUT)
+	   {
+	      WIZCHIP_EXPORT(close)(sn);
+	      return SOCKERR_TIMEOUT;
+	   }
+	}
+	return SOCK_OK;
+}
+
+int32_t WIZCHIP_EXPORT(send)(uint8_t sn, uint8_t * buf, uint16_t len)
+{
+   uint8_t tmp=0;
+   uint16_t freesize=0;
+   
+   CHECK_SOCKNUM();
+   CHECK_SOCKMODE(Sn_MR_TCP);
+   CHECK_SOCKDATA();
+   tmp = getSn_SR(sn);
+   if(tmp != SOCK_ESTABLISHED && tmp != SOCK_CLOSE_WAIT) return SOCKERR_SOCKSTATUS;
+   if( sock_is_sending & (1<<sn) )
+   {
+      tmp = getSn_IR(sn);
+      if(tmp & Sn_IR_SENDOK)
+      {
+         setSn_IR(sn, Sn_IR_SENDOK);
+         //M20150401 : Typing Error
+         //#if _WZICHIP_ == 5200
+         #if _WIZCHIP_ == 5200
+            if(getSn_TX_RD(sn) != sock_next_rd[sn])
+            {
+               setSn_CR(sn,Sn_CR_SEND);
+               while(getSn_CR(sn));
+               return SOCK_BUSY;
+            }
+         #endif
+         sock_is_sending &= ~(1<<sn);         
+      }
+      else if(tmp & Sn_IR_TIMEOUT)
+      {
+         WIZCHIP_EXPORT(close)(sn);
+         return SOCKERR_TIMEOUT;
+      }
+      else return SOCK_BUSY;
+   }
+   freesize = getSn_TxMAX(sn);
+   if (len > freesize) len = freesize; // check size not to exceed MAX size.
+   while(1)
+   {
+      freesize = getSn_TX_FSR(sn);
+      tmp = getSn_SR(sn);
+      if ((tmp != SOCK_ESTABLISHED) && (tmp != SOCK_CLOSE_WAIT))
+      {
+         WIZCHIP_EXPORT(close)(sn);
+         return SOCKERR_SOCKSTATUS;
+      }
+      if( (sock_io_mode & (1<<sn)) && (len > freesize) ) return SOCK_BUSY;
+      if(len <= freesize) break;
+      WIZCHIP_YIELD();
+   }
+   wiz_send_data(sn, buf, len);
+   #if _WIZCHIP_ == 5200
+      sock_next_rd[sn] = getSn_TX_RD(sn) + len;
+   #endif
+
+   #if _WIZCHIP_ == 5300
+      setSn_TX_WRSR(sn,len);
+   #endif
+   
+   setSn_CR(sn,Sn_CR_SEND);
+   /* wait to process the command... */
+   while(getSn_CR(sn));
+   sock_is_sending |= (1 << sn);
+   //M20150409 : Explicit Type Casting
+   //return len;
+   return (int32_t)len;
+}
+
+
+int32_t WIZCHIP_EXPORT(recv)(uint8_t sn, uint8_t * buf, uint16_t len)
+{
+   uint8_t  tmp = 0;
+   uint16_t recvsize = 0;
+//A20150601 : For integarating with W5300
+#if   _WIZCHIP_ == 5300
+   uint8_t head[2];
+   uint16_t mr;
+#endif
+//
+   CHECK_SOCKNUM();
+   CHECK_SOCKMODE(Sn_MR_TCP);
+   CHECK_SOCKDATA();
+   
+   recvsize = getSn_RxMAX(sn);
+   if(recvsize < len) len = recvsize;
+      
+//A20150601 : For Integrating with W5300
+#if _WIZCHIP_ == 5300
+   //sock_pack_info[sn] = PACK_COMPLETED;    // for clear      
+   if(sock_remained_size[sn] == 0)
+   {
+#endif
+//
+      while(1)
+      {
+         recvsize = getSn_RX_RSR(sn);
+         tmp = getSn_SR(sn);
+         if (tmp != SOCK_ESTABLISHED)
+         {
+            if(tmp == SOCK_CLOSE_WAIT)
+            {
+               if(recvsize != 0) break;
+               else if(getSn_TX_FSR(sn) == getSn_TxMAX(sn))
+               {
+                  // dpgeorge: Getting here seems to be an orderly shutdown of the
+                  // socket, and trying to get POSIX behaviour we return 0 because:
+                  // "If no messages are available to be received and the peer has per?
+                  //  formed an orderly shutdown, recv() shall return 0".
+                  // TODO this return value clashes with SOCK_BUSY in non-blocking mode.
+                  WIZCHIP_EXPORT(close)(sn);
+                  return 0;
+               }
+            }
+            else
+            {
+               WIZCHIP_EXPORT(close)(sn);
+               return SOCKERR_SOCKSTATUS;
+            }
+         }
+         if((sock_io_mode & (1<<sn)) && (recvsize == 0)) return SOCK_BUSY;
+         if(recvsize != 0) break;
+         WIZCHIP_YIELD();
+      };
+#if _WIZCHIP_ == 5300
+   }
+#endif
+
+//A20150601 : For integrating with W5300
+#if _WIZCHIP_ == 5300
+   if((sock_remained_size[sn] == 0) || (getSn_MR(sn) & Sn_MR_ALIGN))
+   {
+      mr = getMR();
+      if((getSn_MR(sn) & Sn_MR_ALIGN)==0)
+      {
+         wiz_recv_data(sn,head,2);
+         if(mr & MR_FS)
+            recvsize = (((uint16_t)head[1]) << 8) | ((uint16_t)head[0]);
+         else
+            recvsize = (((uint16_t)head[0]) << 8) | ((uint16_t)head[1]);
+         sock_pack_info[sn] = PACK_FIRST;
+      }
+      sock_remained_size[sn] = recvsize;
+   }
+   if(len > sock_remained_size[sn]) len = sock_remained_size[sn];
+   recvsize = len;   
+   if(sock_pack_info[sn] & PACK_FIFOBYTE)
+   {
+      *buf = sock_remained_byte[sn];
+      buf++;
+      sock_pack_info[sn] &= ~(PACK_FIFOBYTE);
+      recvsize -= 1;
+      sock_remained_size[sn] -= 1;
+   }
+   if(recvsize != 0)
+   {
+      wiz_recv_data(sn, buf, recvsize);
+      setSn_CR(sn,Sn_CR_RECV);
+      while(getSn_CR(sn));
+   }
+   sock_remained_size[sn] -= recvsize;
+   if(sock_remained_size[sn] != 0)
+   {
+      sock_pack_info[sn] |= PACK_REMAINED;
+      if(recvsize & 0x1) sock_pack_info[sn] |= PACK_FIFOBYTE;
+   }
+   else sock_pack_info[sn] = PACK_COMPLETED;
+   if(getSn_MR(sn) & Sn_MR_ALIGN) sock_remained_size[sn] = 0;
+   //len = recvsize;
+#else   
+   if(recvsize < len) len = recvsize;   
+   wiz_recv_data(sn, buf, len);
+   setSn_CR(sn,Sn_CR_RECV);
+   while(getSn_CR(sn));
+#endif
+     
+   //M20150409 : Explicit Type Casting
+   //return len;
+   return (int32_t)len;
+}
+
+int32_t WIZCHIP_EXPORT(sendto)(uint8_t sn, uint8_t * buf, uint16_t len, uint8_t * addr, uint16_t port)
+{
+   uint8_t tmp = 0;
+   uint16_t freesize = 0;
+   uint32_t taddr;
+
+   CHECK_SOCKNUM();
+   switch(getSn_MR(sn) & 0x0F)
+   {
+      case Sn_MR_UDP:
+      case Sn_MR_MACRAW:
+//         break;
+//   #if ( _WIZCHIP_ < 5200 )
+      case Sn_MR_IPRAW:
+         break;
+//   #endif
+      default:
+         return SOCKERR_SOCKMODE;
+   }
+   CHECK_SOCKDATA();
+   //M20140501 : For avoiding fatal error on memory align mismatched
+   //if(*((uint32_t*)addr) == 0) return SOCKERR_IPINVALID;
+   //{
+      //uint32_t taddr;
+      taddr = ((uint32_t)addr[0]) & 0x000000FF;
+      taddr = (taddr << 8) + ((uint32_t)addr[1] & 0x000000FF);
+      taddr = (taddr << 8) + ((uint32_t)addr[2] & 0x000000FF);
+      taddr = (taddr << 8) + ((uint32_t)addr[3] & 0x000000FF);
+   //}
+   //
+   //if(*((uint32_t*)addr) == 0) return SOCKERR_IPINVALID;
+   if((taddr == 0) && ((getSn_MR(sn)&Sn_MR_MACRAW) != Sn_MR_MACRAW)) return SOCKERR_IPINVALID;
+   if((port  == 0) && ((getSn_MR(sn)&Sn_MR_MACRAW) != Sn_MR_MACRAW)) return SOCKERR_PORTZERO;
+   tmp = getSn_SR(sn);
+//#if ( _WIZCHIP_ < 5200 )
+   if((tmp != SOCK_MACRAW) && (tmp != SOCK_UDP) && (tmp != SOCK_IPRAW)) return SOCKERR_SOCKSTATUS;
+//#else
+//   if(tmp != SOCK_MACRAW && tmp != SOCK_UDP) return SOCKERR_SOCKSTATUS;
+//#endif
+      
+   setSn_DIPR(sn,addr);
+   setSn_DPORT(sn,port);      
+   freesize = getSn_TxMAX(sn);
+   if (len > freesize) len = freesize; // check size not to exceed MAX size.
+   while(1)
+   {
+      freesize = getSn_TX_FSR(sn);
+      if(getSn_SR(sn) == SOCK_CLOSED) return SOCKERR_SOCKCLOSED;
+      if( (sock_io_mode & (1<<sn)) && (len > freesize) ) return SOCK_BUSY;
+      if(len <= freesize) break;
+      WIZCHIP_YIELD();
+   };
+	wiz_send_data(sn, buf, len);
+
+   #if _WIZCHIP_ < 5500   //M20150401 : for WIZCHIP Errata #4, #5 (ARP errata)
+      getSIPR((uint8_t*)&taddr);
+      if(taddr == 0)
+      {
+         getSUBR((uint8_t*)&taddr);
+         setSUBR((uint8_t*)"\x00\x00\x00\x00");
+      }
+      else taddr = 0;
+   #endif
+
+//A20150601 : For W5300
+#if _WIZCHIP_ == 5300
+   setSn_TX_WRSR(sn, len);
+#endif
+//   
+	setSn_CR(sn,Sn_CR_SEND);
+	/* wait to process the command... */
+	while(getSn_CR(sn));
+   while(1)
+   {
+      tmp = getSn_IR(sn);
+      if(tmp & Sn_IR_SENDOK)
+      {
+         setSn_IR(sn, Sn_IR_SENDOK);
+         break;
+      }
+      //M:20131104
+      //else if(tmp & Sn_IR_TIMEOUT) return SOCKERR_TIMEOUT;
+      else if(tmp & Sn_IR_TIMEOUT)
+      {
+         setSn_IR(sn, Sn_IR_TIMEOUT);
+         //M20150409 : Fixed the lost of sign bits by type casting.
+         //len = (uint16_t)SOCKERR_TIMEOUT;
+         //break;
+         #if _WIZCHIP_ < 5500   //M20150401 : for WIZCHIP Errata #4, #5 (ARP errata)
+            if(taddr) setSUBR((uint8_t*)&taddr);
+         #endif
+         return SOCKERR_TIMEOUT;
+      }
+      ////////////
+      WIZCHIP_YIELD();
+   }
+   #if _WIZCHIP_ < 5500   //M20150401 : for WIZCHIP Errata #4, #5 (ARP errata)
+      if(taddr) setSUBR((uint8_t*)&taddr);
+   #endif
+   //M20150409 : Explicit Type Casting
+   //return len;
+   return (int32_t)len;
+}
+
+
+int32_t WIZCHIP_EXPORT(recvfrom)(uint8_t sn, uint8_t * buf, uint16_t len, uint8_t * addr, uint16_t *port)
+{
+//M20150601 : For W5300   
+#if _WIZCHIP_ == 5300
+   uint16_t mr;
+   uint16_t mr1;
+#else   
+   uint8_t  mr;
+#endif
+//   
+   uint8_t  head[8];
+	uint16_t pack_len=0;
+
+   CHECK_SOCKNUM();
+   //CHECK_SOCKMODE(Sn_MR_UDP);
+//A20150601
+#if _WIZCHIP_ == 5300
+   mr1 = getMR();
+#endif   
+
+   switch((mr=getSn_MR(sn)) & 0x0F)
+   {
+      case Sn_MR_UDP:
+	  case Sn_MR_IPRAW:
+      case Sn_MR_MACRAW:
+         break;
+   #if ( _WIZCHIP_ < 5200 )         
+      case Sn_MR_PPPoE:
+         break;
+   #endif
+      default:
+         return SOCKERR_SOCKMODE;
+   }
+   CHECK_SOCKDATA();
+   if(sock_remained_size[sn] == 0)
+   {
+      while(1)
+      {
+         pack_len = getSn_RX_RSR(sn);
+         if(getSn_SR(sn) == SOCK_CLOSED) return SOCKERR_SOCKCLOSED;
+         if( (sock_io_mode & (1<<sn)) && (pack_len == 0) ) return SOCK_BUSY;
+         if(pack_len != 0) break;
+         WIZCHIP_YIELD();
+      };
+   }
+//D20150601 : Move it to bottom
+// sock_pack_info[sn] = PACK_COMPLETED;
+	switch (mr & 0x07)
+	{
+	   case Sn_MR_UDP :
+	      if(sock_remained_size[sn] == 0)
+	      {
+   			wiz_recv_data(sn, head, 8);
+   			setSn_CR(sn,Sn_CR_RECV);
+   			while(getSn_CR(sn)) {}
+   			// read peer's IP address, port number & packet length
+   	   //A20150601 : For W5300
+   		#if _WIZCHIP_ == 5300
+   		   if(mr1 & MR_FS)
+   		   {
+   		      addr[0] = head[1];
+   		      addr[1] = head[0];
+   		      addr[2] = head[3];
+   		      addr[3] = head[2];
+   		      *port = head[5];
+   		      *port = (*port << 8) + head[4];
+      			sock_remained_size[sn] = head[7];
+      			sock_remained_size[sn] = (sock_remained_size[sn] << 8) + head[6];
+   		   }
+            else
+            {
+         #endif
+               addr[0] = head[0];
+      			addr[1] = head[1];
+      			addr[2] = head[2];
+      			addr[3] = head[3];
+      			*port = head[4];
+      			*port = (*port << 8) + head[5];
+      			sock_remained_size[sn] = head[6];
+      			sock_remained_size[sn] = (sock_remained_size[sn] << 8) + head[7];
+         #if _WIZCHIP_ == 5300
+            }
+         #endif
+   			sock_pack_info[sn] = PACK_FIRST;
+   	   }
+			if(len < sock_remained_size[sn]) pack_len = len;
+			else pack_len = sock_remained_size[sn];
+			//A20150601 : For W5300
+			len = pack_len;
+			#if _WIZCHIP_ == 5300
+			   if(sock_pack_info[sn] & PACK_FIFOBYTE)
+			   {
+			      *buf++ = sock_remained_byte[sn];
+			      pack_len -= 1;
+			      sock_remained_size[sn] -= 1;
+			      sock_pack_info[sn] &= ~PACK_FIFOBYTE;
+			   }
+			#endif
+			//
+			// Need to packet length check (default 1472)
+			//
+   		wiz_recv_data(sn, buf, pack_len); // data copy.
+			break;
+	   case Sn_MR_MACRAW :
+	      if(sock_remained_size[sn] == 0)
+	      {
+   			wiz_recv_data(sn, head, 2);
+   			setSn_CR(sn,Sn_CR_RECV);
+   			while(getSn_CR(sn));
+   			// read peer's IP address, port number & packet length
+    			sock_remained_size[sn] = head[0];
+   			sock_remained_size[sn] = (sock_remained_size[sn] <<8) + head[1] -2;
+   			#if _WIZCHIP_ == W5300
+   			if(sock_remained_size[sn] & 0x01)
+   				sock_remained_size[sn] = sock_remained_size[sn] + 1 - 4;
+   			else
+   				sock_remained_size[sn] -= 4;
+			#endif
+   			if(sock_remained_size[sn] > 1514) 
+   			{
+   			   WIZCHIP_EXPORT(close)(sn);
+   			   return SOCKFATAL_PACKLEN;
+   			}
+   			sock_pack_info[sn] = PACK_FIRST;
+   	   }
+			if(len < sock_remained_size[sn]) pack_len = len;
+			else pack_len = sock_remained_size[sn];
+			wiz_recv_data(sn,buf,pack_len);
+		   break;
+   //#if ( _WIZCHIP_ < 5200 )
+		case Sn_MR_IPRAW:
+		   if(sock_remained_size[sn] == 0)
+		   {
+   			wiz_recv_data(sn, head, 6);
+   			setSn_CR(sn,Sn_CR_RECV);
+   			while(getSn_CR(sn));
+   			addr[0] = head[0];
+   			addr[1] = head[1];
+   			addr[2] = head[2];
+   			addr[3] = head[3];
+   			sock_remained_size[sn] = head[4];
+   			//M20150401 : For Typing Error
+   			//sock_remaiend_size[sn] = (sock_remained_size[sn] << 8) + head[5];
+   			sock_remained_size[sn] = (sock_remained_size[sn] << 8) + head[5];
+   			sock_pack_info[sn] = PACK_FIRST;
+         }
+			//
+			// Need to packet length check
+			//
+			if(len < sock_remained_size[sn]) pack_len = len;
+			else pack_len = sock_remained_size[sn];
+   		wiz_recv_data(sn, buf, pack_len); // data copy.
+			break;
+   //#endif
+      default:
+         wiz_recv_ignore(sn, pack_len); // data copy.
+         sock_remained_size[sn] = pack_len;
+         break;
+   }
+	setSn_CR(sn,Sn_CR_RECV);
+	/* wait to process the command... */
+	while(getSn_CR(sn)) ;
+	sock_remained_size[sn] -= pack_len;
+	//M20150601 : 
+	//if(sock_remained_size[sn] != 0) sock_pack_info[sn] |= 0x01;
+	if(sock_remained_size[sn] != 0)
+	{
+	   sock_pack_info[sn] |= PACK_REMAINED;
+   #if _WIZCHIP_ == 5300	   
+	   if(pack_len & 0x01) sock_pack_info[sn] |= PACK_FIFOBYTE;
+   #endif	      
+	}
+	else sock_pack_info[sn] = PACK_COMPLETED;
+#if _WIZCHIP_ == 5300	   
+   pack_len = len;
+#endif
+   //
+   //M20150409 : Explicit Type Casting
+   //return pack_len;
+   return (int32_t)pack_len;
+}
+
+
+int8_t  WIZCHIP_EXPORT(ctlsocket)(uint8_t sn, ctlsock_type cstype, void* arg)
+{
+   uint8_t tmp = 0;
+   CHECK_SOCKNUM();
+   switch(cstype)
+   {
+      case CS_SET_IOMODE:
+         tmp = *((uint8_t*)arg);
+         if(tmp == SOCK_IO_NONBLOCK)  sock_io_mode |= (1<<sn);
+         else if(tmp == SOCK_IO_BLOCK) sock_io_mode &= ~(1<<sn);
+         else return SOCKERR_ARG;
+         break;
+      case CS_GET_IOMODE:   
+         //M20140501 : implict type casting -> explict type casting
+         //*((uint8_t*)arg) = (sock_io_mode >> sn) & 0x0001;
+         *((uint8_t*)arg) = (uint8_t)((sock_io_mode >> sn) & 0x0001);
+         //
+         break;
+      case CS_GET_MAXTXBUF:
+         *((uint16_t*)arg) = getSn_TxMAX(sn);
+         break;
+      case CS_GET_MAXRXBUF:    
+         *((uint16_t*)arg) = getSn_RxMAX(sn);
+         break;
+      case CS_CLR_INTERRUPT:
+         if( (*(uint8_t*)arg) > SIK_ALL) return SOCKERR_ARG;
+         setSn_IR(sn,*(uint8_t*)arg);
+         break;
+      case CS_GET_INTERRUPT:
+         *((uint8_t*)arg) = getSn_IR(sn);
+         break;
+   #if _WIZCHIP_ != 5100
+      case CS_SET_INTMASK:  
+         if( (*(uint8_t*)arg) > SIK_ALL) return SOCKERR_ARG;
+         setSn_IMR(sn,*(uint8_t*)arg);
+         break;
+      case CS_GET_INTMASK:   
+         *((uint8_t*)arg) = getSn_IMR(sn);
+         break;
+   #endif
+      default:
+         return SOCKERR_ARG;
+   }
+   return SOCK_OK;
+}
+
+int8_t  WIZCHIP_EXPORT(setsockopt)(uint8_t sn, sockopt_type sotype, void* arg)
+{
+ // M20131220 : Remove warning
+ //uint8_t tmp;
+   CHECK_SOCKNUM();
+   switch(sotype)
+   {
+      case SO_TTL:
+         setSn_TTL(sn,*(uint8_t*)arg);
+         break;
+      case SO_TOS:
+         setSn_TOS(sn,*(uint8_t*)arg);
+         break;
+      case SO_MSS:
+         setSn_MSSR(sn,*(uint16_t*)arg);
+         break;
+      case SO_DESTIP:
+         setSn_DIPR(sn, (uint8_t*)arg);
+         break;
+      case SO_DESTPORT:
+         setSn_DPORT(sn, *(uint16_t*)arg);
+         break;
+#if _WIZCHIP_ != 5100
+      case SO_KEEPALIVESEND:
+         CHECK_SOCKMODE(Sn_MR_TCP);
+         #if _WIZCHIP_ > 5200
+            if(getSn_KPALVTR(sn) != 0) return SOCKERR_SOCKOPT;
+         #endif
+            setSn_CR(sn,Sn_CR_SEND_KEEP);
+            while(getSn_CR(sn) != 0)
+            {
+               // M20131220
+         		//if ((tmp = getSn_IR(sn)) & Sn_IR_TIMEOUT)
+               if (getSn_IR(sn) & Sn_IR_TIMEOUT)
+         		{
+         			setSn_IR(sn, Sn_IR_TIMEOUT);
+                  return SOCKERR_TIMEOUT;
+         		}
+            }
+         break;
+   #if !( (_WIZCHIP_ == 5100) || (_WIZCHIP_ == 5200) )
+      case SO_KEEPALIVEAUTO:
+         CHECK_SOCKMODE(Sn_MR_TCP);
+         setSn_KPALVTR(sn,*(uint8_t*)arg);
+         break;
+   #endif      
+#endif   
+      default:
+         return SOCKERR_ARG;
+   }   
+   return SOCK_OK;
+}
+
+int8_t  WIZCHIP_EXPORT(getsockopt)(uint8_t sn, sockopt_type sotype, void* arg)
+{
+   CHECK_SOCKNUM();
+   switch(sotype)
+   {
+      case SO_FLAG:
+         *(uint8_t*)arg = getSn_MR(sn) & 0xF0;
+         break;
+      case SO_TTL:
+         *(uint8_t*) arg = getSn_TTL(sn);
+         break;
+      case SO_TOS:
+         *(uint8_t*) arg = getSn_TOS(sn);
+         break;
+      case SO_MSS:   
+         *(uint16_t*) arg = getSn_MSSR(sn);
+         break;
+      case SO_DESTIP:
+         getSn_DIPR(sn, (uint8_t*)arg);
+         break;
+      case SO_DESTPORT:  
+         *(uint16_t*) arg = getSn_DPORT(sn);
+         break;
+   #if _WIZCHIP_ > 5200   
+      case SO_KEEPALIVEAUTO:
+         CHECK_SOCKMODE(Sn_MR_TCP);
+         *(uint16_t*) arg = getSn_KPALVTR(sn);
+         break;
+   #endif      
+      case SO_SENDBUF:
+         *(uint16_t*) arg = getSn_TX_FSR(sn);
+         break;
+      case SO_RECVBUF:
+         *(uint16_t*) arg = getSn_RX_RSR(sn);
+         break;
+      case SO_STATUS:
+         *(uint8_t*) arg = getSn_SR(sn);
+         break;
+      case SO_REMAINSIZE:
+         if(getSn_MR(sn) & Sn_MR_TCP)
+            *(uint16_t*)arg = getSn_RX_RSR(sn);
+         else
+            *(uint16_t*)arg = sock_remained_size[sn];
+         break;
+      case SO_PACKINFO:
+         //CHECK_SOCKMODE(Sn_MR_TCP);
+#if _WIZCHIP_ != 5300
+         if((getSn_MR(sn) == Sn_MR_TCP))
+             return SOCKERR_SOCKMODE;
+#endif
+         *(uint8_t*)arg = sock_pack_info[sn];
+         break;
+      default:
+         return SOCKERR_SOCKOPT;
+   }
+   return SOCK_OK;
+}
