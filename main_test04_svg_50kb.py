@@ -280,29 +280,44 @@ def generate_svg_response():
 
 while True:
     try:
+        print("[MAIN] ====== WAITING FOR CONNECTION ======")
         cl, addr = s.accept()
-        print("Client connected from", addr)
-        request = cl.recv(16384)  # Read request data
-        
-        # Parse request to get path
+        print(f"[MAIN] accept() returned, addr={addr}")
+
+        request = cl.recv(16384)
+        print(f"[MAIN] recv() returned {len(request)} bytes")
+
         request_str = request.decode()
+        print(f"[MAIN] Request decoded, length={len(request_str)}")
+
         request_lines = request_str.split('\r\n')
+        print(f"[MAIN] Request split into {len(request_lines)} lines")
+
         request_line = request_lines[0]
+        print(f"[MAIN] First line: {request_line[:50]}...")
+
         parts = request_line.split()
+        print(f"[MAIN] Split into {len(parts)} parts")
+
         if len(parts) >= 2:
             method, path = parts[0], parts[1]
+            print(f"[MAIN] Parsed: method={method}, path={path}")
         else:
             path = '/'
-        
-        print(f"Request path: {path}")
-        
+            print("[MAIN] Using default path=/")
+
+        print(f"[MAIN] Request path: {path}")
+
+        # Generate response
         if path == '/svg':
-            print("Generating SVG response...")
+            print("[MAIN] Calling generate_svg_response()")
             response_body = generate_svg_response()
+            print(f"[MAIN] SVG generated, size={len(response_body)}")
             content_type = 'image/svg+xml'
         else:
-            print("Generating large HTML response...")
+            print("[MAIN] Calling generate_large_html_response()")
             response_body = generate_large_html_response()
+            print(f"[MAIN] HTML generated, size={len(response_body)}")
             content_type = 'text/html; charset=UTF-8'
         
         response_start = time.ticks_ms()
@@ -314,7 +329,13 @@ while True:
         full_response = response_header + response_body
         print(f"Full response size: {len(full_response)} bytes (headers: {len(response_header)}, body: {len(response_body)})")
         print(f"Response generation time: {response_time}ms")
+        print("[MAIN] cl.send() is about to be executed")
         cl.send(full_response)
+
+        print("[MAIN] Calling cl.close()")
         cl.close()
+        print("[MAIN] close() returned successfully")
     except Exception as e:
         print("Error:", e)
+
+
