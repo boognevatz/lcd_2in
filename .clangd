@@ -1,9 +1,9 @@
-# .clangd
 CompileFlags:
-  Add: [
-    "-target", "arm-none-eabi",
-    # Add the required include path for the toolchain
-    "-isystem", "/usr/lib/gcc/arm-none-eabi/13.2.1/../../../arm-none-eabi/include",
-  ]
-
+  CompilationDatabase: micropython/ports/rp2/build-RP2350_TOUCH_LCD_2
+  Add:
+    - -I/home/lama/Asztal/projects2/aron_polinvent/lcd_2in/micropython
+    - -I/home/lama/Asztal/projects2/aron_polinvent/lcd_2in/micropython/lib
+    - --target=arm-none-eabi
+Diagnostics:
+  UnusedIncludes: Strict
 
