@@ -40,11 +40,91 @@ while not nic.isconnected():
     time.sleep(0.1)
 print("Connected. IP address:", nic.ifconfig()[0])
 
-# Create socket
-s = socket.socket()
-s.bind(("0.0.0.0", 80))
-s.listen(5)
-print(f"Listening on {nic.ifconfig()[0]}:80")
+# Socket will be created in the main loop
+print(f"Server will listen on {nic.ifconfig()[0]}:80")
+
+
+def generate_small_html_response():
+    """Generate HTML response just a small once."""
+    
+    html_content = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>W5500 Large Payload Test</title>
+    <link rel="icon" href="data:,">
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 20px; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+        }
+        .container { 
+            background: white; 
+            padding: 30px; 
+            border-radius: 10px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        h1 { 
+            color: #2c3e50; 
+            text-align: center; 
+            border-bottom: 3px solid #3498db;
+            padding-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>W5500 Small Payload Test Page</h1>
+        
+        
+        <div class="status">
+            <h2>System Status</h2>
+            <p><strong>Server:</strong> W5500 Ethernet Controller</p>
+            <p><strong>Payload Size:</strong> """
+    
+    # Add dynamic content
+    gc.collect()
+    free_mem = gc.mem_free()
+    alloc_mem = gc.mem_alloc()
+    
+    html_content += f"{len(html_content.encode())} bytes and growing</p>"
+    html_content += f"<p><strong>Free Memory:</strong> {free_mem} bytes</p>"
+    html_content += f"<p><strong>Allocated Memory:</strong> {alloc_mem} bytes</p>"
+    html_content += f"<p><strong>Timestamp:</strong> {time.ticks_ms()}</p>"
+    
+    html_content += """
+        </div>
+
+        <div class="metrics">
+            <div class="metric-card">
+                <div class="metric-value">1500+</div>
+                <div>Bytes Payload</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">W5500</div>
+                <div>Ethernet Chip</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">TCP/IP</div>
+                <div>Protocol Stack</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value">Fragmented</div>
+                <div>Packet Transfer</div>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>"""
+
+    return html_content.encode()
+
 
 def generate_large_html_response():
     """Generate HTML response >1500 bytes with meaningful content"""
@@ -278,13 +358,25 @@ def generate_svg_response():
     
     return svg_content.encode()
 
+def create_server_socket():
+    """Create, bind and listen on a new server socket"""
+    server = socket.socket()
+    server.bind(("0.0.0.0", 80))
+    server.listen(5)
+    print(f"[MAIN] Server socket created and listening on port 80")
+    return server
+
+# Initial server socket
+s = create_server_socket()
+
+
 while True:
     try:
         print("[MAIN] ====== WAITING FOR CONNECTION ======")
         cl, addr = s.accept()
         print(f"[MAIN] accept() returned, addr={addr}")
-
-        request = cl.recv(16384)
+       
+        request = cl.recv(8192)
         print(f"[MAIN] recv() returned {len(request)} bytes")
 
         request_str = request.decode()
@@ -314,6 +406,11 @@ while True:
             response_body = generate_svg_response()
             print(f"[MAIN] SVG generated, size={len(response_body)}")
             content_type = 'image/svg+xml'
+        elif path == '/1':
+            print("[MAIN] Calling generate_small_html_response()")
+            response_body = generate_small_html_response()
+            print(f"[MAIN] HTML small generated, size={len(response_body)}")
+            content_type = 'text/html; charset=UTF-8'
         else:
             print("[MAIN] Calling generate_large_html_response()")
             response_body = generate_large_html_response()
@@ -335,7 +432,30 @@ while True:
         print("[MAIN] Calling cl.close()")
         cl.close()
         print("[MAIN] close() returned successfully")
+
+        # CRITICAL: Close the server socket and create a new one
+        # The C driver no longer auto-re-listens, so Python must handle this
+        print("[MAIN] Closing server socket and creating new one. ..")
+        s.close()
+        time.sleep_ms(100)  # Give W5500 time to fully close
+        gc.collect()  # Free memory from old socket
+        s = create_server_socket()
+        print("[MAIN] New server socket ready")
+
+
     except Exception as e:
         print("Error:", e)
+         # Try to recover by creating a new server socket
+        try:
+            s.close()
+        except Exception as _:
+            pass
+        time.sleep_ms(500)
+        gc.collect()
+        s = create_server_socket()
+
+
+
+
 
 
