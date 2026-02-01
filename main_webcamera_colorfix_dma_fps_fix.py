@@ -683,6 +683,10 @@ Connection: close
         let fpsCounter = 0;
         let lastFpsTime = Date.now();
 
+        // Single-socket guard: only one active request at a time
+        let requestInProgress = false;
+        let abortController = null;
+
         function displayImage(arrayBuffer) {
             // Decode bit-packed data (from colorfix implementation)
             const source = new Uint8Array(arrayBuffer);
@@ -770,9 +774,24 @@ Connection: close
         }
 
         async function startStream() {
+            // Single-socket guard: block concurrent requests
+            if (requestInProgress) {
+                console.log('Request already in progress, skipping');
+                return;
+            }
+
+            // Abort any lingering previous request
+            if (abortController) {
+                abortController.abort();
+                await new Promise(r => setTimeout(r, 100));
+            }
+
+            abortController = new AbortController();
+            requestInProgress = true;
+
             try {
                 document.getElementById('status').textContent = 'Connecting...';
-                const response = await fetch('/stream');
+                const response = await fetch('/stream', { signal: abortController.signal });
                 document.getElementById('status').textContent = 'Streaming';
 
                 const reader = response.body.getReader();
@@ -784,9 +803,8 @@ Connection: close
                     const {done, value} = await reader.read();
 
                     if (done) {
-                        console.log('Stream ended, reconnecting...');
-                        document.getElementById('status').textContent = 'Reconnecting...';
-                        setTimeout(startStream, 100);
+                        console.log('Stream ended');
+                        document.getElementById('status').textContent = 'Stream ended';
                         break;
                     }
 
@@ -839,9 +857,20 @@ Connection: close
                     }
                 }
             } catch (err) {
-                console.error('Stream error:', err);
-                document.getElementById('status').textContent = 'Error: ' + err.message;
-                setTimeout(startStream, 2000);
+                if (err.name === 'AbortError') {
+                    console.log('Request aborted');
+                    document.getElementById('status').textContent = 'Aborted';
+                } else {
+                    console.error('Stream error:', err);
+                    document.getElementById('status').textContent = 'Error: ' + err.message;
+                }
+            } finally {
+                // Cleanup: allow next request after delay for MCU socket teardown
+                requestInProgress = false;
+                abortController = null;
+                document.getElementById('status').textContent = 'Reconnecting...';
+                // Wait 500ms for MCU to fully close socket before reconnecting
+                setTimeout(startStream, 500);
             }
         }
 
@@ -878,6 +907,9 @@ Keep-Alive: timeout=0, max=0
         const width = 240;
         const height = 320;
         let lastImageBuffer = null;
+
+        // Single-socket guard: only one active request at a time
+        let requestInProgress = false;
         
         function displayImage(arrayBuffer) {
             const source = new Uint8Array(arrayBuffer);
@@ -951,18 +983,31 @@ Keep-Alive: timeout=0, max=0
             ctx.putImageData(imageData, 0, 0);
         }
         
-        function refreshImage() {
-            fetch('/image.raw?t=' + new Date().getTime())
-                .then(response => response.arrayBuffer())
-                .then(arrayBuffer => {
-                    displayImage(arrayBuffer);
-                })
-                .catch(err => console.error(err));
+        async function refreshImage() {
+            // Single-socket guard: block concurrent requests
+            if (requestInProgress) {
+                console.log('Request in progress, skipping');
+                return;
+            }
+
+            requestInProgress = true;
+
+            try {
+                const response = await fetch('/image.raw?t=' + Date.now());
+                const arrayBuffer = await response.arrayBuffer();
+                displayImage(arrayBuffer);
+            } catch (err) {
+                console.error('Image fetch error:', err);
+            } finally {
+                // Cleanup: allow next request after delay for MCU socket teardown
+                requestInProgress = false;
+                // Chain next request after current completes + 100ms delay
+                setTimeout(refreshImage, 100);
+            }
         }
         
-        // Refresh image every 1 second for live view
+        // Start the sequential polling chain (no setInterval!)
         refreshImage();
-        setInterval(refreshImage, 1000);
     </script>
 </body>
 </html>
