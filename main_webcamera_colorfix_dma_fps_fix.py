@@ -89,17 +89,17 @@ try:
     if ADS7830_ADDR in devices:
         adc_ready = True
     else:
-        print(f"WARNING: ADS7830 ADC not found")
+        print("WARNING: ADS7830 ADC not found")
 
     if BAROMETER_ADDR in devices:
         barometer_ready = True
     else:
-        print(f"WARNING: WF5803F Barometer not found")
+        print("WARNING: WF5803F Barometer not found")
 
     if MCP4725_ADDR in devices:
         dac_ready = True
     else:
-        print(f"WARNING: MCP4725 DAC not found")
+        print("WARNING: MCP4725 DAC not found")
 except Exception as e:
     print(f"ERROR: I2C initialization failed: {e}")
     adc_ready = False
@@ -546,98 +546,19 @@ def cleanup():
     except Exception as e:
         print(f"Error during cleanup: {e}")
 
-
-# ===== UNIFIED SERVER (SINGLE CORE, NON-BLOCKING) =====
-def start_webserver():
-    """Unified server handling both camera and JSON on single core with non-blocking I/O"""
-    # Create single socket for both camera and JSON on port 8081
-    addr = socket.getaddrinfo("0.0.0.0", 8081)[0][-1]
-    s = socket.socket()
-    #s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(addr)
-    s.listen(5)
-    #s.setblocking(False)  # Non-blocking
-
-    print(f"Unified Server started on http://{config_net[0]}:8081")
-    print(
-        f"Test Drum led control on http://{config_net[0]}:8081/json/headled/10 or http://{config_net[0]}:8081/json/headled/0"
-    )
-
-    print_memory_stats("After Webserver initialization")
-    # Feed watchdog before entering main loop
-    #wdt.feed()
-
-    # Use select to handle the socket efficiently
-    poller = select.poll()
-    poller.register(s, select.POLLIN)
+def create_server_socket():
+    """Create, bind and listen on a new server socket"""
+    server = socket.socket()
+    server.bind(("0.0.0.0", 8081))
+    server.listen(5)
+    print("[MAIN] Server socket created and listening on port 80")
+    return server
 
 
-
-    while True:
-        try:
-            # Feed watchdog to prevent system reset
-            #wdt.feed()
-
-            # Wait for activity on socket (short timeout for responsiveness)
-            events = poller.poll(50)  # 50ms timeout
-
-            for sock, event in events:
-                cl = None
-                try:
-                    # Accept connection
-                    cl, addr = sock.accept()
-                    cl.settimeout(2.0)
-                    result = None
-
-                    # Read the HTTP request
-                    request = cl.recv(16384).decode("utf-8")
-                    request_line = request.split("\r\n")[0]
-                    path = request_line.split(" ")[1] if len(request_line.split(" ")) > 1 else "/"
-
-                    # Route based on path
-                    if path.startswith("/json"):
-                        # Handle JSON request
-                        adjusted_path = path[5:] if len(path) > 5 else "/"
-                        handle_json_request(cl, adjusted_path)
-                    elif path == "/" or path == "/stream" or path.startswith("/poll"):
-                        # Handle camera request
-                        result = handle_camera_request_optimized(cl, path)
-                    else:
-                        # 404 for unknown paths
-                        response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n404 Not Found"
-                        cl.send(response.encode())
-
-                except Exception as e:
-                    print(f"Error: {e}")
-                finally:
-                    if cl and result != "STREAM":
-                        cl.close()
-
-
-
-            # Periodic GC to free memory
-            gc.collect()
-
-        except Exception as e:
-            print(f"Server error: {e}")
-            time.sleep_ms(50)
-
-
-def handle_camera_request_optimized(cl, path):
-    """Handle camera requests - optimized for large image transfers"""
-    global active_stream_clients
-
-    try:
-        # TEST: Check socket type and attributes
-        print(f"Socket type: {type(cl)}")
-        #print(f"Socket dir: {dir(cl)}")
-        print(f"Has _wiznet_sn: {hasattr(cl, '_wiznet_sn')}")
-
-        # Path is already parsed
-
-        if path == "/":
-            # Serve HTML page with high-performance streaming AND color correction
-            html = """HTTP/1.1 200 OK
+def generate_html_root():
+    """path: /"""
+    gc.collect()
+    html = """HTTP/1.1 200 OK
 Content-Type: text/html
 Connection: close
 
@@ -880,17 +801,25 @@ Connection: close
 </body>
 </html>
 """
-            cl.send(html.encode())
+    return html.encode()
 
-        elif path.startswith("/poll"):
-            # Serve minimal HTML page with just the camera view
-            html = """HTTP/1.1 200 OK
+def generate_html_poll():
+    """path: /poll"""
+    
+    html = """HTTP/1.1 200 OK
 Content-Type: text/html
 Connection: close
 Keep-Alive: timeout=0, max=0
 
 <!DOCTYPE html>
 <html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera polling</title>
+    <!-- no favicon.ico -->
+    <link rel="icon" href="data:,">
+</head>
 <body>
     <canvas id="camera-canvas" width="240" height="320"></canvas>
     <div id="color-format-options">
@@ -1002,18 +931,44 @@ Keep-Alive: timeout=0, max=0
                 // Cleanup: allow next request after delay for MCU socket teardown
                 requestInProgress = false;
                 // Chain next request after current completes + 100ms delay
-                setTimeout(refreshImage, 100);
+                setTimeout(refreshImage, 5000);
             }
         }
         
         // Start the sequential polling chain (no setInterval!)
-        refreshImage();
+        window.addEventListener('load', () => {
+            setTimeout(refreshImage, 15000);
+        });
     </script>
 </body>
 </html>
 """
-            cl.send(html.encode())
+    return html.encode()
 
+def generate_html_404():
+    """path: /404"""
+    html = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n404 Not Found"
+    return html.encode()
+
+def handle_camera_request_optimized(cl, path):
+    """Handle camera requests - optimized for large image transfers"""
+    global active_stream_clients
+
+    try:
+        print(f"Socket type: {type(cl)}")
+        #print(f"Socket dir: {dir(cl)}")
+        print(f"Has _wiznet_sn: {hasattr(cl, '_wiznet_sn')}")
+
+        # Path is already parsed
+
+        if path == "/":
+            # Serve HTML page with high-performance streaming AND color correction
+            html = generate_html_root()
+            cl.send(html)
+        elif path.startswith("/poll"):
+            # Serve minimal HTML page with just the camera view
+            html = generate_html_poll()
+            cl.send(html)
         elif path.startswith("/image.raw"):
             # Serve raw camera image data
             if camera.is_buffer_ready():
@@ -1021,6 +976,7 @@ Keep-Alive: timeout=0, max=0
                 frame_len = 240 * 320 * 2  # Known size
                 header = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {frame_len}\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
                 cl.send(header.encode())
+                print("./image.raw header sent.")
 
                 # Define callback to send frame data in chunks
                 def send_callback(frame_data):
@@ -1047,7 +1003,7 @@ Keep-Alive: timeout=0, max=0
                         except OSError as e:
                             print(f"Socket error: {e}")
                             break
-
+                print("just before camera.send_frame_over_eth")
                 # Send frame using the new callback mechanism
                 camera.send_frame_over_eth(send_callback)
             else:
@@ -1080,9 +1036,21 @@ Keep-Alive: timeout=0, max=0
 
         else:
             # 404 for other paths
-            response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n404 Not Found"
-            cl.send(response.encode())
+            html = generate_html_404()
+            cl.send(html)
+        print("[MAIN] Calling cl.close()")
+        cl.close()
+        print("[MAIN] close() returned successfully")
 
+        # CRITICAL: Close the server socket and create a new one
+        # The C driver no longer auto-re-listens, so Python must handle this
+        print("[MAIN] Closing server socket and creating new one. ..")
+        global s
+        s.close()
+        time.sleep_ms(100)  # Give W5500 time to fully close
+        gc.collect()  # Free memory from old socket
+        s = create_server_socket()
+        print("[MAIN] New server socket ready")
     except Exception as e:
         print(f"Camera handler error: {e}")
 
@@ -1153,7 +1121,7 @@ def handle_json_request(cl, path):
             if cooling_press is not None:
                 json_parts.append(f'"cooling_pressure": {cooling_press}')
             else:
-                json_parts.append(f'"cooling_pressure": null')
+                json_parts.append('"cooling_pressure": null')
 
             # Add LED temperatures in order (1-6)
             for i in range(1, 7):
@@ -1186,6 +1154,53 @@ def handle_json_request(cl, path):
         print(f"JSON handler error: {e}")
 
 
+def start_webserver():
+    """Unified server handling both camera and JSON on single core with non-blocking I/O"""
+
+
+    print_memory_stats("\n\nAfter Webserver initialization\n\n")
+    print_memory_stats("\n\nAfter Webserver initialization\n\n")
+    print_memory_stats("\n\nAfter Webserver initialization\n\n")
+    print_memory_stats("\n\nAfter Webserver initialization\n\n")
+
+    while True:
+        try:
+            gc.collect()
+            cl, addr = s.accept()
+            print(f"[MAIN] accept() returned, addr={addr}")
+
+            request = cl.recv(16384).decode("utf-8")
+            request_line = request.split("\r\n")[0]
+            path = request_line.split(" ")[1] if len(request_line.split(" ")) > 1 else "/"
+
+            # Route based on path
+            if path.startswith("/json"):
+                # Handle JSON request
+                adjusted_path = path[5:] if len(path) > 5 else "/"
+                handle_json_request(cl, adjusted_path)
+            elif path == "/" or path == "/stream" or path.startswith("/poll"):
+                # Handle camera request
+                result = handle_camera_request_optimized(cl, path)
+            else:
+                # 404 for unknown paths
+                response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n404 Not Found"
+                cl.send(response.encode())
+
+        except Exception as e:
+            print("Error:", e)
+             # Try to recover by creating a new server socket
+            try:
+                s.close()
+            except Exception as _:
+                pass
+            time.sleep_ms(500)
+            gc.collect()
+            s = create_server_socket()
+
+
+# Initial server socket
+s = create_server_socket()
+
 # Start the unified webserver
 if nic.active():
     try:
@@ -1194,10 +1209,7 @@ if nic.active():
         print("\nShutdown")
         cleanup()
     except Exception as e:
-        print(f"\nERROR: Server: {e}")
-        import sys
-
-        sys.print_exception(e)
+        print("\nERROR: Server:", e)
         cleanup()
 else:
     print("ERROR: No network")
