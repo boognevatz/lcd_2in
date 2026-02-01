@@ -55,6 +55,7 @@ def generate_small_html_response():
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>W5500 Large Payload Test</title>
+    <!-- no favicon.ico -->
     <link rel="icon" href="data:,">
     <style>
         body { 
@@ -366,7 +367,7 @@ def create_server_socket():
     server = socket.socket()
     server.bind(("0.0.0.0", 80))
     server.listen(5)
-    print(f"[MAIN] Server socket created and listening on port 80")
+    print("[MAIN] Server socket created and listening on port 80")
     return server
 
 # Initial server socket
