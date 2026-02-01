@@ -11,6 +11,7 @@ import gc
 # GPIO 19 - MOSI
 # GPIO 20 - RST (RSTN)
 
+sendwithdma = 0
 cs = machine.Pin(17, machine.Pin.OUT)
 rst = machine.Pin(20, machine.Pin.OUT)
 cs.value(1)
@@ -47,6 +48,7 @@ print(f"Server will listen on {nic.ifconfig()[0]}:80")
 def generate_small_html_response():
     """Generate HTML response just a small once."""
     
+    gc.collect()
     html_content = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -129,7 +131,7 @@ def generate_small_html_response():
 def generate_large_html_response():
     """Generate HTML response >1500 bytes with meaningful content"""
     
-    # Large content template with semantic structure and inline styling
+    gc.collect()
     html_content = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -372,6 +374,7 @@ s = create_server_socket()
 
 while True:
     try:
+        gc.collect()
         print("[MAIN] ====== WAITING FOR CONNECTION ======")
         cl, addr = s.accept()
         print(f"[MAIN] accept() returned, addr={addr}")
@@ -426,9 +429,12 @@ while True:
         full_response = response_header + response_body
         print(f"Full response size: {len(full_response)} bytes (headers: {len(response_header)}, body: {len(response_body)})")
         print(f"Response generation time: {response_time}ms")
-        print("[MAIN] cl.send() is about to be executed")
-        # cl.send(full_response)
-        cl.send_without_dma(full_response)
+        print("[MAIN] cl.send() is about to be executed , sendwithdma: ", sendwithdma)
+        if sendwithdma > 0:
+            cl.send(full_response)
+        else:
+            cl.send_without_dma(full_response)
+        sendwithdma =sendwithdma + 1
 
         print("[MAIN] Calling cl.close()")
         cl.close()
@@ -454,7 +460,6 @@ while True:
         time.sleep_ms(500)
         gc.collect()
         s = create_server_socket()
-
 
 
 
