@@ -313,6 +313,7 @@ def generate_large_html_response():
 
 def generate_svg_response():
     """Generate a large SVG response >50kB with a detailed rose graphic"""
+    gc.collect()
     svg_content = '<?xml version="1.0" encoding="UTF-8"?>\n<svg width="300" height="300" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg">\n'
     
     # Background
@@ -448,7 +449,9 @@ while True:
         gc.collect()  # Free memory from old socket
         s = create_server_socket()
         print("[MAIN] New server socket ready")
-
+        del response_header
+        del response_body
+        del full_response
 
     except Exception as e:
         print("Error:", e)
