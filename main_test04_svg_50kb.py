@@ -427,7 +427,8 @@ while True:
         print(f"Full response size: {len(full_response)} bytes (headers: {len(response_header)}, body: {len(response_body)})")
         print(f"Response generation time: {response_time}ms")
         print("[MAIN] cl.send() is about to be executed")
-        cl.send(full_response)
+        # cl.send(full_response)
+        cl.send_without_dma(full_response)
 
         print("[MAIN] Calling cl.close()")
         cl.close()
