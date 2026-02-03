@@ -551,7 +551,7 @@ def create_server_socket():
     server = socket.socket()
     server.bind(("0.0.0.0", 8081))
     server.listen(5)
-    print("[MAIN] Server socket created and listening on port 80")
+    print("[MAIN] Server socket created and listening on port 8081")
     return server
 
 
@@ -950,115 +950,12 @@ def generate_html_404():
     html = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n404 Not Found"
     return html.encode()
 
-def handle_camera_request_optimized(cl, path):
-    """Handle camera requests - optimized for large image transfers"""
-    global active_stream_clients
 
-    try:
-        print(f"Socket type: {type(cl)}")
-        #print(f"Socket dir: {dir(cl)}")
-        print(f"Has _wiznet_sn: {hasattr(cl, '_wiznet_sn')}")
-
-        # Path is already parsed
-
-        if path == "/":
-            # Serve HTML page with high-performance streaming AND color correction
-            html = generate_html_root()
-            cl.send(html)
-        elif path.startswith("/poll"):
-            # Serve minimal HTML page with just the camera view
-            html = generate_html_poll()
-            cl.send(html)
-        elif path.startswith("/image.raw"):
-            # Serve raw camera image data
-            if camera.is_buffer_ready():
-                # Send HTTP header first
-                frame_len = 240 * 320 * 2  # Known size
-                header = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {frame_len}\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
-                cl.send(header.encode())
-                print("./image.raw header sent.")
-
-                # Define callback to send frame data in chunks
-                def send_callback(frame_data):
-                    # Optimized transfer - use larger chunks for efficiency
-                    chunk_size = 153600 # 8192  # 8KB chunks for maximum throughput
-                    total_sent = 0
-                    mv = memoryview(frame_data)
-
-                    # Set a reasonable timeout for the transfer
-                    cl.settimeout(10.0)
-
-                    while total_sent < len(frame_data):
-                        end = min(total_sent + chunk_size, len(frame_data))
-                        chunk = mv[total_sent:end]
-                        try:
-                            bytes_sent = cl.send(chunk)
-                            if bytes_sent == 0:
-                                break
-                            total_sent += bytes_sent
-
-                            # Feed watchdog during long image transfer
-                            #if total_sent % (chunk_size * 4) == 0:  # Every ~32KB
-                                #wdt.feed()
-                        except OSError as e:
-                            print(f"Socket error: {e}")
-                            break
-                print("just before camera.send_frame_over_eth")
-                # Send frame using the new callback mechanism
-                camera.send_frame_over_eth(send_callback)
-            else:
-                response = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\nCamera not available"
-                cl.send(response.encode())
-
-        elif path == '/stream':
-            # Send HTTP header for streaming
-            try:
-                header = b"HTTP/1.1 200 OK\r\n"
-                header += b"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
-                header += b"Cache-Control: no-cache\r\n"
-                header += b"Connection: keep-alive\r\n"
-                header += b"\r\n"
-                cl.send(header)
-                print("Stream client connected - header sent")
-            except OSError as e:
-                print(f"Failed to send header: {e}")
-                cl.close()
-                return "CLOSE"
-
-            # Get the W5500 socket number and pass to C for direct streaming
-            sn = cl._wiznet_sn()
-            camera.start_streaming(sn)
-            # Never returns, basically an infinite loop
-            camera.streaming_loop()
-
-            # This will not return
-            return "STREAM"
-
-        else:
-            # 404 for other paths
-            html = generate_html_404()
-            cl.send(html)
-        print("[MAIN] Calling cl.close()")
-        cl.close()
-        print("[MAIN] close() returned successfully")
-
-        # CRITICAL: Close the server socket and create a new one
-        # The C driver no longer auto-re-listens, so Python must handle this
-        print("[MAIN] Closing server socket and creating new one. ..")
-        global s
-        s.close()
-        time.sleep_ms(100)  # Give W5500 time to fully close
-        gc.collect()  # Free memory from old socket
-        s = create_server_socket()
-        print("[MAIN] New server socket ready")
-    except Exception as e:
-        print(f"Camera handler error: {e}")
-
-
-def handle_json_request(cl, path):
+def handle_json_request(path):
     """Handle JSON requests - serve JSON status data or handle LED control"""
     try:
 
+        http_response = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
         # Handle LED brightness control: /headled/{value}
         if path.startswith("/headled/"):
             try:
@@ -1080,14 +977,12 @@ def handle_json_request(cl, path):
                         + response
                     )
 
-                cl.send(http_response.encode())
             except (ValueError, IndexError):
                 response = '{"status": "error", "message": "Invalid brightness value"}'
                 http_response = (
                     "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
                     + response
                 )
-                cl.send(http_response.encode())
 
         # Handle status JSON: /
         elif path == "/":
@@ -1135,11 +1030,10 @@ def handle_json_request(cl, path):
             json_data = "{" + ", ".join(json_parts) + "}"
 
             # Send JSON response
-            response = (
+            http_response = (
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
                 + json_data
             )
-            cl.send(response.encode())
 
         else:
             # 404 for unknown paths
@@ -1148,69 +1042,157 @@ def handle_json_request(cl, path):
                 "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
                 + response
             )
-            cl.send(http_response.encode())
+        return http_response.encode()
 
     except Exception as e:
         print(f"JSON handler error: {e}")
 
 
-def start_webserver():
-    """Unified server handling both camera and JSON on single core with non-blocking I/O"""
-
-
-    print_memory_stats("\n\nAfter Webserver initialization\n\n")
-    print_memory_stats("\n\nAfter Webserver initialization\n\n")
-    print_memory_stats("\n\nAfter Webserver initialization\n\n")
-    print_memory_stats("\n\nAfter Webserver initialization\n\n")
-
-    while True:
-        try:
-            gc.collect()
-            cl, addr = s.accept()
-            print(f"[MAIN] accept() returned, addr={addr}")
-
-            request = cl.recv(16384).decode("utf-8")
-            request_line = request.split("\r\n")[0]
-            path = request_line.split(" ")[1] if len(request_line.split(" ")) > 1 else "/"
-
-            # Route based on path
-            if path.startswith("/json"):
-                # Handle JSON request
-                adjusted_path = path[5:] if len(path) > 5 else "/"
-                handle_json_request(cl, adjusted_path)
-            elif path == "/" or path == "/stream" or path.startswith("/poll"):
-                # Handle camera request
-                result = handle_camera_request_optimized(cl, path)
-            else:
-                # 404 for unknown paths
-                response = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n404 Not Found"
-                cl.send(response.encode())
-
-        except Exception as e:
-            print("Error:", e)
-             # Try to recover by creating a new server socket
-            try:
-                s.close()
-            except Exception as _:
-                pass
-            time.sleep_ms(500)
-            gc.collect()
-            s = create_server_socket()
-
-
 # Initial server socket
 s = create_server_socket()
 
-# Start the unified webserver
-if nic.active():
+while True:
     try:
-        start_webserver()
-    except KeyboardInterrupt:
-        print("\nShutdown")
-        cleanup()
+        gc.collect()
+        
+        response = generate_html_404()
+        print("[MAIN] ====== WAITING FOR CONNECTION ======")
+        cl, addr = s.accept()
+        print(f"[MAIN] accept() returned, addr={addr}")
+       
+        request = cl.recv(8192)
+        print(f"[MAIN] recv() returned {len(request)} bytes")
+
+        request_str = request.decode("utf-8")
+        request_lines = request_str.split('\r\n')
+        print(f"[MAIN] Request split into {len(request_lines)} lines")
+
+        request_line = request_lines[0]
+        print(f"[MAIN] First line: {request_line[:50]}...")
+
+        parts = request_line.split()
+        print(f"[MAIN] Split into {len(parts)} parts")
+
+        if len(parts) > 1:
+            method, path = parts[0], parts[1]
+            print(f"[MAIN] Parsed: method={method}, path={path}")
+        else:
+            path = '/'
+            print("[MAIN] Using default path=/")
+
+        print(f"[MAIN] Request path: {path}")
+
+        # Generate response
+        if path.startswith("/json"):
+            print("[MAIN] Handle JSON request")
+            adjusted_path = path[5:] if len(path) > 5 else "/"
+            response = handle_json_request(adjusted_path)
+        elif path.startswith("/poll"):
+            print("[MAIN] Handle camera request")
+            # Serve minimal HTML page with just the camera view
+            response = generate_html_poll()
+        elif path == '/stream':
+            # Send HTTP header for streaming
+            try:
+                header = b"HTTP/1.1 200 OK\r\n"
+                header += b"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+                header += b"Cache-Control: no-cache\r\n"
+                header += b"Connection: keep-alive\r\n"
+                header += b"\r\n"
+                cl.send(header)
+                print("Stream client connected - header sent")
+            except OSError as e:
+                print(f"Failed to send header: {e}")
+                cl.close()
+
+            # Get the W5500 socket number and pass to C for direct streaming
+            sn = cl._wiznet_sn()
+            camera.start_streaming(sn)
+            # Never returns, basically an infinite loop
+            camera.streaming_loop()
+        elif path.startswith("/image.raw"):
+            print("Serve raw camera image data")
+            if camera.is_buffer_ready():
+                print ("Send HTTP header first")
+                frame_len = 240 * 320 * 2  # Known size
+                header = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {frame_len}\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
+                cl.send(header.encode())
+                print("./image.raw header sent.")
+
+                # Define callback to send frame data in chunks
+                def send_callback(frame_data):
+                    # Optimized transfer - use larger chunks for efficiency
+                    chunk_size = 153600 # 8192  # 8KB chunks for maximum throughput
+                    total_sent = 0
+                    mv = memoryview(frame_data)
+
+                    # Set a reasonable timeout for the transfer
+                    cl.settimeout(10.0)
+
+                    while total_sent < len(frame_data):
+                        end = min(total_sent + chunk_size, len(frame_data))
+                        chunk = mv[total_sent:end]
+                        try:
+                            bytes_sent = cl.send(chunk)
+                            if bytes_sent == 0:
+                                break
+                            total_sent += bytes_sent
+
+                            # Feed watchdog during long image transfer
+                            #if total_sent % (chunk_size * 4) == 0:  # Every ~32KB
+                                #wdt.feed()
+                        except OSError as e:
+                            print(f"Socket error: {e}")
+                            break
+
+                print("[MAIN] New server socket ready2")
+                print("just before camera.send_frame_over_eth")
+                # Send frame using the new callback mechanism
+                camera.send_frame_over_eth(send_callback)
+                print("[MAIN] Closing server socket and creating new one2. ..")
+                s.close()
+                time.sleep_ms(100)  # Give W5500 time to fully close
+                gc.collect()  # Free memory from old socket
+                s = create_server_socket()
+        elif path == "/":
+            print("[MAIN] serve / html")
+            response = generate_html_root()
+        else:
+            # 404 for unknown paths
+            print("[MAIN] Calling generate_html_404()")
+            response = generate_html_404()
+        
+        response_start = time.ticks_ms()
+        response_time = time.ticks_diff(time.ticks_ms(), response_start)
+            
+            
+        print(f"Response generation time: {response_time}ms")
+        print("[MAIN] cl.send() is about to be executed , sendwithdma ")
+        cl.send(response)
+
+        print("[MAIN] Calling cl.close()")
+        cl.close()
+        print("[MAIN] close() returned successfully")
+
+        # CRITICAL: Close the server socket and create a new one
+        # The C driver no longer auto-re-listens, so Python must handle this
+        print("[MAIN] Closing server socket and creating new one. ..")
+        s.close()
+        time.sleep_ms(100)  # Give W5500 time to fully close
+        gc.collect()  # Free memory from old socket
+        s = create_server_socket()
+        print("[MAIN] New server socket ready")
+        del response
+
     except Exception as e:
-        print("\nERROR: Server:", e)
-        cleanup()
-else:
-    print("ERROR: No network")
+        print("Error:", e)
+         # Try to recover by creating a new server socket
+        try:
+            s.close()
+        except Exception as _:
+            pass
+        time.sleep_ms(500)
+        gc.collect()
+        s = create_server_socket()
+
 
