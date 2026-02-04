@@ -1154,6 +1154,7 @@ while True:
                 time.sleep_ms(100)  # Give W5500 time to fully close
                 gc.collect()  # Free memory from old socket
                 s = create_server_socket()
+                continue  # Skip to next iteration - don't fall through to cl.send()
         elif path == "/":
             print("[MAIN] serve / html")
             response = generate_html_root()
