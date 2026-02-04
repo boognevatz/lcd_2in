@@ -385,9 +385,49 @@ void streaming_loop(void)
         return;
     }
 
-    // Send initial boundary and headers
+    // CRITICAL FIX: Clear any pending interrupts from Python's header send
+    // before we start our streaming loop. Python sends the HTTP header via
+    // cl.send() which may leave a pending SENDOK that we need to acknowledge.
+    uint8_t pending_ir = getSn_IR(stream_socket_num);
+    if (pending_ir & (Sn_IR_SENDOK | Sn_IR_TIMEOUT)) {
+        mp_printf(MP_PYTHON_PRINTER, "Clearing pending IR flags from Python: 0x%02x\n", pending_ir);
+        setSn_IR(stream_socket_num, pending_ir & (Sn_IR_SENDOK | Sn_IR_TIMEOUT));
+    }
+    
+    // Wait for TX buffer to be fully free (Python's HTTP header send completed)
+    uint32_t python_drain_start = get_time_ms();
+    while (getSn_TX_FSR(stream_socket_num) < tx_buffer_size) {
+        if (timeout_elapsed(python_drain_start, 2000)) {
+            mp_printf(MP_PYTHON_PRINTER, "TIMEOUT: Python TX not draining (FSR=%d/%d)\n",
+                      getSn_TX_FSR(stream_socket_num), tx_buffer_size);
+            resume_camera_dma();
+            return;
+        }
+        uint8_t sr = getSn_SR(stream_socket_num);
+        if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
+            mp_printf(MP_PYTHON_PRINTER, "Socket disconnected while waiting for Python TX drain\n");
+            resume_camera_dma();
+            return;
+        }
+        sleep_ms(1);
+    }
+    mp_printf(MP_PYTHON_PRINTER, "Python header drained, TX_FSR=%d\n", getSn_TX_FSR(stream_socket_num));
+
+    // Send initial boundary and headers (with timeout)
+    uint32_t tx_wait_start = get_time_ms();
     while (getSn_TX_FSR(stream_socket_num) < boundary_len) {
-        tight_loop_contents();
+        if (timeout_elapsed(tx_wait_start, TX_WAIT_TIMEOUT_MS)) {
+            mp_printf(MP_PYTHON_PRINTER, "TIMEOUT waiting for TX buffer space for initial boundary\n");
+            resume_camera_dma();
+            return;
+        }
+        uint8_t sr = getSn_SR(stream_socket_num);
+        if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
+            mp_printf(MP_PYTHON_PRINTER, "Socket disconnected before initial boundary send\n");
+            resume_camera_dma();
+            return;
+        }
+        sleep_us(TX_POLL_INTERVAL_US);
     }
     
     uint16_t wr = getSn_TX_WR(stream_socket_num);
@@ -416,19 +456,37 @@ void streaming_loop(void)
         tight_loop_contents();
     }
     
-    // Wait for SENDOK
+    // Wait for SENDOK WITH TIMEOUT (this was hanging before!)
+    uint32_t header_sendok_start = get_time_ms();
     while (!(getSn_IR(stream_socket_num) & Sn_IR_SENDOK)) {
-        uint8_t sr = getSn_SR(stream_socket_num);
-        if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
-            mp_printf(MP_PYTHON_PRINTER, "Socket disconnected during initial header send\n");
+        // Check for W5500 timeout flag
+        if (getSn_IR(stream_socket_num) & Sn_IR_TIMEOUT) {
+            mp_printf(MP_PYTHON_PRINTER, "W5500 TIMEOUT during initial header send!\n");
+            setSn_IR(stream_socket_num, Sn_IR_TIMEOUT);
             resume_camera_dma();
             return;
         }
-        tight_loop_contents();
+        
+        uint8_t sr = getSn_SR(stream_socket_num);
+        if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
+            mp_printf(MP_PYTHON_PRINTER, "Socket disconnected during initial header send (state=0x%02x)\n", sr);
+            resume_camera_dma();
+            return;
+        }
+        
+        // Add timeout to prevent infinite hang
+        if (timeout_elapsed(header_sendok_start, SENDOK_TIMEOUT_MS)) {
+            mp_printf(MP_PYTHON_PRINTER, "TIMEOUT waiting for initial SENDOK! IR=0x%02x, FSR=%d\n",
+                      getSn_IR(stream_socket_num), getSn_TX_FSR(stream_socket_num));
+            resume_camera_dma();
+            return;
+        }
+        
+        sleep_us(TX_POLL_INTERVAL_US);
     }
     setSn_IR(stream_socket_num, Sn_IR_SENDOK);
-
-    mp_printf(MP_PYTHON_PRINTER, "Initial header sent, starting frame loop\n");
+    
+    mp_printf(MP_PYTHON_PRINTER, "Initial C boundary header sent, starting frame loop\n");
     
     uint32_t frame_count = 0;
     
@@ -569,15 +627,21 @@ void streaming_loop(void)
             total_sent += send_len;
         }
 
-        // Send boundary for next frame
+        // Send boundary for next frame (with timeout)
+        uint32_t boundary_wait_start = get_time_ms();
         while (getSn_TX_FSR(stream_socket_num) < frame_boundary_len) {
+            if (timeout_elapsed(boundary_wait_start, TX_WAIT_TIMEOUT_MS)) {
+                mp_printf(MP_PYTHON_PRINTER, "TIMEOUT waiting for TX buffer for boundary\n");
+                resume_camera_dma();
+                return;
+            }
             sr = getSn_SR(stream_socket_num);
             if (sr != SOCK_ESTABLISHED && sr != SOCK_CLOSE_WAIT) {
                 mp_printf(MP_PYTHON_PRINTER, "Socket disconnected before boundary\n");
                 resume_camera_dma();
                 return;
             }
-            tight_loop_contents();
+            sleep_us(TX_POLL_INTERVAL_US);
         }
 
         wr = getSn_TX_WR(stream_socket_num);
