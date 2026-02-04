@@ -8,11 +8,21 @@ import select
 import json
 import gc
 
+DEBUG = False
+
+if DEBUG:
+    debug_print = print
+else:
+    def debug_print(*args, **kwargs):
+        _ = args, kwargs
+        pass
+
+
 # ===== WATCHDOG TIMER SETUP =====
 # Initialize watchdog timer to prevent system freezes
 # If the system doesn't call wdt.feed() within 8 seconds, it will reset
 #wdt = machine.WDT(timeout=8000)  # 8 second timeout
-print("Watchdog initialized with 8s timeout")
+debug_print("Watchdog initialized with 8s timeout")
 # ================================
 
 
@@ -89,17 +99,17 @@ try:
     if ADS7830_ADDR in devices:
         adc_ready = True
     else:
-        print("WARNING: ADS7830 ADC not found")
+        debug_print("WARNING: ADS7830 ADC not found")
 
     if BAROMETER_ADDR in devices:
         barometer_ready = True
     else:
-        print("WARNING: WF5803F Barometer not found")
+        debug_print("WARNING: WF5803F Barometer not found")
 
     if MCP4725_ADDR in devices:
         dac_ready = True
     else:
-        print("WARNING: MCP4725 DAC not found")
+        debug_print("WARNING: MCP4725 DAC not found")
 except Exception as e:
     print(f"ERROR: I2C initialization failed: {e}")
     adc_ready = False
@@ -146,7 +156,7 @@ def read_adc_channel(channel):
 
         return voltage
     except Exception as e:
-        print(f"Error reading ADC channel {channel}: {e}")
+        debug_print(f"Error reading ADC channel {channel}: {e}")
         return None
 
 
@@ -292,7 +302,7 @@ def read_barometer():
             delay_count += 1
 
         if delay_count >= 50:
-            print("Barometer measurement timeout")
+            debug_print("Barometer measurement timeout")
             return (None, None)
 
         # Read pressure (24-bit signed, MSB first) from registers 0x06, 0x07, 0x08
@@ -435,7 +445,7 @@ def print_memory_stats(label=""):
     free_kb = stats["free"] / 1024
     total = stats["total"]
     free_pct = stats["free"] * 100 / total
-    print(f"MEMORY check: {label} | Free: {free_kb:.1f}KB ({free_pct:.1f}%)")
+    debug_print(f"MEMORY check: {label} | Free: {free_kb:.1f}KB ({free_pct:.1f}%)")
     return stats
 # ============================
 
@@ -445,13 +455,13 @@ def print_memory_stats(label=""):
 # Initialize barometer if present
 if barometer_ready:
     if not init_barometer():
-        print("ERROR: Barometer initialization failed")
+        debug_print("ERROR: Barometer initialization failed")
         barometer_ready = False
 
 # Initialize LED DAC if present
 if dac_ready:
     if not init_head_led():
-        print("ERROR: LED DAC initialization failed")
+        debug_print("ERROR: LED DAC initialization failed")
         dac_ready = False
 
 # W5500 Pin Configuration for RP2350A
@@ -502,17 +512,17 @@ nic.ifconfig(("172.16.1.1", "255.255.255.0", "172.16.1.1", "8.8.8.8"))
 # Give it a moment to apply settings
 time.sleep_ms(500)
 
-print("Waiting for Ethernet link...")
+debug_print("Waiting for Ethernet link...")
 while not nic.isconnected():
     time.sleep(0.1)
-print("Connected. IP address:", nic.ifconfig()[0])
+debug_print("Connected. IP address:", nic.ifconfig()[0])
 
 # Check if interface is active and configured
 if nic.active():
     config_net = nic.ifconfig()
-    print(f"Ethernet initialized successfully, IP: {config_net[0]}")
+    debug_print(f"Ethernet initialized successfully, IP: {config_net[0]}")
 else:
-    print("ERROR: Ethernet failed")
+    debug_print("ERROR: Ethernet failed")
 
 print_memory_stats("After network initialization")
 
@@ -524,7 +534,7 @@ camera_ready = False
 try:
     camera.init_cam()
     camera.start_cam()
-    print("Camera started")
+    debug_print("Camera started")
 
     print_memory_stats("After Camera Init")
 except Exception as e:
@@ -536,13 +546,13 @@ except Exception as e:
 
 # Cleanup function
 def cleanup():
-    print("\nCleaning up...")
+    debug_print("\nCleaning up...")
     global nic
     try:
         # Deactivate network interface
         if nic:
             nic.active(False)
-            print("Network interface deactivated")
+            debug_print("Network interface deactivated")
     except Exception as e:
         print(f"Error during cleanup: {e}")
 
@@ -551,7 +561,7 @@ def create_server_socket():
     server = socket.socket()
     server.bind(("0.0.0.0", 8081))
     server.listen(5)
-    print("[MAIN] Server socket created and listening on port 8081")
+    debug_print("[MAIN] Server socket created and listening on port 8081")
     return server
 
 
@@ -1056,39 +1066,39 @@ while True:
         gc.collect()
         
         response = generate_html_404()
-        print("[MAIN] ====== WAITING FOR CONNECTION ======")
+        debug_print("[MAIN] ====== WAITING FOR CONNECTION ======")
         cl, addr = s.accept()
-        print(f"[MAIN] accept() returned, addr={addr}")
+        debug_print(f"[MAIN] accept() returned, addr={addr}")
        
         request = cl.recv(8192)
-        print(f"[MAIN] recv() returned {len(request)} bytes")
+        debug_print(f"[MAIN] recv() returned {len(request)} bytes")
 
         request_str = request.decode("utf-8")
         request_lines = request_str.split('\r\n')
-        print(f"[MAIN] Request split into {len(request_lines)} lines")
+        debug_print(f"[MAIN] Request split into {len(request_lines)} lines")
 
         request_line = request_lines[0]
-        print(f"[MAIN] First line: {request_line[:50]}...")
+        debug_print(f"[MAIN] First line: {request_line[:50]}...")
 
         parts = request_line.split()
-        print(f"[MAIN] Split into {len(parts)} parts")
+        debug_print(f"[MAIN] Split into {len(parts)} parts")
 
         if len(parts) > 1:
             method, path = parts[0], parts[1]
-            print(f"[MAIN] Parsed: method={method}, path={path}")
+            debug_print(f"[MAIN] Parsed: method={method}, path={path}")
         else:
             path = '/'
-            print("[MAIN] Using default path=/")
+            debug_print("[MAIN] Using default path=/")
 
-        print(f"[MAIN] Request path: {path}")
+        debug_print(f"[MAIN] Request path: {path}")
 
         # Generate response
         if path.startswith("/json"):
-            print("[MAIN] Handle JSON request")
+            debug_print("[MAIN] Handle JSON request")
             adjusted_path = path[5:] if len(path) > 5 else "/"
             response = handle_json_request(adjusted_path)
         elif path.startswith("/poll"):
-            print("[MAIN] Handle camera request")
+            debug_print("[MAIN] Handle camera request")
             # Serve minimal HTML page with just the camera view
             response = generate_html_poll()
         elif path == '/stream':
@@ -1100,7 +1110,7 @@ while True:
                 header += b"Connection: keep-alive\r\n"
                 header += b"\r\n"
                 cl.send(header)
-                print("Stream client connected - header sent")
+                debug_print("Stream client connected - header sent")
             except OSError as e:
                 print(f"Failed to send header: {e}")
                 cl.close()
@@ -1111,13 +1121,13 @@ while True:
             # Never returns, basically an infinite loop
             camera.streaming_loop()
         elif path.startswith("/image.raw"):
-            print("Serve raw camera image data")
+            debug_print("Serve raw camera image data")
             if camera.is_buffer_ready():
-                print ("Send HTTP header first")
+                debug_print ("Send HTTP header first")
                 frame_len = 240 * 320 * 2  # Known size
                 header = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {frame_len}\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
                 cl.send(header.encode())
-                print("./image.raw header sent.")
+                debug_print("./image.raw header sent.")
 
                 # Define callback to send frame data in chunks
                 def send_callback(frame_data):
@@ -1145,44 +1155,44 @@ while True:
                             print(f"Socket error: {e}")
                             break
 
-                print("[MAIN] New server socket ready2")
-                print("just before camera.send_frame_over_eth")
+                debug_print("[MAIN] New server socket ready2")
+                debug_print("just before camera.send_frame_over_eth")
                 # Send frame using the new callback mechanism
                 camera.send_frame_over_eth(send_callback)
-                print("[MAIN] Closing server socket and creating new one2. ..")
+                debug_print("[MAIN] Closing server socket and creating new one2. ..")
                 s.close()
                 time.sleep_ms(100)  # Give W5500 time to fully close
                 gc.collect()  # Free memory from old socket
                 s = create_server_socket()
                 continue  # Skip to next iteration - don't fall through to cl.send()
         elif path == "/":
-            print("[MAIN] serve / html")
+            debug_print("[MAIN] serve / html")
             response = generate_html_root()
         else:
             # 404 for unknown paths
-            print("[MAIN] Calling generate_html_404()")
+            debug_print("[MAIN] Calling generate_html_404()")
             response = generate_html_404()
         
         response_start = time.ticks_ms()
         response_time = time.ticks_diff(time.ticks_ms(), response_start)
             
             
-        print(f"Response generation time: {response_time}ms")
-        print("[MAIN] cl.send() is about to be executed , sendwithdma ")
+        debug_print(f"Response generation time: {response_time}ms")
+        debug_print("[MAIN] cl.send() is about to be executed , sendwithdma ")
         cl.send(response)
 
-        print("[MAIN] Calling cl.close()")
+        debug_print("[MAIN] Calling cl.close()")
         cl.close()
-        print("[MAIN] close() returned successfully")
+        debug_print("[MAIN] close() returned successfully")
 
         # CRITICAL: Close the server socket and create a new one
         # The C driver no longer auto-re-listens, so Python must handle this
-        print("[MAIN] Closing server socket and creating new one. ..")
+        debug_print("[MAIN] Closing server socket and creating new one. ..")
         s.close()
         time.sleep_ms(100)  # Give W5500 time to fully close
         gc.collect()  # Free memory from old socket
         s = create_server_socket()
-        print("[MAIN] New server socket ready")
+        debug_print("[MAIN] New server socket ready")
         del response
 
     except Exception as e:
