@@ -558,12 +558,20 @@ def cleanup():
 
 def create_server_socket():
     """Create, bind and listen on a new server socket"""
-    server = socket.socket()
-    server.bind(("0.0.0.0", 8081))
-    server.listen(5)
-    debug_print("[MAIN] Server socket created and listening on port 8081")
-    return server
-
+    try:
+        debug_print("[DIAG] create_server_socket: starting")
+        server = socket.socket()
+        debug_print("[DIAG] create_server_socket: socket() done")
+        server.bind(("0.0.0.0", 80))
+        debug_print("[DIAG] create_server_socket: bind() done")
+        server.listen(5)
+        debug_print("[DIAG] create_server_socket: listen() done")
+        debug_print("[MAIN] Server socket created and listening on port 80")
+        debug_print("[DIAG] create_server_socket: about to return")
+        return server
+    except Exception as e:
+        print(f"[DIAG] create_server_socket: EXCEPTION: {e}")
+        raise
 
 def generate_html_root():
     """path: /"""
@@ -1063,12 +1071,15 @@ s = create_server_socket()
 
 while True:
     try:
+        debug_print("[DIAG] Top of main loop")
         gc.collect()
+        debug_print("[DIAG] gc.collect() done")
         
         response = generate_html_404()
+        debug_print("[DIAG] About to call s.accept()")
         debug_print("[MAIN] ====== WAITING FOR CONNECTION ======")
         cl, addr = s.accept()
-        debug_print(f"[MAIN] accept() returned, addr={addr}")
+        debug_print("[DIAG] s.accept() returned")
        
         request = cl.recv(8192)
         debug_print(f"[MAIN] recv() returned {len(request)} bytes")
@@ -1196,14 +1207,23 @@ while True:
         del response
 
     except Exception as e:
+        print(f"[DIAG] Exception caught: {e}")
+        print(f"[DIAG] Exception type: {type(e)}")
+        if hasattr(e, 'errno'):
+            print(f"[DIAG] Exception errno: {e.errno}")
         print("Error:", e)
-         # Try to recover by creating a new server socket
+        # Try to recover by creating a new server socket
         try:
+            print("[DIAG] Exception handler: calling s.close()")
             s.close()
-        except Exception as _:
+            print("[DIAG] Exception handler: s.close() done")
+        except Exception as e2:
+            print(f"[DIAG] Exception handler: s.close() failed: {e2}")
             pass
         time.sleep_ms(500)
         gc.collect()
+        print("[DIAG] Exception handler: calling create_server_socket()")
         s = create_server_socket()
+        print("[DIAG] Exception handler: create_server_socket() done")
 
 
