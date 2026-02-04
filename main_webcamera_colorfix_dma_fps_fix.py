@@ -1148,7 +1148,7 @@ while True:
                     # Send frame in chunks (like /image.raw does)
                     mv = memoryview(frame_data)
                     total_sent = 0
-                    chunk_size = 8192  # 8KB chunks
+                    chunk_size = 16384  # 16KB chunks
                     
                     while total_sent < len(frame_data):
                         end = min(total_sent + chunk_size, len(frame_data))
@@ -1177,7 +1177,7 @@ while True:
                 try:
                     if camera.is_buffer_ready():
                         camera.send_frame_over_eth(send_frame_data)
-                    time.sleep_ms(33)  # ~30fps
+                    #time.sleep_ms(33)  # ~30fps
                 except OSError as e:
                     debug_print(f"Streaming loop error: {e}")
                     state['streaming'] = False
