@@ -1113,7 +1113,8 @@ while True:
             # Serve minimal HTML page with just the camera view
             response = generate_html_poll()
         elif path == '/stream':
-            # Send HTTP header for streaming
+            # PYTHON-BASED STREAMING (bypasses buggy C streaming_loop)
+            # This uses the same mechanism as /image.raw which works reliably
             try:
                 header = b"HTTP/1.1 200 OK\r\n"
                 header += b"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
@@ -1125,12 +1126,75 @@ while True:
             except OSError as e:
                 print(f"Failed to send header: {e}")
                 cl.close()
+                continue
 
-            # Get the W5500 socket number and pass to C for direct streaming
-            sn = cl._wiznet_sn()
-            camera.start_streaming(sn)
-            # Never returns, basically an infinite loop
-            camera.streaming_loop()
+            # Streaming loop entirely in Python
+            # Use dict for state (MicroPython nonlocal workaround)
+            state = {'streaming': True, 'frame_count': 0, 'first_frame': True}
+            boundary = b"--frame\r\nContent-Type: application/octet-stream\r\n\r\n"
+            frame_boundary = b"\r\n--frame\r\nContent-Type: application/octet-stream\r\n\r\n"
+            
+            cl.settimeout(5.0)
+            
+            def send_frame_data(frame_data):
+                try:
+                    # Send boundary
+                    if state['first_frame']:
+                        cl.send(boundary)
+                        state['first_frame'] = False
+                    else:
+                        cl.send(frame_boundary)
+                    
+                    # Send frame in chunks (like /image.raw does)
+                    mv = memoryview(frame_data)
+                    total_sent = 0
+                    chunk_size = 8192  # 8KB chunks
+                    
+                    while total_sent < len(frame_data):
+                        end = min(total_sent + chunk_size, len(frame_data))
+                        chunk = mv[total_sent:end]
+                        try:
+                            bytes_sent = cl.send(chunk)
+                            if bytes_sent == 0:
+                                state['streaming'] = False
+                                return
+                            total_sent += bytes_sent
+                        except OSError as e:
+                            debug_print(f"Stream send error: {e}")
+                            state['streaming'] = False
+                            return
+                    
+                    state['frame_count'] += 1
+                    if state['frame_count'] % 30 == 0:
+                        debug_print(f"Streamed {state['frame_count']} frames")
+                        
+                except OSError as e:
+                    debug_print(f"Stream error: {e}")
+                    state['streaming'] = False
+            
+            debug_print("Starting Python-based streaming loop")
+            while state['streaming']:
+                try:
+                    if camera.is_buffer_ready():
+                        camera.send_frame_over_eth(send_frame_data)
+                    time.sleep_ms(33)  # ~30fps
+                except OSError as e:
+                    debug_print(f"Streaming loop error: {e}")
+                    state['streaming'] = False
+                except KeyboardInterrupt:
+                    state['streaming'] = False
+            
+            debug_print(f"Stream ended after {state['frame_count']} frames")
+            try:
+                cl.close()
+            except:
+                pass
+            # Recreate server socket
+            s.close()
+            time.sleep_ms(100)
+            gc.collect()
+            s = create_server_socket()
+            continue
         elif path.startswith("/image.raw"):
             debug_print("Serve raw camera image data")
             if camera.is_buffer_ready():
