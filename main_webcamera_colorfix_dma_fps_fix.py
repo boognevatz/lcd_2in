@@ -573,7 +573,7 @@ def create_server_socket():
         print(f"[DIAG] create_server_socket: EXCEPTION: {e}")
         raise
 
-def generate_html_root():
+def generate_html_root(url):
     """path: /"""
     gc.collect()
     html = """HTTP/1.1 200 OK
@@ -730,7 +730,7 @@ Connection: close
 
             try {
                 document.getElementById('status').textContent = 'Connecting...';
-                const response = await fetch('/stream', { signal: abortController.signal });
+                const response = await fetch('__STREAM_URL__', { signal: abortController.signal });
                 document.getElementById('status').textContent = 'Streaming';
 
                 const reader = response.body.getReader();
@@ -819,6 +819,7 @@ Connection: close
 </body>
 </html>
 """
+    html = html.replace("__STREAM_URL__", url)
     return html.encode()
 
 def generate_html_poll():
@@ -1113,8 +1114,89 @@ while True:
             # Serve minimal HTML page with just the camera view
             response = generate_html_poll()
         elif path == '/stream':
-            # PYTHON-BASED STREAMING (bypasses buggy C streaming_loop)
-            # This uses the same mechanism as /image.raw which works reliably
+            # PYTHON-BASED STREAMING
+            try:
+                header = b"HTTP/1.1 200 OK\r\n"
+                header += b"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+                header += b"Cache-Control: no-cache\r\n"
+                header += b"Connection: keep-alive\r\n"
+                header += b"\r\n"
+                cl.send(header)
+                debug_print("Stream client connected - header sent")
+            except OSError as e:
+                print(f"Failed to send header: {e}")
+                cl.close()
+                continue
+
+            # Streaming loop entirely in Python
+            # Use dict for state (MicroPython nonlocal workaround)
+            state = {'streaming': True, 'frame_count': 0, 'first_frame': True}
+            boundary = b"--frame\r\nContent-Type: application/octet-stream\r\n\r\n"
+            frame_boundary = b"\r\n--frame\r\nContent-Type: application/octet-stream\r\n\r\n"
+            
+            cl.settimeout(5.0)
+            
+            def send_frame_data(frame_data):
+                try:
+                    # Send boundary
+                    if state['first_frame']:
+                        cl.send(boundary)
+                        state['first_frame'] = False
+                    else:
+                        cl.send(frame_boundary)
+                    
+                    # Send frame in chunks (like /image.raw does)
+                    mv = memoryview(frame_data)
+                    total_sent = 0
+                    chunk_size = 16384  # 16KB chunks
+                    
+                    while total_sent < len(frame_data):
+                        end = min(total_sent + chunk_size, len(frame_data))
+                        chunk = mv[total_sent:end]
+                        try:
+                            bytes_sent = cl.send(chunk)
+                            if bytes_sent == 0:
+                                state['streaming'] = False
+                                return
+                            total_sent += bytes_sent
+                        except OSError as e:
+                            debug_print(f"Stream send error: {e}")
+                            state['streaming'] = False
+                            return
+                    
+                    state['frame_count'] += 1
+                    if state['frame_count'] % 30 == 0:
+                        debug_print(f"Streamed {state['frame_count']} frames")
+                        
+                except OSError as e:
+                    debug_print(f"Stream error: {e}")
+                    state['streaming'] = False
+            
+            debug_print("Starting Python-based streaming loop")
+            while state['streaming']:
+                try:
+                    if camera.is_buffer_ready():
+                        camera.send_frame_over_eth(send_frame_data)
+                    #time.sleep_ms(33)  # ~30fps
+                except OSError as e:
+                    debug_print(f"Streaming loop error: {e}")
+                    state['streaming'] = False
+                except KeyboardInterrupt:
+                    state['streaming'] = False
+            
+            debug_print(f"Stream ended after {state['frame_count']} frames")
+            try:
+                cl.close()
+            except:
+                pass
+            # Recreate server socket
+            s.close()
+            time.sleep_ms(100)
+            gc.collect()
+            s = create_server_socket()
+            continue
+        elif path == '/streamc':
+            # C-BASED STREAMING WIP
             try:
                 header = b"HTTP/1.1 200 OK\r\n"
                 header += b"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
@@ -1241,8 +1323,11 @@ while True:
                 s = create_server_socket()
                 continue  # Skip to next iteration - don't fall through to cl.send()
         elif path == "/":
-            debug_print("[MAIN] serve / html")
-            response = generate_html_root()
+            debug_print("[MAIN] / html stream python version")
+            response = generate_html_root("/stream")
+        elif path == "/c":
+            debug_print("[MAIN] / html stream c version")
+            response = generate_html_root("/streamc")
         else:
             # 404 for unknown paths
             debug_print("[MAIN] Calling generate_html_404()")
