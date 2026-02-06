@@ -1322,8 +1322,11 @@ while True:
                 gc.collect()  # Free memory from old socket
                 s = create_server_socket()
                 continue  # Skip to next iteration - don't fall through to cl.send()
-        elif path == "/":
+        elif path == "/": # default
             debug_print("[MAIN] / html stream python version")
+            response = generate_html_root("/stream")
+        elif path == "/py":
+            debug_print("[MAIN] / html stream py version")
             response = generate_html_root("/stream")
         elif path == "/c":
             debug_print("[MAIN] / html stream c version")
