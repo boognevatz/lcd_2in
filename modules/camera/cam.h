@@ -32,10 +32,6 @@
 #include "LCD_2in.h"
 #include "py/obj.h"
 
-// W5500 socket includes
-#include "lib/wiznet5k/Ethernet/wizchip_conf.h"
-#include "lib/wiznet5k/Ethernet/socket.h"
-
 extern uint8_t *cam_ptr;  
 extern uint8_t *cam_ptr1; 
 extern volatile bool buffer_ready;
@@ -44,13 +40,6 @@ extern volatile bool buffer_ready;
 
 #define SYS_CLK_IN_KHZ (150000) // 192000 ~ 250000 (if you use sfp, SYS_CLK_KHZ must be just 250000)
 #define CAM_BASE_PIN (0)        // GP1  (camera module needs 11pin)
-
-// Streaming constants
-#define FRAME_WIDTH 320
-#define FRAME_HEIGHT 240
-#define FRAME_SIZE (FRAME_WIDTH * FRAME_HEIGHT * 2)  // Assuming RGB565
-#define STREAM_SOCKET 0
-#define STREAM_PORT 12345
 
 extern uint8_t pin_i2c1_sda;
 extern uint8_t pin_i2c1_scl;
@@ -71,17 +60,6 @@ void read_cam_data_blocking(uint8_t *buffer, size_t length);
 dma_channel_config get_cam_config(PIO pio, uint32_t sm, uint32_t dma_chan);
 void cam_handler();
 void setup_dma_for_capture();
-
-// W5500 socket function declarations
-extern int8_t socket(uint8_t sn, uint8_t protocol, uint16_t port, uint8_t flag);
-extern int8_t connect(uint8_t sn, uint8_t * addr, uint16_t port);
-extern int32_t send(uint8_t sn, uint8_t * buf, uint16_t len);
-extern uint16_t getSn_TX_FSR(uint8_t sn);
-
-// Streaming APIs
-void init_streaming(uint8_t *dest_ip, uint16_t dest_port);
-void start_streaming(uint8_t sock_num);
-void streaming_loop(void);
 
 // Camera pin mapping struct for runtime configuration
 typedef struct {
