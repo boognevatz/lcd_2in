@@ -489,7 +489,7 @@ time.sleep_ms(500)  # Wait longer for chip to fully initialize
 # Initialize SPI for W5500 - can use higher speed with optimizations
 spi = machine.SPI(
     0,
-    baudrate=20000000,  # 2->20MHz
+    baudrate=80000000,  # 2->20->80 MHz
     polarity=0,
     phase=0,
     sck=machine.Pin(18),
