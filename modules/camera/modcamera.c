@@ -3,6 +3,7 @@
 #include "ov5640.h"
 #include "py/obj.h"
 #include "py/runtime.h"
+#include "py/stream.h"
 
 extern uint8_t *cam_ptr;
 
@@ -93,6 +94,62 @@ static mp_obj_t camera_set_xclk_pin(mp_obj_t xclk) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_xclk_pin_obj, camera_set_xclk_pin);
 
+// Boundary headers for MJPEG streaming (matches Python version in /streamc)
+static const char boundary_first[] = "--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
+static const char boundary_subsequent[] = "\r\n--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
+
+// Send frame data directly to socket from C (ported from Python send_frame_data)
+// Args: socket object, is_first_frame (bool)
+// Returns: True on success, False on failure
+static mp_obj_t camera_send_frame_data_c(mp_obj_t socket_obj, mp_obj_t first_frame_obj) {
+    if (!buffer_ready) {
+        return mp_const_false;
+    }
+
+    int errcode;
+    bool is_first_frame = mp_obj_is_true(first_frame_obj);
+
+    // Send boundary header
+    const char *boundary;
+    size_t boundary_len;
+    if (is_first_frame) {
+        boundary = boundary_first;
+        boundary_len = sizeof(boundary_first) - 1;  // -1 for null terminator
+    } else {
+        boundary = boundary_subsequent;
+        boundary_len = sizeof(boundary_subsequent) - 1;
+    }
+
+    // Use mp_stream_write_exactly which returns bytes written (MP_STREAM_ERROR on error)
+    mp_uint_t ret = mp_stream_write_exactly(socket_obj, boundary, boundary_len, &errcode);
+    if (ret == MP_STREAM_ERROR) {
+        return mp_const_false;
+    }
+
+    // Send frame data in chunks (16KB each, like Python version)
+    const size_t chunk_size = 16384;
+    const size_t frame_size = CAM_FUL_SIZE * 2;
+    size_t total_sent = 0;
+
+    while (total_sent < frame_size) {
+        size_t to_send = frame_size - total_sent;
+        if (to_send > chunk_size) {
+            to_send = chunk_size;
+        }
+
+        ret = mp_stream_write_exactly(socket_obj, cam_ptr + total_sent, to_send, &errcode);
+        if (ret == MP_STREAM_ERROR || ret == 0) {
+            return mp_const_false;
+        }
+
+        total_sent += ret;
+    }
+
+    buffer_ready = false;
+    return mp_const_true;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(camera_send_frame_data_c_obj, camera_send_frame_data_c);
+
 
 // Define module globals
 static const mp_rom_map_elem_t camera_module_globals_table[] = {
@@ -103,6 +160,7 @@ static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_start_cam), MP_ROM_PTR(&camera_start_cam_obj) },
     { MP_ROM_QSTR(MP_QSTR_is_buffer_ready), MP_ROM_PTR(&cam_is_buffer_ready_obj) },
     { MP_ROM_QSTR(MP_QSTR_send_frame_over_eth), MP_ROM_PTR(&camera_send_frame_over_eth_obj) },
+    { MP_ROM_QSTR(MP_QSTR_send_frame_data_c), MP_ROM_PTR(&camera_send_frame_data_c_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_data_order), MP_ROM_PTR(&camera_set_data_order_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_data_pins), MP_ROM_PTR(&camera_set_data_pins_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_control_pins), MP_ROM_PTR(&camera_set_control_pins_obj) },

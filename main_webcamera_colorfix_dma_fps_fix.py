@@ -1196,7 +1196,7 @@ while True:
             s = create_server_socket()
             continue
         elif path == '/streamc':
-            # C-BASED STREAMING WIP
+            # C-BASED STREAMING - uses C function to send frame data
             try:
                 header = b"HTTP/1.1 200 OK\r\n"
                 header += b"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
@@ -1210,56 +1210,25 @@ while True:
                 cl.close()
                 continue
 
-            # Streaming loop entirely in Python
-            # Use dict for state (MicroPython nonlocal workaround)
+            # Streaming loop using C function for frame data sending
             state = {'streaming': True, 'frame_count': 0, 'first_frame': True}
-            boundary = b"--frame\r\nContent-Type: application/octet-stream\r\n\r\n"
-            frame_boundary = b"\r\n--frame\r\nContent-Type: application/octet-stream\r\n\r\n"
             
             cl.settimeout(5.0)
             
-            def send_frame_data(frame_data):
-                try:
-                    # Send boundary
-                    if state['first_frame']:
-                        cl.send(boundary)
-                        state['first_frame'] = False
-                    else:
-                        cl.send(frame_boundary)
-                    
-                    # Send frame in chunks (like /image.raw does)
-                    mv = memoryview(frame_data)
-                    total_sent = 0
-                    chunk_size = 16384  # 16KB chunks
-                    
-                    while total_sent < len(frame_data):
-                        end = min(total_sent + chunk_size, len(frame_data))
-                        chunk = mv[total_sent:end]
-                        try:
-                            bytes_sent = cl.send(chunk)
-                            if bytes_sent == 0:
-                                state['streaming'] = False
-                                return
-                            total_sent += bytes_sent
-                        except OSError as e:
-                            debug_print(f"Stream send error: {e}")
-                            state['streaming'] = False
-                            return
-                    
-                    state['frame_count'] += 1
-                    if state['frame_count'] % 30 == 0:
-                        debug_print(f"Streamed {state['frame_count']} frames")
-                        
-                except OSError as e:
-                    debug_print(f"Stream error: {e}")
-                    state['streaming'] = False
-            
-            debug_print("Starting Python-based streaming loop")
+            debug_print("Starting C-based streaming loop")
             while state['streaming']:
                 try:
                     if camera.is_buffer_ready():
-                        camera.send_frame_over_eth(send_frame_data)
-                    #time.sleep_ms(33)  # ~30fps
+                        # Use C function to send boundary + frame data
+                        success = camera.send_frame_data_c(cl, state['first_frame'])
+                        if not success:
+                            debug_print("send_frame_data_c returned False, stopping stream")
+                            state['streaming'] = False
+                        else:
+                            state['first_frame'] = False
+                            state['frame_count'] += 1
+                            if state['frame_count'] % 30 == 0:
+                                debug_print(f"Streamed {state['frame_count']} frames")
                 except OSError as e:
                     debug_print(f"Streaming loop error: {e}")
                     state['streaming'] = False
