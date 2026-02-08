@@ -1233,6 +1233,172 @@ while True:
             gc.collect()
             s = create_server_socket()
             continue
+        elif path.startswith('/streamcudp'):
+            # UDP STREAMING BENCHMARK - sends raw frames via UDP to client
+            # Usage: /streamcudp?frames=100&port=8889
+            # Client must be listening on UDP port to receive frames
+            
+            # Parse query parameters
+            num_frames = 100  # default
+            udp_port = 8889   # default
+            if '?' in path:
+                query = path.split('?')[1]
+                for param in query.split('&'):
+                    if '=' in param:
+                        key, val = param.split('=', 1)
+                        if key == 'frames':
+                            try:
+                                num_frames = int(val)
+                            except:
+                                pass
+                        elif key == 'port':
+                            try:
+                                udp_port = int(val)
+                            except:
+                                pass
+            
+            # Get client IP from accept() - addr is (ip, port) tuple
+            client_ip = addr[0]
+            print(f"UDP stream: {num_frames} frames to {client_ip}:{udp_port}")
+            
+            # Send HTTP response immediately (tells client we're starting)
+            try:
+                header = b"HTTP/1.1 200 OK\r\n"
+                header += b"Content-Type: text/plain\r\n"
+                header += b"Connection: close\r\n"
+                header += f"X-UDP-Target: {client_ip}:{udp_port}\r\n".encode()
+                header += f"X-Frames: {num_frames}\r\n".encode()
+                header += b"\r\n"
+                header += b"STARTING UDP STREAM\n"
+                cl.send(header)
+            except OSError as e:
+                print(f"Failed to send UDP stream header: {e}")
+                cl.close()
+                continue
+            
+            # Close TCP sockets to free up W5500 sockets for UDP
+            # W5500 has limited sockets (8 total)
+            print("Closing TCP sockets to free W5500 socket for UDP...")
+            try:
+                cl.close()
+            except:
+                pass
+            try:
+                s.close()
+            except:
+                pass
+            time.sleep_ms(100)  # Give W5500 time to release sockets
+            
+            # Create UDP socket for streaming
+            # NOTE: W5500 requires binding UDP socket before sendto()
+            print("Creating UDP socket...")
+            udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # Use a different local port (not the same as destination)
+            local_udp_port = 8890
+            print(f"Binding UDP socket to port {local_udp_port}...")
+            udp_sock.bind(('0.0.0.0', local_udp_port))
+            print(f"UDP socket bound to local port {local_udp_port}, sending to {client_ip}:{udp_port}")
+            
+            # UDP chunk size - must fit in MTU (1500 - 20 IP - 8 UDP = 1472 max)
+            UDP_CHUNK_SIZE = 1400
+            FRAME_SIZE = 240 * 320 * 2  # 153600 bytes
+            
+            # Use list to avoid nonlocal (MicroPython limitation)
+            # stats[0] = total_bytes, stats[1] = frames_sent
+            stats = [0, 0]
+            start_time = time.ticks_ms()
+            
+            # Callback to send frame data via UDP
+            def send_frame_udp(frame_data):
+                mv = memoryview(frame_data)
+                frame_size = len(frame_data)
+                
+                # Send frame header packet: "F:frame_num:frame_size\n"
+                header_pkt = f"F:{stats[1]}:{frame_size}\n".encode()
+                try:
+                    udp_sock.sendto(header_pkt, (client_ip, udp_port))
+                except OSError as e:
+                    print(f"UDP header sendto error: {e}")
+                    return False
+                
+                # Send frame data in chunks
+                offset = 0
+                chunk_num = 0
+                while offset < frame_size:
+                    end = min(offset + UDP_CHUNK_SIZE, frame_size)
+                    # Packet format: [1 byte chunk_num][data...]
+                    chunk_data = bytes([chunk_num & 0xFF]) + bytes(mv[offset:end])
+                    try:
+                        udp_sock.sendto(chunk_data, (client_ip, udp_port))
+                    except OSError as e:
+                        print(f"UDP chunk {chunk_num} sendto error: {e}")
+                        return False
+                    offset = end
+                    chunk_num += 1
+                
+                stats[0] += frame_size  # total_bytes
+                stats[1] += 1           # frames_sent
+                return True
+            
+            # Stream frames
+            print("UDP: Starting frame loop...")
+            loop_count = 0
+            try:
+                while stats[1] < num_frames:
+                    loop_count += 1
+                    # Debug: print every 10000 iterations
+                    if loop_count % 10000 == 0:
+                        print(f"UDP: loop {loop_count}, is_buffer_ready={camera.is_buffer_ready()}")
+                    
+                    # Wait for new frame (busy-wait like /stream endpoint)
+                    if camera.is_buffer_ready():
+                        print(f"UDP: Frame ready! Sending frame {stats[1]}")
+                        # Send frame via UDP
+                        camera.send_frame_over_eth(send_frame_udp)
+                    
+                        # Progress every 10 frames
+                        if stats[1] % 10 == 0:
+                            elapsed = time.ticks_diff(time.ticks_ms(), start_time)
+                            if elapsed > 0:
+                                mbps = (stats[0] * 8) / (elapsed * 1000)
+                                print(f"UDP: {stats[1]}/{num_frames} frames, {mbps:.2f} Mbps")
+            except Exception as e:
+                print(f"UDP stream error: {e}")
+            
+            # Calculate final stats
+            elapsed_ms = time.ticks_diff(time.ticks_ms(), start_time)
+            if elapsed_ms > 0:
+                mbps = (stats[0] * 8) / (elapsed_ms * 1000)
+            else:
+                mbps = 0
+            
+            # Send end marker via UDP
+            end_pkt = f"END:{stats[1]}:{stats[0]}:{elapsed_ms}:{mbps:.2f}\n".encode()
+            try:
+                udp_sock.sendto(end_pkt, (client_ip, udp_port))
+            except:
+                pass
+            
+            # Send stats back via TCP before closing
+            try:
+                result_msg = f"DONE: {stats[1]} frames, {stats[0]} bytes, {elapsed_ms}ms, {mbps:.2f} Mbps\n"
+                cl.send(result_msg.encode())
+            except:
+                pass
+            
+            print(f"UDP stream complete: {stats[1]} frames, {mbps:.2f} Mbps")
+            
+            # Cleanup
+            udp_sock.close()
+            try:
+                cl.close()
+            except:
+                pass
+            s.close()
+            time.sleep_ms(100)
+            gc.collect()
+            s = create_server_socket()
+            continue
         elif path.startswith("/image.raw"):
             debug_print("Serve raw camera image data")
             if camera.is_buffer_ready():
