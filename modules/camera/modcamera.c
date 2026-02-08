@@ -150,6 +150,70 @@ static mp_obj_t camera_send_frame_data_c(mp_obj_t socket_obj, mp_obj_t first_fra
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(camera_send_frame_data_c_obj, camera_send_frame_data_c);
 
+// Stream loop in C (ported from Python /streamc while loop lines 1219-1236)
+// Args: socket object
+// Returns: frame count when stream ends (disconnect, error, or KeyboardInterrupt)
+static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
+    bool streaming = true;
+    bool first_frame = true;
+    uint32_t frame_count = 0;
+    int errcode;
+
+    while (streaming) {
+        // Handle pending signals (KeyboardInterrupt)
+        // This will raise MP_OBJ_STOP_ITERATION or similar on Ctrl+C
+        mp_handle_pending(true);
+
+        if (buffer_ready) {
+            // Send boundary header
+            const char *boundary;
+            size_t boundary_len;
+            if (first_frame) {
+                boundary = boundary_first;
+                boundary_len = sizeof(boundary_first) - 1;  // -1 for null terminator
+            } else {
+                boundary = boundary_subsequent;
+                boundary_len = sizeof(boundary_subsequent) - 1;
+            }
+
+            mp_uint_t ret = mp_stream_write_exactly(socket_obj, boundary, boundary_len, &errcode);
+            if (ret == MP_STREAM_ERROR) {
+                streaming = false;
+                break;
+            }
+
+            // Send frame data in chunks (16KB each, like Python version)
+            const size_t chunk_size = 16384;
+            const size_t frame_size = CAM_FUL_SIZE * 2;
+            size_t total_sent = 0;
+
+            while (total_sent < frame_size) {
+                size_t to_send = frame_size - total_sent;
+                if (to_send > chunk_size) {
+                    to_send = chunk_size;
+                }
+
+                ret = mp_stream_write_exactly(socket_obj, cam_ptr + total_sent, to_send, &errcode);
+                if (ret == MP_STREAM_ERROR || ret == 0) {
+                    streaming = false;
+                    break;
+                }
+
+                total_sent += ret;
+            }
+
+            if (!streaming) break;
+
+            buffer_ready = false;
+            first_frame = false;
+            frame_count++;
+        }
+    }
+
+    return mp_obj_new_int(frame_count);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_stream_loop_c_obj, camera_stream_loop_c);
+
 
 // Define module globals
 static const mp_rom_map_elem_t camera_module_globals_table[] = {
@@ -161,6 +225,7 @@ static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_is_buffer_ready), MP_ROM_PTR(&cam_is_buffer_ready_obj) },
     { MP_ROM_QSTR(MP_QSTR_send_frame_over_eth), MP_ROM_PTR(&camera_send_frame_over_eth_obj) },
     { MP_ROM_QSTR(MP_QSTR_send_frame_data_c), MP_ROM_PTR(&camera_send_frame_data_c_obj) },
+    { MP_ROM_QSTR(MP_QSTR_stream_loop_c), MP_ROM_PTR(&camera_stream_loop_c_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_data_order), MP_ROM_PTR(&camera_set_data_order_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_data_pins), MP_ROM_PTR(&camera_set_data_pins_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_control_pins), MP_ROM_PTR(&camera_set_control_pins_obj) },

@@ -489,7 +489,7 @@ time.sleep_ms(500)  # Wait longer for chip to fully initialize
 # Initialize SPI for W5500 - can use higher speed with optimizations
 spi = machine.SPI(
     0,
-    baudrate=20000000,  # 2->20MHz - faster than before
+    baudrate=20000000,  # 2->20MHz
     polarity=0,
     phase=0,
     sck=machine.Pin(18),
@@ -1211,29 +1211,16 @@ while True:
                 continue
 
             # Streaming loop using C function for frame data sending
+            # NOTE: state dict kept for backward compatibility (used in debug print)
             state = {'streaming': True, 'frame_count': 0, 'first_frame': True}
             
             cl.settimeout(5.0)
             
             debug_print("Starting C-based streaming loop")
-            while state['streaming']:
-                try:
-                    if camera.is_buffer_ready():
-                        # Use C function to send boundary + frame data
-                        success = camera.send_frame_data_c(cl, state['first_frame'])
-                        if not success:
-                            debug_print("send_frame_data_c returned False, stopping stream")
-                            state['streaming'] = False
-                        else:
-                            state['first_frame'] = False
-                            state['frame_count'] += 1
-                            if state['frame_count'] % 30 == 0:
-                                debug_print(f"Streamed {state['frame_count']} frames")
-                except OSError as e:
-                    debug_print(f"Streaming loop error: {e}")
-                    state['streaming'] = False
-                except KeyboardInterrupt:
-                    state['streaming'] = False
+            # Port to C: the while loop is now in camera.stream_loop_c()
+            # It returns frame_count when stream ends (disconnect or error)
+            frame_count = camera.stream_loop_c(cl)
+            state['frame_count'] = frame_count
             
             debug_print(f"Stream ended after {state['frame_count']} frames")
             try:
