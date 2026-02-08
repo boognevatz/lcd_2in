@@ -7,6 +7,6 @@ trap 'end=$(date +%s.%N); \
       "BEGIN { printf \"Total time: %.3f ms\n\", (e - s) * 1000 }"; \
       exit' INT
 
-curl -o stream5.raw -s -w "%{time_total}\n" http://172.16.1.1/stream 
+curl -o streamc.raw -s -w "%{time_total}\n" http://172.16.1.1/streamc
 
 
