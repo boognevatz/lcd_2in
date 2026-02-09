@@ -489,7 +489,7 @@ time.sleep_ms(500)  # Wait longer for chip to fully initialize
 # Initialize SPI for W5500 - can use higher speed with optimizations
 spi = machine.SPI(
     0,
-    baudrate=80000000,  # 2->20->80 MHz
+    baudrate=40_000_000,  # 2->20->40 MHz
     polarity=0,
     phase=0,
     sck=machine.Pin(18),
@@ -1298,6 +1298,11 @@ while True:
             print(f"Binding UDP socket to port {local_udp_port}...")
             udp_sock.bind(('0.0.0.0', local_udp_port))
             print(f"UDP socket bound to local port {local_udp_port}, sending to {client_ip}:{udp_port}")
+            
+            # Wait for client to be ready to receive UDP
+            # I'm not sure if it is needed. Maybe needs to revert.
+            print("Waiting 5ms for client to be ready (needed?)...")
+            time.sleep_ms(5)
             
             # UDP chunk size - must fit in MTU (1500 - 20 IP - 8 UDP = 1472 max)
             UDP_CHUNK_SIZE = 1400
