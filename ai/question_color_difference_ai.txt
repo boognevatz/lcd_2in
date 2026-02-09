@@ -1,0 +1,3530 @@
+# Description
+
+Take the main_webcamera_colorfix_dma_fps_fix.py, it is the micropython starting application, 
+study it thoroughly.
+Read the `modules/camera/*` and `modules/camera-colorgood/*` study it.
+
+Do not take any files from the internet. Everything is here included.
+
+# Your job
+
+Identify why the colors are not good in modules/camera/* module, and 
+why the colors look alright in modules/camera-colorgood/*.
+
+This time be extra thorough read the source code at least 5 times, five different 
+angles, do not use anything from the internet everything is here included.
+We were talking about this 4 times, and you were hallucinating random things
+from the internet, which is not even the sourcecode. So use 
+the below files as the only source of truth.
+
+
+cat main_webcamera_colorfix_dma_fps_fix.py
+### ETHERNET WEBSERVER WITH W5500 AND CAMERA - OPTIMIZED NON-BLOCKING
+import machine
+import network
+import socket
+import time
+import camera
+import select
+import json
+import gc
+
+DEBUG = False
+
+if DEBUG:
+    debug_print = print
+else:
+    def debug_print(*args, **kwargs):
+        _ = args, kwargs
+        pass
+
+
+# ===== WATCHDOG TIMER SETUP =====
+# Initialize watchdog timer to prevent system freezes
+# If the system doesn't call wdt.feed() within 8 seconds, it will reset
+#wdt = machine.WDT(timeout=8000)  # 8 second timeout
+debug_print("Watchdog initialized with 8s timeout")
+# ================================
+
+
+# ===== LOAD CONFIGURATION =====
+def load_config():
+    """Load configuration from config.json file"""
+    try:
+        with open("config.json", "r") as f:
+            config = json.load(f)
+            return config
+    except Exception as e:
+        print(f"ERROR: Failed to load config.json: {e}")
+        # Return default config
+        return {
+            "headID": 1117,
+            "i2c": {
+                "adc_address": "0x48",
+                "barometer_address": "0x6C",
+                "dac_address": "0x60",
+            },
+            "adc": {"ref_voltage": 2.5},
+            "ntc": {
+                "r0": 10000,
+                "beta": 3380,
+                "t0_kelvin": 298.15,
+                "divider_r": 10000,
+                "divider_vcc": 3.3,
+            },
+            "barometer": {"atmospheric_raw": 5463198, "atmospheric_bar": 1.0},
+        }
+
+
+config = load_config()
+
+# Feed watchdog during initialization
+#wdt.feed()
+
+# Main configuration
+HEAD_ID = config.get("headID", 1117)
+
+# I2C addresses (convert hex strings to integers)
+ADS7830_ADDR = int(config.get("i2c", {}).get("adc_address", "0x48"), 16)
+BAROMETER_ADDR = int(config.get("i2c", {}).get("barometer_address", "0x6C"), 16)
+MCP4725_ADDR = int(config.get("i2c", {}).get("dac_address", "0x60"), 16)
+
+# ADC configuration
+ADC_REF_VOLTAGE = config.get("adc", {}).get("ref_voltage", 2.5)
+
+# NTC Thermistor configuration
+NTC_R0 = config.get("ntc", {}).get("r0", 10000)
+NTC_BETA = config.get("ntc", {}).get("beta", 3380)
+NTC_T0 = config.get("ntc", {}).get("t0_kelvin", 298.15)
+DIVIDER_R = config.get("ntc", {}).get("divider_r", 10000)
+DIVIDER_VCC = config.get("ntc", {}).get("divider_vcc", 3.3)
+
+# WF5803F Barometer calibration
+BAROMETER_ATMOSPHERIC_RAW = config.get("barometer", {}).get("atmospheric_raw", 5463198)
+BAROMETER_ATMOSPHERIC_BAR = config.get("barometer", {}).get("atmospheric_bar", 1.0)
+# =========================
+
+# Record boot time for uptime calculation
+boot_time_ms = time.ticks_ms()
+
+# Initialize I2C for ADS7830 ADC, WF5803F Barometer, and MCP4725 DAC
+i2c = machine.I2C(0, scl=machine.Pin(13), sda=machine.Pin(12), freq=100000)
+
+# Check if devices are present
+adc_ready = False
+barometer_ready = False
+dac_ready = False
+try:
+    devices = i2c.scan()
+
+    if ADS7830_ADDR in devices:
+        adc_ready = True
+    else:
+        debug_print("WARNING: ADS7830 ADC not found")
+
+    if BAROMETER_ADDR in devices:
+        barometer_ready = True
+    else:
+        debug_print("WARNING: WF5803F Barometer not found")
+
+    if MCP4725_ADDR in devices:
+        dac_ready = True
+    else:
+        debug_print("WARNING: MCP4725 DAC not found")
+except Exception as e:
+    print(f"ERROR: I2C initialization failed: {e}")
+    adc_ready = False
+    barometer_ready = False
+    dac_ready = False
+
+# Feed watchdog after I2C initialization
+#wdt.feed()
+
+
+def read_adc_channel(channel):
+    """
+    Read a single channel from ADS7830
+
+    Args:
+        channel: Channel number (0-7)
+
+    Returns:
+        Voltage value in volts, or None if read fails
+    """
+    if not adc_ready:
+        return None
+
+    try:
+        # Command byte format for ADS7830:
+        # Bit 7: SD=1 (single-ended mode)
+        # Bits 6-4: C2-C1-C0 (channel select)
+        # Bits 3-2: PD1-PD0=11 (internal reference ON, ADC ON between conversions)
+        # Bits 1-0: Don't care
+        command = 0x8C | (channel << 4)  # 0x8C = 10001100
+
+        # Write command byte
+        i2c.writeto(ADS7830_ADDR, bytes([command]))
+
+        # Delay for conversion (datasheet: typ 32µs, max 64µs)
+        time.sleep_ms(2)
+
+        # Read result (8-bit value)
+        data = i2c.readfrom(ADS7830_ADDR, 1)
+        adc_value = data[0]
+
+        # Convert to voltage (8-bit ADC, 0-255 maps to 0-2.5V)
+        voltage = (adc_value / 255.0) * ADC_REF_VOLTAGE
+
+        return voltage
+    except Exception as e:
+        debug_print(f"Error reading ADC channel {channel}: {e}")
+        return None
+
+
+def voltage_to_temperature(voltage):
+    """
+    Convert voltage reading to temperature in Celsius using NTC thermistor
+
+    Voltage divider configuration (per schematic):
+    3.3V --- R_fixed (10k) --- V_out (measured) --- R_NTC --- GND
+
+    V_out = VCC * R_NTC / (R_fixed + R_NTC)
+    Therefore: R_NTC = (V_out * R_fixed) / (VCC - V_out)
+
+    Args:
+        voltage: Measured voltage in volts
+
+    Returns:
+        Temperature in Celsius (integer), or None if calculation fails
+    """
+    if voltage is None:
+        return None
+
+    # Check for invalid voltage range (with some tolerance)
+    if voltage < 0.01 or voltage > (DIVIDER_VCC - 0.01):
+        return None
+
+    try:
+        # Calculate thermistor resistance from voltage divider
+        # NTC is on bottom (connected to GND), R_fixed is on top (connected to 3.3V)
+        # R_NTC = (V_out * R_fixed) / (VCC - V_out)
+        r_ntc = (voltage * DIVIDER_R) / (DIVIDER_VCC - voltage)
+
+        # Beta equation: 1/T = 1/T0 + (1/B) * ln(R/R0)
+        import math
+
+        temp_kelvin = 1.0 / (1.0 / NTC_T0 + (1.0 / NTC_BETA) * math.log(r_ntc / NTC_R0))
+        temp_celsius = temp_kelvin - 273.15
+
+        # Return as integer (no decimals)
+        return int(round(temp_celsius))
+    except Exception as e:
+        print(f"Error converting voltage to temperature: {e}")
+        return None
+
+
+def get_uptime_seconds():
+    """
+    Get uptime since boot in seconds
+
+    Returns:
+        Uptime in seconds (integer)
+    """
+    current_time_ms = time.ticks_ms()
+    uptime_ms = time.ticks_diff(current_time_ms, boot_time_ms)
+    uptime_sec = uptime_ms // 1000
+    return uptime_sec
+
+
+def get_mcu_temperature():
+    """
+    Read RP2350A internal temperature sensor
+
+    Returns:
+        Temperature in Celsius (integer), or None if read fails
+    """
+    try:
+        # ADC4 is connected to the internal temperature sensor
+        adc_temp = machine.ADC(4)
+
+        # Read raw ADC value (16-bit: 0-65535)
+        adc_value = adc_temp.read_u16()
+
+        # Convert to voltage (3.3V reference)
+        voltage = (adc_value / 65535.0) * 3.3
+
+        # RP2040/RP2350 temperature sensor formula:
+        # T = 27 - (ADC_voltage - 0.706) / 0.001721
+        temp_celsius = 27 - (voltage - 0.706) / 0.001721
+
+        # Return as integer (no decimals)
+        return int(round(temp_celsius))
+    except Exception as e:
+        print(f"Error reading MCU temperature: {e}")
+        return None
+
+
+def init_barometer():
+    """
+    Initialize the WF5803F 01BA barometer sensor
+    Model: WF5803F 01BA L8 DT
+    Range: 30kPa - 1.1bar (0.3 - 1.1 bar)
+    TCO: 1.5 Pa/K
+
+    CMD register: 0x30
+    CTRL register: 0x02
+
+    Returns:
+        True if initialization successful, False otherwise
+    """
+    if not barometer_ready:
+        return False
+
+    try:
+        return True
+    except Exception as e:
+        print(f"ERROR: Barometer init: {e}")
+        return False
+
+
+def read_barometer():
+    """
+    Read temperature and pressure from WF5803F 01BA barometer
+    Model: WF5803F 01BA L8 DT
+    Range: 30-110 kPa (0.3-1.1 bar)
+
+    Protocol based on working C implementation:
+    - CMD register 0x30: Write 0x0A (0x02 + SCO bit) to start measurement
+    - CTRL register 0x02: Check bit 0 (DRDY) for data ready
+    - Pressure: 24-bit signed at 0x06, 0x07, 0x08 (MSB first)
+    - Temperature: 16-bit at 0x09, 0x0A (MSB first)
+
+    Returns:
+        Tuple of (temperature_celsius, pressure_bar) or (None, None) if read fails
+    """
+    if not barometer_ready:
+        return (None, None)
+
+    try:
+        # Start measurement: Write 0x0A to CMD register (0x30)
+        # 0x0A = 0x02 (measurement mode) + 0x08 (SCO bit)
+        SCO_BITMASK = 0x08
+        DRDY_BITMASK = 0x01
+
+        i2c.writeto_mem(BAROMETER_ADDR, 0x30, bytes([0x02 | SCO_BITMASK]))
+
+        # Wait for data ready (DRDY bit in control register 0x02 goes to 0)
+        delay_count = 0
+        while delay_count < 50:
+            time.sleep_ms(1)
+            ctrl_reg = i2c.readfrom_mem(BAROMETER_ADDR, 0x02, 1)[0]
+            if not (ctrl_reg & DRDY_BITMASK):
+                break
+            delay_count += 1
+
+        if delay_count >= 50:
+            debug_print("Barometer measurement timeout")
+            return (None, None)
+
+        # Read pressure (24-bit signed, MSB first) from registers 0x06, 0x07, 0x08
+        press_byte0 = i2c.readfrom_mem(BAROMETER_ADDR, 0x06, 1)[0]
+        press_byte1 = i2c.readfrom_mem(BAROMETER_ADDR, 0x07, 1)[0]
+        press_byte2 = i2c.readfrom_mem(BAROMETER_ADDR, 0x08, 1)[0]
+
+        # Combine bytes (MSB first)
+        pressure_raw = (press_byte0 << 16) | (press_byte1 << 8) | press_byte2
+
+        # Sign extend 24-bit to 32-bit if negative (bit 23 is set)
+        if pressure_raw & 0x800000:
+            pressure_raw |= 0xFF000000
+            # Convert to signed integer
+            pressure_raw = pressure_raw - 0x100000000
+
+        # Read temperature (16-bit, MSB first) from registers 0x09, 0x0A
+        temp_byte0 = i2c.readfrom_mem(BAROMETER_ADDR, 0x09, 1)[0]
+        temp_byte1 = i2c.readfrom_mem(BAROMETER_ADDR, 0x0A, 1)[0]
+
+        # Combine bytes (MSB first)
+        temp_raw = (temp_byte0 << 8) | temp_byte1
+
+        # Sign extend if negative
+        if temp_raw > 32767:
+            temp_raw -= 65536
+
+        # Convert raw values to actual units
+        # Temperature: raw / 256.0 (from datasheet specification)
+        temperature_celsius = temp_raw / 256.0
+
+        # Calculate scale factor (bar per count) from calibration constants
+        PRESSURE_SCALE_FACTOR = BAROMETER_ATMOSPHERIC_BAR / BAROMETER_ATMOSPHERIC_RAW
+
+        # Convert raw count to absolute pressure
+        pressure_absolute_bar = pressure_raw * PRESSURE_SCALE_FACTOR
+
+        # Convert absolute pressure to gauge pressure (relative to atmosphere)
+        pressure_gauge_bar = pressure_absolute_bar - BAROMETER_ATMOSPHERIC_BAR
+
+        # Clamp to minimum 0.0 (no negative pressure readings)
+        if pressure_gauge_bar < 0.0:
+            pressure_gauge_bar = 0.0
+
+        # Return as integer for temperature, 3 decimals for pressure
+        return (int(round(temperature_celsius)), round(pressure_gauge_bar, 3))
+
+    except Exception as e:
+        print(f"Error reading barometer: {e}")
+        return (None, None)
+
+
+def init_head_led():
+    """
+    Initialize MCP4725 DAC for LED brightness control
+    Set to 0% brightness (off) on startup
+
+    Returns:
+        True if initialization successful, False otherwise
+    """
+    if not dac_ready:
+        return False
+
+    try:
+        # Initialize DAC to 0 (LED off)
+        # Command: 0x60 (write DAC and EEPROM), data: 0x00 0x00
+        i2c.writeto(MCP4725_ADDR, bytes([0x60, 0x00, 0x00]))
+        time.sleep_ms(10)
+        return True
+    except Exception as e:
+        print(f"ERROR: LED DAC init: {e}")
+        return False
+
+
+def set_head_led_brightness(percent):
+    """
+    Set LED brightness using MCP4725 DAC
+
+    Args:
+        percent: Brightness level 0-100 (integer percentage)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    if not dac_ready:
+        return False
+
+    # Validate and clamp input
+    if percent < 0:
+        percent = 0
+    elif percent > 100:
+        percent = 100
+
+    try:
+        # Convert percentage to 12-bit DAC value (0-4095)
+        dac_value = int((percent / 100.0) * 4095)
+
+        # Split into MSB and LSB
+        # MCP4725 format: MSB = upper 8 bits, LSB = lower 4 bits in upper nibble
+        msb = (dac_value >> 4) & 0xFF
+        lsb = (dac_value << 4) & 0xF0
+
+        # Write to DAC (fast write mode)
+        # Command: 0x40 (write DAC register only, not EEPROM)
+        i2c.writeto(MCP4725_ADDR, bytes([0x40, msb, lsb]))
+
+        return True
+    except Exception as e:
+        print(f"ERROR: LED brightness: {e}")
+        return False
+
+
+def read_all_led_temps():
+    """
+    Read all 6 temperature channels and convert to Celsius
+
+    Returns:
+        Dictionary with headTemp1 through headTemp6 values in Celsius (integers)
+    """
+    temps = {}
+    for i in range(6):
+        voltage = read_adc_channel(i)
+        temp_c = voltage_to_temperature(voltage)
+        temps[f"headTemp{i + 1}"] = temp_c
+    return temps
+
+
+# ===== MEMORY MONITORING =====
+def get_memory_stats():
+    """Get memory statistics without printing"""
+    gc.collect()
+    free = gc.mem_free()
+    alloc = gc.mem_alloc()
+    total = free + alloc
+    return {"total": total, "used": alloc, "free": free}
+
+def print_memory_stats(label=""):
+    """Print compact memory statistics"""
+    stats = get_memory_stats()
+    free_kb = stats["free"] / 1024
+    total = stats["total"]
+    free_pct = stats["free"] * 100 / total
+    debug_print(f"MEMORY check: {label} | Free: {free_kb:.1f}KB ({free_pct:.1f}%)")
+    return stats
+# ============================
+
+# ===== UNIFIED SERVER (SINGLE CORE, NON-BLOCKING) =====
+
+
+# Initialize barometer if present
+if barometer_ready:
+    if not init_barometer():
+        debug_print("ERROR: Barometer initialization failed")
+        barometer_ready = False
+
+# Initialize LED DAC if present
+if dac_ready:
+    if not init_head_led():
+        debug_print("ERROR: LED DAC initialization failed")
+        dac_ready = False
+
+# W5500 Pin Configuration for RP2350A
+# MISO: GPIO16
+# SCSN: GPIO17
+# SCLK: GPIO18
+# MOSI: GPIO19
+# RSTN: GPIO20
+# INTN: GPIO21
+
+# Chip Select and Reset pins - initialize first
+cs = machine.Pin(17, machine.Pin.OUT)
+rst = machine.Pin(20, machine.Pin.OUT)
+
+# Initialize CS high (inactive) before any SPI activity
+cs.value(1)
+time.sleep_ms(10)
+
+# Perform hardware reset on W5500
+rst.value(0)  # Pull reset LOW
+time.sleep_ms(100)  # Hold low for 100ms
+rst.value(1)  # Pull reset HIGH to enable chip
+time.sleep_ms(500)  # Wait longer for chip to fully initialize
+
+# Initialize SPI for W5500 - can use higher speed with optimizations
+spi = machine.SPI(
+    0,
+    baudrate=40_000_000,  # 2->20->40 MHz
+    polarity=0,
+    phase=0,
+    sck=machine.Pin(18),
+    mosi=machine.Pin(19),
+    miso=machine.Pin(16),
+)
+
+time.sleep_ms(100)
+
+# Initialize network interface
+nic = network.WIZNET5K(spi, cs, rst)
+
+# Activate the network interface first
+nic.active(True)
+time.sleep_ms(100)
+
+# Configure static IP: 172.16.1.1 (this device acts as gateway)
+nic.ifconfig(("172.16.1.1", "255.255.255.0", "172.16.1.1", "8.8.8.8"))
+
+# Give it a moment to apply settings
+time.sleep_ms(500)
+
+debug_print("Waiting for Ethernet link...")
+while not nic.isconnected():
+    time.sleep(0.1)
+debug_print("Connected. IP address:", nic.ifconfig()[0])
+
+# Check if interface is active and configured
+if nic.active():
+    config_net = nic.ifconfig()
+    debug_print(f"Ethernet initialized successfully, IP: {config_net[0]}")
+else:
+    debug_print("ERROR: Ethernet failed")
+
+print_memory_stats("After network initialization")
+
+# Feed watchdog after network initialization
+#wdt.feed()
+
+# Initialize Camera
+camera_ready = False
+try:
+    camera.init_cam()
+    camera.start_cam()
+    debug_print("Camera started")
+
+    print_memory_stats("After Camera Init")
+except Exception as e:
+    print(f"ERROR: Camera: {e}")
+
+# Feed watchdog after camera initialization
+#wdt.feed()
+
+
+# Cleanup function
+def cleanup():
+    debug_print("\nCleaning up...")
+    global nic
+    try:
+        # Deactivate network interface
+        if nic:
+            nic.active(False)
+            debug_print("Network interface deactivated")
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
+
+def create_server_socket():
+    """Create, bind and listen on a new server socket"""
+    try:
+        debug_print("[DIAG] create_server_socket: starting")
+        server = socket.socket()
+        debug_print("[DIAG] create_server_socket: socket() done")
+        server.bind(("0.0.0.0", 80))
+        debug_print("[DIAG] create_server_socket: bind() done")
+        server.listen(5)
+        debug_print("[DIAG] create_server_socket: listen() done")
+        debug_print("[MAIN] Server socket created and listening on port 80")
+        debug_print("[DIAG] create_server_socket: about to return")
+        return server
+    except Exception as e:
+        print(f"[DIAG] create_server_socket: EXCEPTION: {e}")
+        raise
+
+def generate_html_root(url):
+    """path: /"""
+    gc.collect()
+    html = """HTTP/1.1 200 OK
+Content-Type: text/html
+Connection: close
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Camera Stream</title>
+    <style>
+        body { margin: 20px; font-family: Arial, sans-serif; background: #222; color: #fff; }
+        #camera-canvas { border: 2px solid #0f0; display: block; }
+        #stats { margin-top: 10px; font-size: 16px; }
+        .metric { display: inline-block; margin-right: 20px; padding: 5px 10px; background: #333; }
+        #color-format-options { margin-top: 10px; }
+        #color-format-options label { display: block; margin: 5px 0; }
+    </style>
+</head>
+<body>
+    <h2>Camera Stream - RGB565</h2>
+    <canvas id="camera-canvas" width="240" height="320"></canvas>
+    <div id="stats">
+        <div class="metric">FPS: <span id="fps">0.00</span></div>
+        <div class="metric">Frame: <span id="frame-count">0</span></div>
+        <div class="metric">Status: <span id="status">Starting...</span></div>
+    </div>
+    <div id="color-format-options">
+        <strong>Color Format:</strong><br>
+        <label><input type="radio" name="color-format" value="bgr"> b01234_g012345_r01234</label>
+        <label><input type="radio" name="color-format" value="rgb" checked> r01234_g012345_b01234</label>
+        <label><input type="radio" name="color-format" value="grb"> g01234_r012345_b01234</label>
+        <label><input type="radio" name="color-format" value="brg"> b01234_r012345_g01234</label>
+        <label><input type="radio" name="color-format" value="gbr"> g01234_b012345_r01234</label>
+        <label><input type="radio" name="color-format" value="rbg"> r01234_b012345_g01234</label>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('camera-canvas');
+        const ctx = canvas.getContext('2d');
+        const width = 240;
+        const height = 320;
+        const frameSize = width * height * 2; // RGB565 = 2 bytes per pixel
+
+        let frameCount = 0;
+        let fpsCounter = 0;
+        let lastFpsTime = Date.now();
+
+        // Single-socket guard: only one active request at a time
+        let requestInProgress = false;
+        let abortController = null;
+
+        function displayImage(arrayBuffer) {
+            // Decode bit-packed data (from colorfix implementation)
+            const source = new Uint8Array(arrayBuffer);
+            const dest = new Uint8Array(source.length);
+
+            if (source.length > 0) {
+                dest[0] = source[0] >> 2;
+                for (let i = 1; i < source.length; i++) {
+                    dest[i] = ((source[i - 1] & 3) << 6) | (source[i] >> 2);
+                }
+            }
+            const data = dest;
+
+            const imageData = ctx.createImageData(width, height);
+            const format = document.querySelector('input[name="color-format"]:checked').value;
+
+            for (let i = 0; i < width * height; i++) {
+                const byte0 = data[i * 2];
+                const byte1 = data[i * 2 + 1];
+                const rgb565 = byte0 | (byte1 << 8);
+
+                let r, g, b;
+
+                switch (format) {
+                    case 'bgr': // b01234_g012345_r01234
+                        b = (rgb565 >> 11) & 0x1F;
+                        g = (rgb565 >> 5) & 0x3F;
+                        r = rgb565 & 0x1F;
+                        break;
+                    case 'rgb': // r01234_g012345_b01234
+                        r = (rgb565 >> 11) & 0x1F;
+                        g = (rgb565 >> 5) & 0x3F;
+                        b = rgb565 & 0x1F;
+                        break;
+                    case 'grb': // g01234_r012345_b01234
+                        g = (rgb565 >> 11) & 0x1F;
+                        r = (rgb565 >> 5) & 0x3F;
+                        b = rgb565 & 0x1F;
+                        break;
+                    case 'brg': // b01234_r012345_g01234
+                        b = (rgb565 >> 11) & 0x1F;
+                        r = (rgb565 >> 5) & 0x3F;
+                        g = rgb565 & 0x1F;
+                        break;
+                    case 'gbr': // g01234_b012345_r01234
+                        g = (rgb565 >> 11) & 0x1F;
+                        b = (rgb565 >> 5) & 0x3F;
+                        r = rgb565 & 0x1F;
+                        break;
+                    case 'rbg': // r01234_b012345_g01234
+                        r = (rgb565 >> 11) & 0x1F;
+                        b = (rgb565 >> 5) & 0x3F;
+                        g = rgb565 & 0x1F;
+                        break;
+                }
+
+                const r8 = (r << 3) | (r >> 2);
+                const g8 = (g << 2) | (g >> 4);
+                const b8 = (b << 3) | (b >> 2);
+
+                const finalR = Math.round(b8 * 0.85);
+                const finalG = Math.round(r8 * 0.85);
+                const finalB = Math.round(g8 * 0.85);
+
+                const idx = i * 4;
+                imageData.data[idx] = finalR;
+                imageData.data[idx + 1] = finalG;
+                imageData.data[idx + 2] = finalB;
+                imageData.data[idx + 3] = 255;
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+
+            frameCount++;
+            fpsCounter++;
+            document.getElementById('frame-count').textContent = frameCount;
+
+            const now = Date.now();
+            if (now - lastFpsTime >= 1000) {
+                const fps = fpsCounter / ((now - lastFpsTime) / 1000);
+                document.getElementById('fps').textContent = fps.toFixed(2);
+                fpsCounter = 0;
+                lastFpsTime = now;
+            }
+        }
+
+        async function startStream() {
+            // Single-socket guard: block concurrent requests
+            if (requestInProgress) {
+                console.log('Request already in progress, skipping');
+                return;
+            }
+
+            // Abort any lingering previous request
+            if (abortController) {
+                abortController.abort();
+                await new Promise(r => setTimeout(r, 100));
+            }
+
+            abortController = new AbortController();
+            requestInProgress = true;
+
+            try {
+                document.getElementById('status').textContent = 'Connecting...';
+                const response = await fetch('__STREAM_URL__', { signal: abortController.signal });
+                document.getElementById('status').textContent = 'Streaming';
+
+                const reader = response.body.getReader();
+                let buffer = new Uint8Array(0);
+                const boundaryText = '--frame';
+                const boundary = new TextEncoder().encode(boundaryText);
+
+                while (true) {
+                    const {done, value} = await reader.read();
+
+                    if (done) {
+                        console.log('Stream ended');
+                        document.getElementById('status').textContent = 'Stream ended';
+                        break;
+                    }
+
+                    // Append new data to buffer
+                    const newBuffer = new Uint8Array(buffer.length + value.length);
+                    newBuffer.set(buffer);
+                    newBuffer.set(value, buffer.length);
+                    buffer = newBuffer;
+
+                    // Process all complete frames in buffer
+                    while (true) {
+                        // Find boundary marker
+                        let boundaryIndex = -1;
+                        for (let i = 0; i < buffer.length - boundary.length; i++) {
+                            let match = true;
+                            for (let j = 0; j < boundary.length; j++) {
+                                if (buffer[i + j] !== boundary[j]) {
+                                    match = false;
+                                    break;
+                                }
+                            }
+                            if (match) {
+                                boundaryIndex = i;
+                                break;
+                            }
+                        }
+
+                        if (boundaryIndex === -1) break;
+
+                        // Find data start (after \\r\\n\\r\\n)
+                        let dataStart = -1;
+                        for (let i = boundaryIndex; i < buffer.length - 3; i++) {
+                            if (buffer[i] === 13 && buffer[i+1] === 10 &&
+                                buffer[i+2] === 13 && buffer[i+3] === 10) {
+                                dataStart = i + 4;
+                                break;
+                            }
+                        }
+
+                        if (dataStart === -1 || buffer.length - dataStart < frameSize) {
+                            break; // Not enough data yet
+                        }
+
+                        // Extract and display frame
+                        const frameData = buffer.slice(dataStart, dataStart + frameSize);
+                        displayImage(frameData);
+
+                        // Remove processed data
+                        buffer = buffer.slice(dataStart + frameSize);
+                    }
+                }
+            } catch (err) {
+                if (err.name === 'AbortError') {
+                    console.log('Request aborted');
+                    document.getElementById('status').textContent = 'Aborted';
+                } else {
+                    console.error('Stream error:', err);
+                    document.getElementById('status').textContent = 'Error: ' + err.message;
+                }
+            } finally {
+                // Cleanup: allow next request after delay for MCU socket teardown
+                requestInProgress = false;
+                abortController = null;
+                document.getElementById('status').textContent = 'Reconnecting...';
+                // Wait 500ms for MCU to fully close socket before reconnecting
+                setTimeout(startStream, 500);
+            }
+        }
+
+        // Start streaming
+        startStream();
+    </script>
+</body>
+</html>
+"""
+    html = html.replace("__STREAM_URL__", url)
+    return html.encode()
+
+def generate_html_poll():
+    """path: /poll"""
+    
+    html = """HTTP/1.1 200 OK
+Content-Type: text/html
+Connection: close
+Keep-Alive: timeout=0, max=0
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera polling</title>
+    <!-- no favicon.ico -->
+    <link rel="icon" href="data:,">
+</head>
+<body>
+    <canvas id="camera-canvas" width="240" height="320"></canvas>
+    <div id="color-format-options">
+        <label><input type="radio" name="color-format" value="bgr" onclick="refreshImage()"> b01234_g012345_r01234</label><br>
+        <label><input type="radio" name="color-format" value="rgb" checked onclick="refreshImage()"> r01234_g012345_b01234</label><br>
+        <label><input type="radio" name="color-format" value="grb" onclick="refreshImage()"> g01234_r012345_b01234</label><br>
+        <label><input type="radio" name="color-format" value="brg" onclick="refreshImage()"> b01234_r012345_g01234</label><br>
+        <label><input type="radio" name="color-format" value="gbr" onclick="refreshImage()"> g01234_b012345_r01234</label><br>
+        <label><input type="radio" name="color-format" value="rbg" onclick="refreshImage()"> r01234_b012345_g01234</label><br>
+    </div>
+    <script>
+        const canvas = document.getElementById('camera-canvas');
+        const ctx = canvas.getContext('2d');
+        const width = 240;
+        const height = 320;
+        let lastImageBuffer = null;
+
+        // Single-socket guard: only one active request at a time
+        let requestInProgress = false;
+        
+        function displayImage(arrayBuffer) {
+            const source = new Uint8Array(arrayBuffer);
+            const dest = new Uint8Array(source.length);
+
+            if (source.length > 0) {
+                dest[0] = source[0] >> 2;
+                for (let i = 1; i < source.length; i++) {
+                    dest[i] = ((source[i - 1] & 3) << 6) | (source[i] >> 2);
+                }
+            }
+            const data = dest;
+            const imageData = ctx.createImageData(width, height);
+            const format = document.querySelector('input[name="color-format"]:checked').value;
+
+            for (let i = 0; i < width * height; i++) {
+                const byte0 = data[i * 2];
+                const byte1 = data[i * 2 + 1];
+                const rgb565 = byte0 | (byte1 << 8);
+                
+                let r, g, b;
+
+                switch (format) {
+                    case 'bgr': // b01234_g012345_r01234
+                        b = (rgb565 >> 11) & 0x1F;
+                        g = (rgb565 >> 5) & 0x3F;
+                        r = rgb565 & 0x1F;
+                        break;
+                    case 'rgb': // r01234_g012345_b01234
+                        r = (rgb565 >> 11) & 0x1F;
+                        g = (rgb565 >> 5) & 0x3F;
+                        b = rgb565 & 0x1F;
+                        break;
+                    case 'grb': // g01234_r012345_b01234
+                        g = (rgb565 >> 11) & 0x1F;
+                        r = (rgb565 >> 5) & 0x3F;
+                        b = rgb565 & 0x1F;
+                        break;
+                    case 'brg': // b01234_r012345_g01234
+                        b = (rgb565 >> 11) & 0x1F;
+                        r = (rgb565 >> 5) & 0x3F;
+                        g = rgb565 & 0x1F;
+                        break;
+                    case 'gbr': // g01234_b012345_r01234
+                        g = (rgb565 >> 11) & 0x1F;
+                        b = (rgb565 >> 5) & 0x3F;
+                        r = rgb565 & 0x1F;
+                        break;
+                    case 'rbg': // r01234_b012345_g01234
+                        r = (rgb565 >> 11) & 0x1F;
+                        b = (rgb565 >> 5) & 0x3F;
+                        g = rgb565 & 0x1F;
+                        break;
+                }
+                
+                const r8 = (r << 3) | (r >> 2);
+                const g8 = (g << 2) | (g >> 4);
+                const b8 = (b << 3) | (b >> 2);
+                
+                let finalR = Math.round(b8 * 0.85);
+                let finalG = Math.round(r8 * 0.85);
+                let finalB = Math.round(g8 * 0.85);
+                
+                const idx = i * 4;
+                imageData.data[idx] = finalR;
+                imageData.data[idx + 1] = finalG;
+                imageData.data[idx + 2] = finalB;
+                imageData.data[idx + 3] = 255;
+            }
+            
+            ctx.putImageData(imageData, 0, 0);
+        }
+        
+        async function refreshImage() {
+            // Single-socket guard: block concurrent requests
+            if (requestInProgress) {
+                console.log('Request in progress, skipping');
+                return;
+            }
+
+            requestInProgress = true;
+
+            try {
+                const response = await fetch('/image.raw?t=' + Date.now());
+                const arrayBuffer = await response.arrayBuffer();
+                displayImage(arrayBuffer);
+            } catch (err) {
+                console.error('Image fetch error:', err);
+            } finally {
+                // Cleanup: allow next request after delay for MCU socket teardown
+                requestInProgress = false;
+                // Chain next request after current completes + 100ms delay
+                setTimeout(refreshImage, 5000);
+            }
+        }
+        
+        // Start the sequential polling chain (no setInterval!)
+        window.addEventListener('load', () => {
+            setTimeout(refreshImage, 15000);
+        });
+    </script>
+</body>
+</html>
+"""
+    return html.encode()
+
+def generate_html_404():
+    """path: /404"""
+    html = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n404 Not Found"
+    return html.encode()
+
+
+def handle_json_request(path):
+    """Handle JSON requests - serve JSON status data or handle LED control"""
+    try:
+
+        http_response = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
+        # Handle LED brightness control: /headled/{value}
+        if path.startswith("/headled/"):
+            try:
+                # Extract brightness value from path
+                value_str = path.split("/headled/")[1]
+                brightness = int(value_str)
+
+                # Set LED brightness
+                if set_head_led_brightness(brightness):
+                    response = f'{{"status": "ok", "brightness": {brightness}}}'
+                    http_response = (
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
+                        + response
+                    )
+                else:
+                    response = '{"status": "error", "message": "DAC not available"}'
+                    http_response = (
+                        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
+                        + response
+                    )
+
+            except (ValueError, IndexError):
+                response = '{"status": "error", "message": "Invalid brightness value"}'
+                http_response = (
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
+                    + response
+                )
+
+        # Handle status JSON: /
+        elif path == "/":
+            # Get uptime
+            uptime = get_uptime_seconds()
+
+            # Get MCU temperature
+            mcu_temp = get_mcu_temperature()
+
+            # Read barometer
+            cooling_temp, cooling_press = read_barometer()
+
+            # Read LED temperatures from ADC
+            led_temps = read_all_led_temps()
+
+            # Build JSON response manually
+            json_parts = [f'"headID": {HEAD_ID}', f'"upTime": {uptime}']
+
+            # Add MCU temperature
+            if mcu_temp is not None:
+                json_parts.append(f'"mcuTemp": {mcu_temp}')
+            else:
+                json_parts.append('"mcuTemp": null')
+
+            # Add cooling temperature and pressure
+            if cooling_temp is not None:
+                json_parts.append(f'"cooling_temperature": {cooling_temp}')
+            else:
+                json_parts.append('"cooling_temperature": null')
+
+            if cooling_press is not None:
+                json_parts.append(f'"cooling_pressure": {cooling_press}')
+            else:
+                json_parts.append('"cooling_pressure": null')
+
+            # Add LED temperatures in order (1-6)
+            for i in range(1, 7):
+                key = f"headTemp{i}"
+                value = led_temps.get(key)
+                if value is not None:
+                    json_parts.append(f'"{key}": {value}')
+                else:
+                    json_parts.append(f'"{key}": null')
+
+            json_data = "{" + ", ".join(json_parts) + "}"
+
+            # Send JSON response
+            http_response = (
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
+                + json_data
+            )
+
+        else:
+            # 404 for unknown paths
+            response = '{"status": "error", "message": "Not found"}'
+            http_response = (
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
+                + response
+            )
+        return http_response.encode()
+
+    except Exception as e:
+        print(f"JSON handler error: {e}")
+
+
+# Initial server socket
+s = create_server_socket()
+
+while True:
+    try:
+        debug_print("[DIAG] Top of main loop")
+        gc.collect()
+        debug_print("[DIAG] gc.collect() done")
+        
+        response = generate_html_404()
+        debug_print("[DIAG] About to call s.accept()")
+        debug_print("[MAIN] ====== WAITING FOR CONNECTION ======")
+        cl, addr = s.accept()
+        debug_print("[DIAG] s.accept() returned")
+       
+        request = cl.recv(8192)
+        debug_print(f"[MAIN] recv() returned {len(request)} bytes")
+
+        request_str = request.decode("utf-8")
+        request_lines = request_str.split('\r\n')
+        debug_print(f"[MAIN] Request split into {len(request_lines)} lines")
+
+        request_line = request_lines[0]
+        debug_print(f"[MAIN] First line: {request_line[:50]}...")
+
+        parts = request_line.split()
+        debug_print(f"[MAIN] Split into {len(parts)} parts")
+
+        if len(parts) > 1:
+            method, path = parts[0], parts[1]
+            debug_print(f"[MAIN] Parsed: method={method}, path={path}")
+        else:
+            path = '/'
+            debug_print("[MAIN] Using default path=/")
+
+        debug_print(f"[MAIN] Request path: {path}")
+
+        # Generate response
+        if path.startswith("/json"):
+            debug_print("[MAIN] Handle JSON request")
+            adjusted_path = path[5:] if len(path) > 5 else "/"
+            response = handle_json_request(adjusted_path)
+        elif path.startswith("/poll"):
+            debug_print("[MAIN] Handle camera request")
+            # Serve minimal HTML page with just the camera view
+            response = generate_html_poll()
+        elif path == '/stream':
+            # PYTHON-BASED STREAMING
+            try:
+                header = b"HTTP/1.1 200 OK\r\n"
+                header += b"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+                header += b"Cache-Control: no-cache\r\n"
+                header += b"Connection: keep-alive\r\n"
+                header += b"\r\n"
+                cl.send(header)
+                debug_print("Stream client connected - header sent")
+            except OSError as e:
+                print(f"Failed to send header: {e}")
+                cl.close()
+                continue
+
+            # Streaming loop entirely in Python
+            # Use dict for state (MicroPython nonlocal workaround)
+            state = {'streaming': True, 'frame_count': 0, 'first_frame': True}
+            boundary = b"--frame\r\nContent-Type: application/octet-stream\r\n\r\n"
+            frame_boundary = b"\r\n--frame\r\nContent-Type: application/octet-stream\r\n\r\n"
+            
+            cl.settimeout(5.0)
+            
+            def send_frame_data(frame_data):
+                try:
+                    # Send boundary
+                    if state['first_frame']:
+                        cl.send(boundary)
+                        state['first_frame'] = False
+                    else:
+                        cl.send(frame_boundary)
+                    
+                    # Send frame in chunks (like /image.raw does)
+                    mv = memoryview(frame_data)
+                    total_sent = 0
+                    chunk_size = 16384  # 16KB chunks
+                    
+                    while total_sent < len(frame_data):
+                        end = min(total_sent + chunk_size, len(frame_data))
+                        chunk = mv[total_sent:end]
+                        try:
+                            bytes_sent = cl.send(chunk)
+                            if bytes_sent == 0:
+                                state['streaming'] = False
+                                return
+                            total_sent += bytes_sent
+                        except OSError as e:
+                            debug_print(f"Stream send error: {e}")
+                            state['streaming'] = False
+                            return
+                    
+                    state['frame_count'] += 1
+                    if state['frame_count'] % 30 == 0:
+                        debug_print(f"Streamed {state['frame_count']} frames")
+                        
+                except OSError as e:
+                    debug_print(f"Stream error: {e}")
+                    state['streaming'] = False
+            
+            debug_print("Starting Python-based streaming loop")
+            while state['streaming']:
+                try:
+                    if camera.is_buffer_ready():
+                        camera.send_frame_over_eth(send_frame_data)
+                    #time.sleep_ms(33)  # ~30fps
+                except OSError as e:
+                    debug_print(f"Streaming loop error: {e}")
+                    state['streaming'] = False
+                except KeyboardInterrupt:
+                    state['streaming'] = False
+            
+            debug_print(f"Stream ended after {state['frame_count']} frames")
+            try:
+                cl.close()
+            except:
+                pass
+            # Recreate server socket
+            s.close()
+            time.sleep_ms(100)
+            gc.collect()
+            s = create_server_socket()
+            continue
+        elif path == '/streamc':
+            # C-BASED STREAMING - uses C function to send frame data
+            try:
+                header = b"HTTP/1.1 200 OK\r\n"
+                header += b"Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+                header += b"Cache-Control: no-cache\r\n"
+                header += b"Connection: keep-alive\r\n"
+                header += b"\r\n"
+                cl.send(header)
+                debug_print("Stream client connected - header sent")
+            except OSError as e:
+                print(f"Failed to send header: {e}")
+                cl.close()
+                continue
+
+            # Streaming loop using C function for frame data sending
+            # NOTE: state dict kept for backward compatibility (used in debug print)
+            state = {'streaming': True, 'frame_count': 0, 'first_frame': True}
+            
+            cl.settimeout(5.0)
+            
+            debug_print("Starting C-based streaming loop")
+            # Port to C: the while loop is now in camera.stream_loop_c()
+            # It returns frame_count when stream ends (disconnect or error)
+            frame_count = camera.stream_loop_c(cl)
+            state['frame_count'] = frame_count
+            
+            debug_print(f"Stream ended after {state['frame_count']} frames")
+            try:
+                cl.close()
+            except:
+                pass
+            # Recreate server socket
+            s.close()
+            time.sleep_ms(100)
+            gc.collect()
+            s = create_server_socket()
+            continue
+        elif path.startswith('/streamcudp'):
+            # UDP STREAMING BENCHMARK - sends raw frames via UDP to client
+            # Usage: /streamcudp?frames=100&port=8889
+            # Client must be listening on UDP port to receive frames
+            
+            # Parse query parameters
+            num_frames = 100  # default
+            udp_port = 8889   # default
+            if '?' in path:
+                query = path.split('?')[1]
+                for param in query.split('&'):
+                    if '=' in param:
+                        key, val = param.split('=', 1)
+                        if key == 'frames':
+                            try:
+                                num_frames = int(val)
+                            except:
+                                pass
+                        elif key == 'port':
+                            try:
+                                udp_port = int(val)
+                            except:
+                                pass
+            
+            # Get client IP from accept() - addr is (ip, port) tuple
+            client_ip = addr[0]
+            print(f"UDP stream: {num_frames} frames to {client_ip}:{udp_port}")
+            
+            # Send HTTP response immediately (tells client we're starting)
+            try:
+                header = b"HTTP/1.1 200 OK\r\n"
+                header += b"Content-Type: text/plain\r\n"
+                header += b"Connection: close\r\n"
+                header += f"X-UDP-Target: {client_ip}:{udp_port}\r\n".encode()
+                header += f"X-Frames: {num_frames}\r\n".encode()
+                header += b"\r\n"
+                header += b"STARTING UDP STREAM\n"
+                cl.send(header)
+            except OSError as e:
+                print(f"Failed to send UDP stream header: {e}")
+                cl.close()
+                continue
+            
+            # Close TCP sockets to free up W5500 sockets for UDP
+            # W5500 has limited sockets (8 total)
+            print("Closing TCP sockets to free W5500 socket for UDP...")
+            try:
+                cl.close()
+            except:
+                pass
+            try:
+                s.close()
+            except:
+                pass
+            time.sleep_ms(100)  # Give W5500 time to release sockets
+            
+            # Create UDP socket for streaming
+            # NOTE: W5500 requires binding UDP socket before sendto()
+            print("Creating UDP socket...")
+            udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # Use a different local port (not the same as destination)
+            local_udp_port = 8890
+            print(f"Binding UDP socket to port {local_udp_port}...")
+            udp_sock.bind(('0.0.0.0', local_udp_port))
+            print(f"UDP socket bound to local port {local_udp_port}, sending to {client_ip}:{udp_port}")
+            
+            # Wait for client to be ready to receive UDP
+            # Client needs time to process HTTP response and start listening
+            print("Waiting 5ms for client to be ready...")
+            time.sleep_ms(5)
+            
+            # UDP chunk size - must fit in MTU (1500 - 20 IP - 8 UDP = 1472 max)
+            UDP_CHUNK_SIZE = 1400
+            FRAME_SIZE = 240 * 320 * 2  # 153600 bytes
+            
+            # Use list to avoid nonlocal (MicroPython limitation)
+            # stats[0] = total_bytes, stats[1] = frames_sent
+            stats = [0, 0]
+            start_time = time.ticks_ms()
+            
+            # Callback to send frame data via UDP
+            def send_frame_udp(frame_data):
+                mv = memoryview(frame_data)
+                frame_size = len(frame_data)
+                
+                # Send frame header packet: "F:frame_num:frame_size\n"
+                header_pkt = f"F:{stats[1]}:{frame_size}\n".encode()
+                try:
+                    udp_sock.sendto(header_pkt, (client_ip, udp_port))
+                except OSError as e:
+                    print(f"UDP header sendto error: {e}")
+                    return False
+                
+                # Send frame data in chunks
+                offset = 0
+                chunk_num = 0
+                while offset < frame_size:
+                    end = min(offset + UDP_CHUNK_SIZE, frame_size)
+                    # Packet format: [1 byte chunk_num][data...]
+                    chunk_data = bytes([chunk_num & 0xFF]) + bytes(mv[offset:end])
+                    try:
+                        udp_sock.sendto(chunk_data, (client_ip, udp_port))
+                    except OSError as e:
+                        print(f"UDP chunk {chunk_num} sendto error: {e}")
+                        return False
+                    offset = end
+                    chunk_num += 1
+                
+                stats[0] += frame_size  # total_bytes
+                stats[1] += 1           # frames_sent
+                return True
+            
+            # Stream frames
+            print("UDP: Starting frame loop...")
+            loop_count = 0
+            try:
+                while stats[1] < num_frames:
+                    loop_count += 1
+                    # Debug: print every 10000 iterations
+                    if loop_count % 10000 == 0:
+                        print(f"UDP: loop {loop_count}, is_buffer_ready={camera.is_buffer_ready()}")
+                    
+                    # Wait for new frame (busy-wait like /stream endpoint)
+                    if camera.is_buffer_ready():
+                        print(f"UDP: Frame ready! Sending frame {stats[1]}")
+                        # Send frame via UDP
+                        camera.send_frame_over_eth(send_frame_udp)
+                    
+                        # Progress every 10 frames
+                        if stats[1] % 10 == 0:
+                            elapsed = time.ticks_diff(time.ticks_ms(), start_time)
+                            if elapsed > 0:
+                                mbps = (stats[0] * 8) / (elapsed * 1000)
+                                print(f"UDP: {stats[1]}/{num_frames} frames, {mbps:.2f} Mbps")
+            except Exception as e:
+                print(f"UDP stream error: {e}")
+            
+            # Calculate final stats
+            elapsed_ms = time.ticks_diff(time.ticks_ms(), start_time)
+            if elapsed_ms > 0:
+                mbps = (stats[0] * 8) / (elapsed_ms * 1000)
+            else:
+                mbps = 0
+            
+            # Send end marker via UDP
+            end_pkt = f"END:{stats[1]}:{stats[0]}:{elapsed_ms}:{mbps:.2f}\n".encode()
+            try:
+                udp_sock.sendto(end_pkt, (client_ip, udp_port))
+            except:
+                pass
+            
+            # Send stats back via TCP before closing
+            try:
+                result_msg = f"DONE: {stats[1]} frames, {stats[0]} bytes, {elapsed_ms}ms, {mbps:.2f} Mbps\n"
+                cl.send(result_msg.encode())
+            except:
+                pass
+            
+            print(f"UDP stream complete: {stats[1]} frames, {mbps:.2f} Mbps")
+            
+            # Cleanup
+            udp_sock.close()
+            try:
+                cl.close()
+            except:
+                pass
+            s.close()
+            time.sleep_ms(100)
+            gc.collect()
+            s = create_server_socket()
+            continue
+        elif path.startswith("/image.raw"):
+            debug_print("Serve raw camera image data")
+            if camera.is_buffer_ready():
+                debug_print ("Send HTTP header first")
+                frame_len = 240 * 320 * 2  # Known size
+                header = f"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {frame_len}\r\nConnection: close\r\nKeep-Alive: timeout=0, max=0\r\n\r\n"
+                cl.send(header.encode())
+                debug_print("./image.raw header sent.")
+
+                # Define callback to send frame data in chunks
+                def send_callback(frame_data):
+                    # Optimized transfer - use larger chunks for efficiency
+                    chunk_size = 153600 # 8192  # 8KB chunks for maximum throughput
+                    total_sent = 0
+                    mv = memoryview(frame_data)
+
+                    # Set a reasonable timeout for the transfer
+                    cl.settimeout(10.0)
+
+                    while total_sent < len(frame_data):
+                        end = min(total_sent + chunk_size, len(frame_data))
+                        chunk = mv[total_sent:end]
+                        try:
+                            bytes_sent = cl.send(chunk)
+                            if bytes_sent == 0:
+                                break
+                            total_sent += bytes_sent
+
+                            # Feed watchdog during long image transfer
+                            #if total_sent % (chunk_size * 4) == 0:  # Every ~32KB
+                                #wdt.feed()
+                        except OSError as e:
+                            print(f"Socket error: {e}")
+                            break
+
+                debug_print("[MAIN] New server socket ready2")
+                debug_print("just before camera.send_frame_over_eth")
+                # Send frame using the new callback mechanism
+                camera.send_frame_over_eth(send_callback)
+                debug_print("[MAIN] Closing server socket and creating new one2. ..")
+                s.close()
+                time.sleep_ms(100)  # Give W5500 time to fully close
+                gc.collect()  # Free memory from old socket
+                s = create_server_socket()
+                continue  # Skip to next iteration - don't fall through to cl.send()
+        elif path == "/": # default
+            debug_print("[MAIN] / html stream python version")
+            response = generate_html_root("/stream")
+        elif path == "/py":
+            debug_print("[MAIN] / html stream py version")
+            response = generate_html_root("/stream")
+        elif path == "/c":
+            debug_print("[MAIN] / html stream c version")
+            response = generate_html_root("/streamc")
+        else:
+            # 404 for unknown paths
+            debug_print("[MAIN] Calling generate_html_404()")
+            response = generate_html_404()
+        
+        response_start = time.ticks_ms()
+        response_time = time.ticks_diff(time.ticks_ms(), response_start)
+            
+            
+        debug_print(f"Response generation time: {response_time}ms")
+        debug_print("[MAIN] cl.send() is about to be executed , sendwithdma ")
+        cl.send(response)
+
+        debug_print("[MAIN] Calling cl.close()")
+        cl.close()
+        debug_print("[MAIN] close() returned successfully")
+
+        # CRITICAL: Close the server socket and create a new one
+        # The C driver no longer auto-re-listens, so Python must handle this
+        debug_print("[MAIN] Closing server socket and creating new one. ..")
+        s.close()
+        time.sleep_ms(100)  # Give W5500 time to fully close
+        gc.collect()  # Free memory from old socket
+        s = create_server_socket()
+        debug_print("[MAIN] New server socket ready")
+        del response
+
+    except Exception as e:
+        print(f"[DIAG] Exception caught: {e}")
+        print(f"[DIAG] Exception type: {type(e)}")
+        if hasattr(e, 'errno'):
+            print(f"[DIAG] Exception errno: {e.errno}")
+        print("Error:", e)
+        # Try to recover by creating a new server socket
+        try:
+            print("[DIAG] Exception handler: calling s.close()")
+            s.close()
+            print("[DIAG] Exception handler: s.close() done")
+        except Exception as e2:
+            print(f"[DIAG] Exception handler: s.close() failed: {e2}")
+            pass
+        time.sleep_ms(500)
+        gc.collect()
+        print("[DIAG] Exception handler: calling create_server_socket()")
+        s = create_server_socket()
+        print("[DIAG] Exception handler: create_server_socket() done")
+
+
+cat modules/camera/modcamera.c
+#include "cam.h"
+#include <string.h>  // for memset
+#include "ov5640.h"
+#include "py/obj.h"
+#include "py/runtime.h"
+#include "py/stream.h"
+
+extern uint8_t *cam_ptr;
+
+// Wrapper for init_cam()
+static mp_obj_t camera_init_cam() {
+    init_cam();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_init_cam_obj, camera_init_cam);
+
+
+static mp_obj_t camera_frame(void) {
+    return mp_obj_new_bytearray_by_ref(CAM_FUL_SIZE * 2, cam_ptr);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_frame_obj, camera_frame);
+
+
+static mp_obj_t camera_set_i2c_pins(mp_obj_t sda_obj, mp_obj_t scl_obj) {
+    set_i2c_pins(mp_obj_get_int(sda_obj), mp_obj_get_int(scl_obj));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(camera_set_i2c_pins_obj, camera_set_i2c_pins);
+
+static mp_obj_t camera_set_pwm_pin(mp_obj_t pwm_obj) {
+    set_pwm_pin(mp_obj_get_int(pwm_obj));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_pwm_pin_obj, camera_set_pwm_pin);
+
+
+// Wrapper for start_cam()
+static mp_obj_t camera_start_cam() {
+    start_cam();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_start_cam_obj, camera_start_cam);
+
+static mp_obj_t cam_is_buffer_ready(void) {
+    return mp_obj_new_bool(buffer_ready);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(cam_is_buffer_ready_obj, cam_is_buffer_ready);
+
+static mp_obj_t camera_send_frame_over_eth(mp_obj_t callback) {
+    if (!buffer_ready) {
+        return mp_const_none;
+    }
+    mp_call_function_1(callback, mp_obj_new_bytearray_by_ref(CAM_FUL_SIZE * 2, cam_ptr));
+    buffer_ready = false;
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_send_frame_over_eth_obj, camera_send_frame_over_eth);
+
+// Wrapper for ov5640_set_data_order()
+static mp_obj_t camera_set_data_order(mp_obj_t reverse_obj) {
+    ov5640_set_data_order(mp_obj_is_true(reverse_obj));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_data_order_obj, camera_set_data_order);
+
+// Python wrapper for cam_set_data_pins
+static mp_obj_t camera_set_data_pins(mp_obj_t pins_in) {
+    size_t len;
+    mp_obj_t *items;
+    mp_obj_get_array(pins_in, &len, &items);
+    if (len != 8) {
+        mp_raise_ValueError(MP_ERROR_TEXT("set_data_pins requires a list of 8 pins"));
+    }
+    for (size_t i = 0; i < 8; ++i) {
+        g_cam_pinmap.d[i] = mp_obj_get_int(items[i]);
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_data_pins_obj, camera_set_data_pins);
+
+// Python wrapper for cam_set_control_pins (3 positional arguments: vsync, href, pclk)
+static mp_obj_t camera_set_control_pins(mp_obj_t vsync, mp_obj_t href, mp_obj_t pclk) {
+    g_cam_pinmap.vsync = mp_obj_get_int(vsync);
+    g_cam_pinmap.href  = mp_obj_get_int(href);
+    g_cam_pinmap.pclk  = mp_obj_get_int(pclk);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(camera_set_control_pins_obj, camera_set_control_pins);
+
+// Python wrapper for cam_set_xclk_pin (1 positional argument: xclk)
+static mp_obj_t camera_set_xclk_pin(mp_obj_t xclk) {
+    g_cam_pinmap.xclk = mp_obj_get_int(xclk);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_xclk_pin_obj, camera_set_xclk_pin);
+
+// Boundary headers for MJPEG streaming (matches Python version in /streamc)
+static const char boundary_first[] = "--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
+static const char boundary_subsequent[] = "\r\n--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
+
+// Send frame data directly to socket from C (ported from Python send_frame_data)
+// Args: socket object, is_first_frame (bool)
+// Returns: True on success, False on failure
+static mp_obj_t camera_send_frame_data_c(mp_obj_t socket_obj, mp_obj_t first_frame_obj) {
+    if (!buffer_ready) {
+        return mp_const_false;
+    }
+
+    int errcode;
+    bool is_first_frame = mp_obj_is_true(first_frame_obj);
+
+    // Send boundary header
+    const char *boundary;
+    size_t boundary_len;
+    if (is_first_frame) {
+        boundary = boundary_first;
+        boundary_len = sizeof(boundary_first) - 1;  // -1 for null terminator
+    } else {
+        boundary = boundary_subsequent;
+        boundary_len = sizeof(boundary_subsequent) - 1;
+    }
+
+    // Use mp_stream_write_exactly which returns bytes written (MP_STREAM_ERROR on error)
+    mp_uint_t ret = mp_stream_write_exactly(socket_obj, boundary, boundary_len, &errcode);
+    if (ret == MP_STREAM_ERROR) {
+        return mp_const_false;
+    }
+
+    // Send frame data in chunks (16KB each, like Python version)
+    const size_t chunk_size = 16384;
+    const size_t frame_size = CAM_FUL_SIZE * 2;
+    size_t total_sent = 0;
+
+    while (total_sent < frame_size) {
+        size_t to_send = frame_size - total_sent;
+        if (to_send > chunk_size) {
+            to_send = chunk_size;
+        }
+
+        ret = mp_stream_write_exactly(socket_obj, cam_ptr + total_sent, to_send, &errcode);
+        if (ret == MP_STREAM_ERROR || ret == 0) {
+            return mp_const_false;
+        }
+
+        total_sent += ret;
+    }
+
+    buffer_ready = false;
+    return mp_const_true;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(camera_send_frame_data_c_obj, camera_send_frame_data_c);
+
+// Stream loop in C (ported from Python /streamc while loop lines 1219-1236)
+// Args: socket object
+// Returns: frame count when stream ends (disconnect, error, or KeyboardInterrupt)
+static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
+    bool streaming = true;
+    bool first_frame = true;
+    uint32_t frame_count = 0;
+    int errcode;
+
+    while (streaming) {
+        // Handle pending signals (KeyboardInterrupt)
+        // This will raise MP_OBJ_STOP_ITERATION or similar on Ctrl+C
+        mp_handle_pending(true);
+
+        if (buffer_ready) {
+            // Send boundary header
+            const char *boundary;
+            size_t boundary_len;
+            if (first_frame) {
+                boundary = boundary_first;
+                boundary_len = sizeof(boundary_first) - 1;  // -1 for null terminator
+            } else {
+                boundary = boundary_subsequent;
+                boundary_len = sizeof(boundary_subsequent) - 1;
+            }
+
+            mp_uint_t ret = mp_stream_write_exactly(socket_obj, boundary, boundary_len, &errcode);
+            if (ret == MP_STREAM_ERROR) {
+                streaming = false;
+                break;
+            }
+
+            // Send frame data in chunks (16KB each, like Python version)
+            const size_t chunk_size = 16384;
+            const size_t frame_size = CAM_FUL_SIZE * 2;
+            size_t total_sent = 0;
+
+            while (total_sent < frame_size) {
+                size_t to_send = frame_size - total_sent;
+                if (to_send > chunk_size) {
+                    to_send = chunk_size;
+                }
+
+                ret = mp_stream_write_exactly(socket_obj, cam_ptr + total_sent, to_send, &errcode);
+                if (ret == MP_STREAM_ERROR || ret == 0) {
+                    streaming = false;
+                    break;
+                }
+
+                total_sent += ret;
+            }
+
+            if (!streaming) break;
+
+            buffer_ready = false;
+            first_frame = false;
+            frame_count++;
+        }
+    }
+
+    return mp_obj_new_int(frame_count);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_stream_loop_c_obj, camera_stream_loop_c);
+
+
+// Define module globals
+static const mp_rom_map_elem_t camera_module_globals_table[] = {
+    { MP_ROM_QSTR(MP_QSTR_init_cam), MP_ROM_PTR(&camera_init_cam_obj) },
+    { MP_ROM_QSTR(MP_QSTR_frame), MP_ROM_PTR(&camera_frame_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_i2c_pins), MP_ROM_PTR(&camera_set_i2c_pins_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_pwm_pin), MP_ROM_PTR(&camera_set_pwm_pin_obj) },
+    { MP_ROM_QSTR(MP_QSTR_start_cam), MP_ROM_PTR(&camera_start_cam_obj) },
+    { MP_ROM_QSTR(MP_QSTR_is_buffer_ready), MP_ROM_PTR(&cam_is_buffer_ready_obj) },
+    { MP_ROM_QSTR(MP_QSTR_send_frame_over_eth), MP_ROM_PTR(&camera_send_frame_over_eth_obj) },
+    { MP_ROM_QSTR(MP_QSTR_send_frame_data_c), MP_ROM_PTR(&camera_send_frame_data_c_obj) },
+    { MP_ROM_QSTR(MP_QSTR_stream_loop_c), MP_ROM_PTR(&camera_stream_loop_c_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_data_order), MP_ROM_PTR(&camera_set_data_order_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_data_pins), MP_ROM_PTR(&camera_set_data_pins_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_control_pins), MP_ROM_PTR(&camera_set_control_pins_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_xclk_pin), MP_ROM_PTR(&camera_set_xclk_pin_obj) },
+};
+static MP_DEFINE_CONST_DICT(camera_module_globals, camera_module_globals_table);
+
+// Define module
+const mp_obj_module_t camera_module = {
+    .base = { &mp_type_module },
+    .globals = (mp_obj_dict_t*)&camera_module_globals,
+};
+
+// Register the module to make it available in Python
+MP_REGISTER_MODULE(MP_QSTR_camera, camera_module);
+cat modules/camera/cam.c
+/*****************************************************************************
+* | File      	:   cam.c
+* | Author      :   Waveshare team
+* | Function    :   CAM function interface
+* | Info        :
+*----------------
+* |	This version:   V1.0
+* | Date        :   2025-03-13
+* | Info        :   
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documnetation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of theex Software, and to permit persons to  whom the Software is
+# furished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS OR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+******************************************************************************/
+
+#include "hardware/dma.h"
+#include "hardware/irq.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "cam.h"
+#include "py/mpprint.h"
+#include "picampinos.pio.h"
+#include "ov5640.h"
+
+#include <stdint.h>
+#include <stdbool.h>
+
+// init PIO
+static PIO pio_cam = pio0;
+
+// statemachine's pointer
+static uint32_t sm_cam; // CAMERA's state machines
+
+// dma channels
+static uint32_t DMA_CAM_RD_CH;
+
+static uint8_t cam_buffer[CAM_FUL_SIZE * 2];
+uint8_t *cam_ptr = cam_buffer;
+
+
+uint8_t pin_i2c1_sda = 22; // default on RP2350 touch 2in
+uint8_t pin_i2c1_scl = 23; // default on RP2350 touch 2in
+uint8_t pin_xclk_pwm = 11; // GPIO11 (camera's xclk(24MHz))
+
+
+// flag
+volatile bool buffer_ready = false;
+
+
+
+
+
+
+void set_i2c_pins(uint8_t sda, uint8_t scl) {
+    pin_i2c1_sda = sda;
+    pin_i2c1_scl = scl;
+}
+
+void set_pwm_pin(uint8_t pwm) {
+    pin_xclk_pwm = pwm;
+}
+/********************************************************************************
+function:   Camera initialization
+parameter:
+********************************************************************************/
+void init_cam()
+{
+
+    mp_printf(MP_PYTHON_PRINTER, "initialize CAMERA\n");
+    mp_printf(MP_PYTHON_PRINTER, "set camera XCLK (pwm) pin: %d\n", pin_xclk_pwm);
+    mp_printf(MP_PYTHON_PRINTER, "call set_pwm_freq_kHz(pwm) before init_cam() to change it\n");
+    set_pwm_freq_kHz(37000, pin_xclk_pwm); // XCLK
+    sleep_ms(50);
+    mp_printf(MP_PYTHON_PRINTER, "set camera I2C pins: SDA: %d, SCL: %d\n", (int)pin_i2c1_sda, (int)pin_i2c1_scl);
+    mp_printf(MP_PYTHON_PRINTER, "call set_i2c_pins(sda,scl) before init_cam() to change it\n");
+
+    sccb_init(pin_i2c1_sda, pin_i2c1_scl); // sda,scl=(gp26,gp27). see 'sccb_if.c' and 'cam.h'
+    sleep_ms(50);
+
+}
+
+
+
+void setup_dma_for_capture()
+{
+    // init DMA
+    DMA_CAM_RD_CH = dma_claim_unused_channel(true);
+    mp_printf(MP_PYTHON_PRINTER, "setup_dma_for_capture()->DMA_CH= %d\n", (int)DMA_CAM_RD_CH);
+    
+    // Disable IRQ
+    irq_set_enabled(DMA_IRQ_0, false);
+
+     // Configure DMA Channel 0
+    dma_channel_config c0 = get_cam_config(pio_cam, sm_cam, DMA_CAM_RD_CH);
+    
+    channel_config_set_transfer_data_size(&c0, DMA_SIZE_16);
+    
+    dma_channel_configure(DMA_CAM_RD_CH, &c0,
+                          cam_ptr,               // Destination pointer
+                          &pio_cam->rxf[sm_cam], // Source pointer
+                          sizeof(cam_buffer) / 2,          // Number of transfers
+                          false                  // Don't Start yet
+    );
+    
+    // IRQ settings
+    dma_channel_set_irq0_enabled(DMA_CAM_RD_CH, true);
+    
+    //irq_set_exclusive_handler(DMA_IRQ_0, cam_handler); //NOT WORKING, micropython has IRQ already!
+    irq_add_shared_handler(DMA_IRQ_0, cam_handler, PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
+    mp_printf(MP_PYTHON_PRINTER, "irq_add_shared_handler: cam_handler\n");
+    
+    irq_set_enabled(DMA_IRQ_0, true);
+    dma_channel_start(DMA_CAM_RD_CH); // Start DMA transfer
+}
+
+/********************************************************************************
+function:   DMA interrupt processing function
+parameter:
+********************************************************************************/
+void cam_handler(void)
+{
+    buffer_ready = true;
+    dma_hw->ints0 = 1u << DMA_CAM_RD_CH;  // clear the interrupt flag
+    
+    dma_channel_set_write_addr(DMA_CAM_RD_CH, cam_ptr, true);
+}
+
+
+
+// BIG HEAD
+// D0    GPIO 0
+// D1    GPIO 1
+// D2    GPIO 2
+// D3    GPIO 3
+// D4    GPIO 4
+// D5    GPIO 5
+// D6    GPIO 6
+// D7    GPIO 7
+// VSYNC GPIO 8
+// HREF  GPIO 9
+// PCLK  GPIO 10
+// XCLK  GPIO 11
+// PWDN  GPIO 14
+// SDA   GPIO 22
+// SCL   GPIO 23
+
+
+
+// Global pinmap instance, initialized to default (old hardware)
+cam_pinmap_t g_cam_pinmap = {
+    .d = {0, 1, 2, 3, 4, 5, 6, 7},
+    .vsync = 8,
+    .href = 9,
+    .pclk = 10,
+    .xclk = 11
+};
+
+void cam_set_pinmap(uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3, uint8_t d4, uint8_t d5, uint8_t d6, uint8_t d7, uint8_t vsync, uint8_t href, uint8_t pclk, uint8_t xclk) {
+    g_cam_pinmap.d[0] = d0;
+    g_cam_pinmap.d[1] = d1;
+    g_cam_pinmap.d[2] = d2;
+    g_cam_pinmap.d[3] = d3;
+    g_cam_pinmap.d[4] = d4;
+    g_cam_pinmap.d[5] = d5;
+    g_cam_pinmap.d[6] = d6;
+    g_cam_pinmap.d[7] = d7;
+    g_cam_pinmap.vsync = vsync;
+    g_cam_pinmap.href = href;
+    g_cam_pinmap.pclk = pclk;
+    g_cam_pinmap.xclk = xclk;
+}
+
+/********************************************************************************
+function:   Start the camera
+parameter:
+********************************************************************************/
+void start_cam()
+{
+    // Use the lowest data pin as the base for PIO, and 8 pins for D0-D7
+    uint32_t cam_base_pin = g_cam_pinmap.d[0];
+    uint32_t cam_num_pins = 11;
+    uint32_t offset_cam = pio_add_program(pio_cam, &picampinos_program);
+    picampinos_program_init(pio_cam, sm_cam, offset_cam, cam_base_pin, cam_num_pins);
+    // Enable the state machine and clear the FIFO
+    pio_sm_set_enabled(pio_cam, sm_cam, false);
+    pio_sm_clear_fifos(pio_cam, sm_cam);
+    pio_sm_restart(pio_cam, sm_cam);
+    pio_sm_set_enabled(pio_cam, sm_cam, true);
+
+    // Setting the X and Y registers
+    pio_sm_put_blocking(pio_cam, sm_cam, 0);                  // X=0 : reserved
+    pio_sm_put_blocking(pio_cam, sm_cam, (CAM_FUL_SIZE - 1)); // Y: total words in an image
+    mp_printf(MP_PYTHON_PRINTER, "start_cam finished, camera started\n");
+    setup_dma_for_capture();
+}
+
+/********************************************************************************
+function:   Reading camera data
+parameter:
+********************************************************************************/
+void read_cam_data_blocking(uint8_t *buffer, size_t length)
+{
+    size_t index = 0;
+    while (index < length)
+    {
+        if (!pio_sm_is_rx_fifo_empty(pio_cam, sm_cam))
+        {
+            uint16_t dat = pio_sm_get(pio_cam, sm_cam);
+            buffer[index++] = (dat >> 8) & 0xFF;
+            buffer[index++] = dat & 0xFF;
+        }
+        else
+        {
+            tight_loop_contents(); // wait for data
+        }
+    }
+}
+
+/********************************************************************************
+function:   Release the camera
+parameter:
+********************************************************************************/
+void free_cam()
+{
+    // Disable IRQ settings
+    irq_set_enabled(DMA_IRQ_0, false);
+    dma_channel_set_irq0_enabled(DMA_CAM_RD_CH, false);
+    dma_channel_abort(DMA_CAM_RD_CH);
+}
+
+/********************************************************************************
+function:   Camera dma config
+parameter:
+********************************************************************************/
+dma_channel_config get_cam_config(PIO pio, uint32_t sm, uint32_t dma_chan)
+{
+    dma_channel_config c = dma_channel_get_default_config(dma_chan);
+    channel_config_set_read_increment(&c, false);
+    channel_config_set_write_increment(&c, true);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
+    channel_config_set_dreq(&c, pio_get_dreq(pio, sm, false));
+    return c;
+}
+
+/********************************************************************************
+function:   Configure PWM to provide clock for the camera
+parameter:
+********************************************************************************/
+void set_pwm_freq_kHz(uint32_t freq_khz, uint8_t gpio_num)
+{
+    uint32_t pwm0_slice_num;
+    uint32_t period;
+    static pwm_config pwm_slice_config;
+    uint32_t system_clk_khz = clock_get_hz(clk_sys) / 1000;
+    period = system_clk_khz / freq_khz - 1;
+    if (period < 1)
+        period = 1;
+
+    gpio_set_function(gpio_num, GPIO_FUNC_PWM);
+    pwm0_slice_num = pwm_gpio_to_slice_num(gpio_num);
+
+    // config
+    pwm_slice_config = pwm_get_default_config();
+    pwm_config_set_wrap(&pwm_slice_config, period);
+
+    // set clk div
+    pwm_config_set_clkdiv(&pwm_slice_config, 1);
+
+    // set PWM start
+    pwm_init(pwm0_slice_num, &pwm_slice_config, true);
+    pwm_set_gpio_level(gpio_num, (pwm_slice_config.top * 0.50)); // duty:50%
+}
+
+cat modules/camera/ov5640.c
+/*****************************************************************************
+* | File      	:   ov5640.c
+* | Author      :   Waveshare team
+* | Function    :   OV5640 configuration function interface
+* | Info        :
+*----------------
+* |	This version:   V1.0
+* | Date        :   2025-03-13
+* | Info        :   
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documnetation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of theex Software, and to permit persons to  whom the Software is
+# furished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS OR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+******************************************************************************/
+#include <stdio.h>
+#include "pico/stdlib.h"
+#include "ov5640.h"
+
+// Define the default register settings for the OV5640 sensor
+const uint16_t sensor_default_regs[][2] = {
+    {SYSTEM_CTROL0, 0x82},  // software reset
+    {0XFFFF, 10}, // delay 10ms
+    {SYSTEM_CTROL0, 0x42},  // power down
+
+    //enable pll
+    {0x3103, 0x13},
+
+    //io direction
+    {0x3017, 0xff},
+    {0x3018, 0xff},
+
+    {DRIVE_CAPABILITY, 0xc3},
+    {CLOCK_POL_CONTROL, 0x21},
+
+    {0x4713, 0x02},//jpg mode select
+
+    {ISP_CONTROL_01, 0x83}, // turn color matrix, awb and SDE
+
+    //sys reset
+    {0x3000, 0x20}, // reset MCU
+    {0XFFFF, 10}, // delay 10ms
+    {0x3002, 0x1c},
+
+    //clock enable
+    {0x3004, 0xff},
+    {0x3006, 0xc3},
+
+    //isp control
+    {0x5000, 0xa7},
+    {ISP_CONTROL_01, 0xa3},//+scaling?
+    {0x5003, 0x08},//special_effect
+
+    //unknown
+    {0x370c, 0x02},//!!IMPORTANT
+    {0x3634, 0x40},//!!IMPORTANT
+
+    //AEC/AGC
+    {0x3a02, 0x03},
+    {0x3a03, 0xd8},
+    {0x3a08, 0x01},
+    {0x3a09, 0x27},
+    {0x3a0a, 0x00},
+    {0x3a0b, 0xf6},
+    {0x3a0d, 0x04},
+    {0x3a0e, 0x03},
+    {0x3a0f, 0x30},//ae_level
+    {0x3a10, 0x28},//ae_level
+    {0x3a11, 0x60},//ae_level
+    {0x3a13, 0x43},
+    {0x3a14, 0x03},
+    {0x3a15, 0xd8},
+    {0x3a18, 0x00},//gainceiling
+    {0x3a19, 0xf8},//gainceiling
+    {0x3a1b, 0x30},//ae_level
+    {0x3a1e, 0x26},//ae_level
+    {0x3a1f, 0x14},//ae_level
+
+    //vcm debug
+    {0x3600, 0x08},
+    {0x3601, 0x33},
+
+    //50/60Hz
+    {0x3c01, 0xa4},
+    {0x3c04, 0x28},
+    {0x3c05, 0x98},
+    {0x3c06, 0x00},
+    {0x3c07, 0x08},
+    {0x3c08, 0x00},
+    {0x3c09, 0x1c},
+    {0x3c0a, 0x9c},
+    {0x3c0b, 0x40},
+
+    {0x460c, 0x22},//disable jpeg footer
+
+    //BLC
+    {0x4001, 0x02},
+    {0x4004, 0x02},
+
+    //AWB
+    {0x5180, 0xff},
+    {0x5181, 0xf2},
+    {0x5182, 0x00},
+    {0x5183, 0x14},
+    {0x5184, 0x25},
+    {0x5185, 0x24},
+    {0x5186, 0x09},
+    {0x5187, 0x09},
+    {0x5188, 0x09},
+    {0x5189, 0x75},
+    {0x518a, 0x54},
+    {0x518b, 0xe0},
+    {0x518c, 0xb2},
+    {0x518d, 0x42},
+    {0x518e, 0x3d},
+    {0x518f, 0x56},
+    {0x5190, 0x46},
+    {0x5191, 0xf8},
+    {0x5192, 0x04},
+    {0x5193, 0x70},
+    {0x5194, 0xf0},
+    {0x5195, 0xf0},
+    {0x5196, 0x03},
+    {0x5197, 0x01},
+    {0x5198, 0x04},
+    {0x5199, 0x12},
+    {0x519a, 0x04},
+    {0x519b, 0x00},
+    {0x519c, 0x06},
+    {0x519d, 0x82},
+    {0x519e, 0x38},
+
+    //color matrix (Saturation)
+    {0x5381, 0x1e},
+    {0x5382, 0x5b},
+    {0x5383, 0x08},
+    {0x5384, 0x0a},
+    {0x5385, 0x7e},
+    {0x5386, 0x88},
+    {0x5387, 0x7c},
+    {0x5388, 0x6c},
+    {0x5389, 0x10},
+    {0x538a, 0x01},
+    {0x538b, 0x98},
+
+    //CIP control (Sharpness)
+    {0x5300, 0x10},//sharpness
+    {0x5301, 0x10},//sharpness
+    {0x5302, 0x18},//sharpness
+    {0x5303, 0x19},//sharpness
+    {0x5304, 0x10},
+    {0x5305, 0x10},
+    {0x5306, 0x08},//denoise
+    {0x5307, 0x16},
+    {0x5308, 0x40},
+    {0x5309, 0x10},//sharpness
+    {0x530a, 0x10},//sharpness
+    {0x530b, 0x04},//sharpness
+    {0x530c, 0x06},//sharpness
+
+    //GAMMA
+    {0x5480, 0x01},
+    {0x5481, 0x00},
+    {0x5482, 0x1e},
+    {0x5483, 0x3b},
+    {0x5484, 0x58},
+    {0x5485, 0x66},
+    {0x5486, 0x71},
+    {0x5487, 0x7d},
+    {0x5488, 0x83},
+    {0x5489, 0x8f},
+    {0x548a, 0x98},
+    {0x548b, 0xa6},
+    {0x548c, 0xb8},
+    {0x548d, 0xca},
+    {0x548e, 0xd7},
+    {0x548f, 0xe3},
+    {0x5490, 0x1d},
+
+    //Special Digital Effects (SDE) (UV adjust)
+    {0x5580, 0x04},//enable brightness and contrast
+    {0x5583, 0x40},//special_effect
+    {0x5584, 0x10},//special_effect
+    {0x5586, 0x20},//contrast
+    {0x5587, 0x00},//brightness
+    {0x5588, 0x01},//brightness
+    {0x5589, 0x10},
+    {0x558a, 0x00},
+    {0x558b, 0xf8},
+    {0x501d, 0x40},// enable manual offset of contrast
+
+    //power on
+    {0x3008, 0x02},
+
+    //50Hz
+    {0x3c00, 0x04},
+    
+    {0XFFFF, 300},
+    {0x0000, 0x00}, // tail
+};
+
+// Static variables to hold I2C instance and camera address after sccb_init
+static i2c_inst_t *ov5640_i2c = NULL;
+static uint8_t ov5640_cam_addr = 0x3c;
+
+/********************************************************************************
+ * Function Definitions
+ */
+/********************************************************************************
+function:   Camera register initialization
+parameter:
+********************************************************************************/
+void sccb_init(const uint32_t sda_pin, const uint32_t scl_pin)
+{
+    ov5640_cam_addr = 0x3c; // default: OV5640
+    ov5640_i2c = i2c1;
+
+    // Initialize I2C port at 100 kHz
+    i2c_init(ov5640_i2c, 100 * 1000);
+
+    // Initialize I2C pins
+    gpio_set_function(sda_pin, GPIO_FUNC_I2C);
+    gpio_set_function(scl_pin, GPIO_FUNC_I2C);
+    gpio_pull_up(sda_pin);
+    gpio_pull_up(scl_pin);
+
+    uint16_t reg;
+    reg=OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0X300A);
+	reg<<=8;
+	reg|=OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0X300B);
+    printf("ID: %d \r\n",reg);
+
+    for(uint16_t i=0; i<sizeof(sensor_default_regs)/4; i++)
+	{
+		OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,sensor_default_regs[i][0],sensor_default_regs[i][1]);
+	} 
+    sleep_ms(50);
+
+    // set_size_and_colorspace 320x240
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_ST_H,352,26);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_END_H,1792,1946);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_OUTPUT_SIZE_H,240,320); //1440 1920
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_TOTAL_SIZE_H,2592,1944);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_OFFSET_H,16,14);
+
+    uint8_t dat;
+    dat = OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0x5001) | 0x20;
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x5001, dat);
+    sleep_ms(50);
+
+    // set_image_options
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,TIMING_TC_REG20, 0x01);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,TIMING_TC_REG21, 0X00);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x4514, 0xAA);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x4520, 0x0B);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,X_INCREMENT, 0x31);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,Y_INCREMENT, 0x31);
+    sleep_ms(50);
+
+    // set_pll
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_5, 0x00);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_0, 0x1A); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_1, 0x11); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_2, 11 & 0xFF); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_3, 0x01); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SYSTEM_ROOT_DIVIDER, 0x16); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,PCLK_RATIO, 0x04); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,VFIFO_CTRL0C, 0x22);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SCCB_SYSTEM_CTRL1, 0x13);
+    sleep_ms(50);
+
+    // set_colorspace
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,FORMAT_CTRL,0x01);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,FORMAT_CTRL00,0x61);
+    sleep_ms(50);
+}
+
+/**
+ * @brief Set the OV5640 DATA ORDER register (0x4745)
+ *        Must be called after sccb_init().
+ * @param reverse: true for reverse output data bit order, false for normal
+ */
+void ov5640_set_data_order(bool reverse) {
+    if (!ov5640_i2c) return; // Not initialized
+    uint8_t val = OV5640_RD_Reg(ov5640_i2c, ov5640_cam_addr, OV5640_REG_DATA_ORDER);
+    if (reverse) {
+        val |= 0x01; // Set bit 0 for reverse
+    } else {
+        val &= ~0x01; // Clear bit 0 for normal
+    }
+    OV5640_WR_Reg(ov5640_i2c, ov5640_cam_addr, OV5640_REG_DATA_ORDER, val);
+}
+
+/********************************************************************************
+function:   Read 1 byte from the specified register
+parameter:
+********************************************************************************/
+uint8_t OV5640_RD_Reg(i2c_inst_t *i2c,
+                  const uint8_t addr,
+                  uint16_t reg)
+{
+    uint8_t val = 0;
+    uint8_t reg_high = reg >> 8;
+    uint8_t reg_low = reg & 0xFF;
+
+    uint8_t reg_data[2] = {reg_high, reg_low};
+    i2c_write_blocking(i2c, addr, reg_data, 2, true);
+    i2c_read_blocking(i2c, addr, &val, 1, false);  
+    return val;
+}
+
+/********************************************************************************
+function:   Write 1 byte to the specified register
+parameter:
+********************************************************************************/
+uint8_t OV5640_WR_Reg(i2c_inst_t *i2c,
+                  const uint8_t addr,
+                  uint16_t reg,
+                  uint8_t data)
+{
+    uint8_t msg[3];
+    msg[0] = reg >> 8;
+    msg[1] = reg & 0xFF;
+    msg[2] = data;
+
+    uint8_t ret=0;
+    ret = i2c_write_blocking(i2c, addr, msg, 3, false);
+    (void)ret;
+    return ret;
+}
+
+/********************************************************************************
+function:   Write 4 byte to the specified register
+parameter:
+********************************************************************************/
+void OV5640_WR_Reg_2(i2c_inst_t *i2c,
+                  const uint8_t addr,
+                  uint16_t reg,
+                  uint16_t data1,
+                  uint16_t data2)
+{
+    uint8_t msg[3];
+    msg[0] = reg >> 8;
+    msg[1] = reg & 0xFF;
+    msg[2] = data1 >> 8;
+    uint8_t ret=0;
+    ret = i2c_write_blocking(i2c, addr, msg, 3, false);
+
+    reg+=1;
+    msg[0] = reg >> 8;
+    msg[1] = reg & 0xFF;
+    msg[2] = data1 & 0xFF;
+    ret = i2c_write_blocking(i2c, addr, msg, 3, false);
+
+    reg+=1;
+    msg[0] = reg >> 8;
+    msg[1] = reg & 0xFF;
+    msg[2] = data2 >> 8;
+    ret=i2c_write_blocking(i2c, addr, msg, 3, false);
+
+    reg+=1;
+    msg[0] = reg >> 8;
+    msg[1] = reg & 0xFF;
+    msg[2] = data2 & 0xFF;
+    ret = i2c_write_blocking(i2c, addr, msg, 3, false);
+
+    (void)ret;
+}
+cat modules/camera-colorgood/modcamera.c
+#include "cam.h"
+#include <string.h>  // for memset
+#include "ov5640.h"
+#include "py/obj.h"
+#include "py/runtime.h"
+
+// Double buffer pointers from cam.c
+extern uint8_t *cam_python_read_buf;
+
+// Wrapper for init_cam()
+static mp_obj_t camera_init_cam() {
+    init_cam();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_init_cam_obj, camera_init_cam);
+
+// Wrapper for init_cam_with_registers() - accepts list of (reg, value) tuples
+static mp_obj_t camera_init_cam_with_registers(mp_obj_t regs_list) {
+    size_t len;
+    mp_obj_t *items;
+    mp_obj_get_array(regs_list, &len, &items);
+    
+    if (len == 0 || len > 32) {
+        mp_raise_ValueError(MP_ERROR_TEXT("Register list must have 1-32 entries"));
+    }
+    
+    uint16_t custom_regs[32][2];
+    
+    for (size_t i = 0; i < len; i++) {
+        size_t pair_len;
+        mp_obj_t *pair_items;
+        mp_obj_get_array(items[i], &pair_len, &pair_items);
+        
+        if (pair_len != 2) {
+            mp_raise_ValueError(MP_ERROR_TEXT("Each entry must be (reg, value) pair"));
+        }
+        
+        custom_regs[i][0] = mp_obj_get_int(pair_items[0]);
+        custom_regs[i][1] = mp_obj_get_int(pair_items[1]);
+    }
+    
+    init_cam_with_registers(custom_regs, len);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_init_cam_with_registers_obj, camera_init_cam_with_registers);
+
+
+static mp_obj_t camera_frame(void) {
+    // Returns the safe read buffer (not being written to by DMA)
+    return mp_obj_new_bytearray_by_ref(CAM_FUL_SIZE * 2, cam_python_read_buf);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_frame_obj, camera_frame);
+
+// Double buffer control - call before reading frame to lock buffer
+static mp_obj_t camera_start_read(void) {
+    cam_start_read();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_start_read_obj, camera_start_read);
+
+// Double buffer control - call after reading frame to allow swap
+static mp_obj_t camera_end_read(void) {
+    cam_end_read();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_end_read_obj, camera_end_read);
+
+
+static mp_obj_t camera_set_i2c_pins(mp_obj_t sda_obj, mp_obj_t scl_obj) {
+    set_i2c_pins(mp_obj_get_int(sda_obj), mp_obj_get_int(scl_obj));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(camera_set_i2c_pins_obj, camera_set_i2c_pins);
+
+static mp_obj_t camera_set_pwm_pin(mp_obj_t pwm_obj) {
+    set_pwm_pin(mp_obj_get_int(pwm_obj));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_pwm_pin_obj, camera_set_pwm_pin);
+
+
+// Wrapper for start_cam()
+static mp_obj_t camera_start_cam() {
+    start_cam();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_start_cam_obj, camera_start_cam);
+
+static mp_obj_t cam_is_buffer_ready(void) {
+    return mp_obj_new_bool(buffer_ready);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(cam_is_buffer_ready_obj, cam_is_buffer_ready);
+
+// Wrapper for ov5640_set_data_order()
+static mp_obj_t camera_set_data_order(mp_obj_t reverse_obj) {
+    ov5640_set_data_order(mp_obj_is_true(reverse_obj));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_data_order_obj, camera_set_data_order);
+
+// Python wrapper for cam_set_data_pins
+static mp_obj_t camera_set_data_pins(mp_obj_t pins_in) {
+    size_t len;
+    mp_obj_t *items;
+    mp_obj_get_array(pins_in, &len, &items);
+    if (len != 8) {
+        mp_raise_ValueError(MP_ERROR_TEXT("set_data_pins requires a list of 8 pins"));
+    }
+    for (size_t i = 0; i < 8; ++i) {
+        g_cam_pinmap.d[i] = mp_obj_get_int(items[i]);
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_data_pins_obj, camera_set_data_pins);
+
+// Python wrapper for cam_set_control_pins (3 positional arguments: vsync, href, pclk)
+static mp_obj_t camera_set_control_pins(mp_obj_t vsync, mp_obj_t href, mp_obj_t pclk) {
+    g_cam_pinmap.vsync = mp_obj_get_int(vsync);
+    g_cam_pinmap.href  = mp_obj_get_int(href);
+    g_cam_pinmap.pclk  = mp_obj_get_int(pclk);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_3(camera_set_control_pins_obj, camera_set_control_pins);
+
+// Python wrapper for cam_set_xclk_pin (1 positional argument: xclk)
+static mp_obj_t camera_set_xclk_pin(mp_obj_t xclk) {
+    g_cam_pinmap.xclk = mp_obj_get_int(xclk);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_xclk_pin_obj, camera_set_xclk_pin);
+
+// Python wrapper for ov5640_write_register - write a single register
+static mp_obj_t camera_write_register(mp_obj_t reg_obj, mp_obj_t value_obj) {
+    uint16_t reg = mp_obj_get_int(reg_obj);
+    uint8_t value = mp_obj_get_int(value_obj);
+    int result = ov5640_write_register(reg, value);
+    if (result < 0) {
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Camera not initialized"));
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(camera_write_register_obj, camera_write_register);
+
+// Python wrapper for ov5640_read_register - read a single register
+static mp_obj_t camera_read_register(mp_obj_t reg_obj) {
+    uint16_t reg = mp_obj_get_int(reg_obj);
+    int value = ov5640_read_register(reg);
+    if (value < 0) {
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Camera not initialized"));
+    }
+    return mp_obj_new_int(value);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_read_register_obj, camera_read_register);
+
+// Python wrapper for writing multiple registers - accepts list of (reg, value) tuples
+static mp_obj_t camera_write_registers(mp_obj_t regs_list) {
+    size_t len;
+    mp_obj_t *items;
+    mp_obj_get_array(regs_list, &len, &items);
+    
+    for (size_t i = 0; i < len; i++) {
+        size_t pair_len;
+        mp_obj_t *pair_items;
+        mp_obj_get_array(items[i], &pair_len, &pair_items);
+        
+        if (pair_len != 2) {
+            mp_raise_ValueError(MP_ERROR_TEXT("Each entry must be (reg, value) pair"));
+        }
+        
+        uint16_t reg = mp_obj_get_int(pair_items[0]);
+        uint8_t value = mp_obj_get_int(pair_items[1]);
+        
+        int result = ov5640_write_register(reg, value);
+        if (result < 0) {
+            mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Camera not initialized"));
+        }
+    }
+    
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_write_registers_obj, camera_write_registers);
+
+
+// Define module globals
+static const mp_rom_map_elem_t camera_module_globals_table[] = {
+    { MP_ROM_QSTR(MP_QSTR_init_cam), MP_ROM_PTR(&camera_init_cam_obj) },
+    { MP_ROM_QSTR(MP_QSTR_init_cam_with_registers), MP_ROM_PTR(&camera_init_cam_with_registers_obj) },
+    { MP_ROM_QSTR(MP_QSTR_frame), MP_ROM_PTR(&camera_frame_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_i2c_pins), MP_ROM_PTR(&camera_set_i2c_pins_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_pwm_pin), MP_ROM_PTR(&camera_set_pwm_pin_obj) },
+    { MP_ROM_QSTR(MP_QSTR_start_cam), MP_ROM_PTR(&camera_start_cam_obj) },
+    { MP_ROM_QSTR(MP_QSTR_is_buffer_ready), MP_ROM_PTR(&cam_is_buffer_ready_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_data_order), MP_ROM_PTR(&camera_set_data_order_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_data_pins), MP_ROM_PTR(&camera_set_data_pins_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_control_pins), MP_ROM_PTR(&camera_set_control_pins_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_xclk_pin), MP_ROM_PTR(&camera_set_xclk_pin_obj) },
+    { MP_ROM_QSTR(MP_QSTR_write_register), MP_ROM_PTR(&camera_write_register_obj) },
+    { MP_ROM_QSTR(MP_QSTR_read_register), MP_ROM_PTR(&camera_read_register_obj) },
+    { MP_ROM_QSTR(MP_QSTR_write_registers), MP_ROM_PTR(&camera_write_registers_obj) },
+    // Double buffer control
+    { MP_ROM_QSTR(MP_QSTR_start_read), MP_ROM_PTR(&camera_start_read_obj) },
+    { MP_ROM_QSTR(MP_QSTR_end_read), MP_ROM_PTR(&camera_end_read_obj) },
+};
+static MP_DEFINE_CONST_DICT(camera_module_globals, camera_module_globals_table);
+
+// Define module
+const mp_obj_module_t camera_module = {
+    .base = { &mp_type_module },
+    .globals = (mp_obj_dict_t*)&camera_module_globals,
+};
+
+// Register the module to make it available in Python
+MP_REGISTER_MODULE(MP_QSTR_camera, camera_module);
+cat modules/camera-colorgood/cam.c
+/*****************************************************************************
+* | File      	:   cam.c
+* | Author      :   Waveshare team
+* | Function    :   CAM function interface
+* | Info        :
+*----------------
+* |	This version:   V1.0
+* | Date        :   2025-03-13
+* | Info        :   
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documnetation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of theex Software, and to permit persons to  whom the Software is
+# furished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS OR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+******************************************************************************/
+
+#include "hardware/dma.h"
+#include "hardware/irq.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "cam.h"
+#include "py/mpprint.h"
+#include "picampinos.pio.h"
+#include "ov5640.h"
+
+
+// init PIO
+static PIO pio_cam = pio0;
+
+// statemachine's pointer
+static uint32_t sm_cam; // CAMERA's state machines
+
+// dma channels
+static uint32_t DMA_CAM_RD_CH;
+
+// Double buffering: two separate buffers for tear-free capture
+static uint8_t cam_buffer_a[CAM_FUL_SIZE * 2];
+static uint8_t cam_buffer_b[CAM_FUL_SIZE * 2];
+
+// Pointers for double buffering
+uint8_t *cam_dma_write_buf = cam_buffer_a;    // DMA writes to this buffer
+uint8_t *cam_python_read_buf = cam_buffer_b;  // Python reads from this buffer (safe)
+
+// Legacy pointer for compatibility - points to read buffer
+uint8_t *cam_ptr = cam_buffer_b;
+
+uint8_t pin_i2c1_sda = 22; // default on RP2350 touch 2in
+uint8_t pin_i2c1_scl = 23; // default on RP2350 touch 2in
+uint8_t pin_xclk_pwm = 11; // GPIO11 (camera's xclk(24MHz))
+
+
+// flags
+volatile bool buffer_ready = false;
+volatile bool read_in_progress = false;  // Set by Python to protect read buffer
+
+
+
+
+void set_i2c_pins(uint8_t sda, uint8_t scl) {
+    pin_i2c1_sda = sda;
+    pin_i2c1_scl = scl;
+}
+
+void set_pwm_pin(uint8_t pwm) {
+    pin_xclk_pwm = pwm;
+}
+/********************************************************************************
+function:   Camera initialization
+parameter:
+********************************************************************************/
+void init_cam()
+{
+
+    mp_printf(MP_PYTHON_PRINTER, "init_cam: initializing camera I2C_SDA=%d I2C_SCL=%d XCLK_PWM=%d\n",
+              pin_i2c1_sda, pin_i2c1_scl, pin_xclk_pwm);
+    
+    set_pwm_freq_kHz(37000, pin_xclk_pwm); // XCLK
+    sleep_ms(50);
+
+    sccb_init(pin_i2c1_sda, pin_i2c1_scl); // sda,scl=(gp26,gp27). see 'sccb_if.c' and 'cam.h'
+    sleep_ms(50);
+    
+    mp_printf(MP_PYTHON_PRINTER, "init_cam: camera initialized\n");
+
+}
+
+void init_cam_with_registers(const uint16_t custom_regs[][2], uint16_t num_regs)
+{
+
+    mp_printf(MP_PYTHON_PRINTER, "init_cam_with_registers: initializing camera I2C_SDA=%d I2C_SCL=%d XCLK_PWM=%d custom_regs=%d\n",
+              pin_i2c1_sda, pin_i2c1_scl, pin_xclk_pwm, num_regs);
+    
+    set_pwm_freq_kHz(37000, pin_xclk_pwm);
+    sleep_ms(50);
+
+    sccb_init_with_registers(pin_i2c1_sda, pin_i2c1_scl, custom_regs, num_regs);
+    sleep_ms(50);
+    
+    mp_printf(MP_PYTHON_PRINTER, "init_cam_with_registers: camera initialized with %d custom registers\n", num_regs);
+
+}
+
+
+
+void setup_dma_for_capture()
+{
+    // init DMA
+    DMA_CAM_RD_CH = dma_claim_unused_channel(true);
+    mp_printf(MP_PYTHON_PRINTER, "setup_dma_for_capture: claimed DMA_CH=%d buf_size=%d (double buffered)\n",
+              (int)DMA_CAM_RD_CH, CAM_FUL_SIZE * 2);
+
+    // Disable IRQ
+    irq_set_enabled(DMA_IRQ_0, false);
+
+     // Configure DMA Channel 0
+    dma_channel_config c0 = get_cam_config(pio_cam, sm_cam, DMA_CAM_RD_CH);
+
+    channel_config_set_transfer_data_size(&c0, DMA_SIZE_16);
+
+    dma_channel_configure(DMA_CAM_RD_CH, &c0,
+                          cam_dma_write_buf,     // Destination: DMA write buffer
+                          &pio_cam->rxf[sm_cam], // Source pointer
+                          CAM_FUL_SIZE,          // Number of 16-bit transfers
+                          false                  // Don't Start yet
+    );
+
+    // IRQ settings
+    dma_channel_set_irq0_enabled(DMA_CAM_RD_CH, true);
+
+    //irq_set_exclusive_handler(DMA_IRQ_0, cam_handler); //NOT WORKING, micropython has IRQ already!
+    irq_add_shared_handler(DMA_IRQ_0, cam_handler, PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
+    mp_printf(MP_PYTHON_PRINTER, "setup_dma_for_capture: IRQ configured, DMA started (double buffer mode)\n");
+
+    irq_set_enabled(DMA_IRQ_0, true);
+    dma_channel_start(DMA_CAM_RD_CH); // Start DMA transfer
+}
+
+/********************************************************************************
+function:   DMA interrupt processing function
+            Implements double buffering with read protection
+parameter:
+********************************************************************************/
+void cam_handler(void)
+{
+    // Clear the interrupt flag first
+    dma_hw->ints0 = 1u << DMA_CAM_RD_CH;
+
+    if (!read_in_progress) {
+        // Safe to swap buffers - Python is not currently reading
+        uint8_t *temp = cam_dma_write_buf;
+        cam_dma_write_buf = cam_python_read_buf;
+        cam_python_read_buf = temp;
+
+        // Update legacy pointer for compatibility
+        cam_ptr = cam_python_read_buf;
+
+        // Signal that a new frame is ready
+        buffer_ready = true;
+    }
+    // else: Python is reading, don't swap - drop this frame to protect read buffer
+
+    // Restart DMA to write buffer (either swapped or same if read in progress)
+    dma_channel_set_write_addr(DMA_CAM_RD_CH, cam_dma_write_buf, true);
+}
+
+/********************************************************************************
+function:   Double buffer control functions for Python
+********************************************************************************/
+void cam_start_read(void)
+{
+    read_in_progress = true;
+}
+
+void cam_end_read(void)
+{
+    read_in_progress = false;
+}
+
+uint8_t* cam_get_read_buffer(void)
+{
+    return cam_python_read_buf;
+}
+
+
+
+// BIG HEAD
+// D0    GPIO 0
+// D1    GPIO 1
+// D2    GPIO 2
+// D3    GPIO 3
+// D4    GPIO 4
+// D5    GPIO 5
+// D6    GPIO 6
+// D7    GPIO 7
+// VSYNC GPIO 8
+// HREF  GPIO 9
+// PCLK  GPIO 10
+// XCLK  GPIO 11
+// PWDN  GPIO 14
+// SDA   GPIO 22
+// SCL   GPIO 23
+
+
+
+// Global pinmap instance, initialized to default (old hardware)
+cam_pinmap_t g_cam_pinmap = {
+    .d = {0, 1, 2, 3, 4, 5, 6, 7},
+    .vsync = 8,
+    .href = 9,
+    .pclk = 10,
+    .xclk = 11
+};
+
+void cam_set_pinmap(uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3, uint8_t d4, uint8_t d5, uint8_t d6, uint8_t d7, uint8_t vsync, uint8_t href, uint8_t pclk, uint8_t xclk) {
+    mp_printf(MP_PYTHON_PRINTER, "cam_set_pinmap: D[0-7]=%d,%d,%d,%d,%d,%d,%d,%d VSYNC=%d HREF=%d PCLK=%d XCLK=%d\n",
+              d0, d1, d2, d3, d4, d5, d6, d7, vsync, href, pclk, xclk);
+    g_cam_pinmap.d[0] = d0;
+    g_cam_pinmap.d[1] = d1;
+    g_cam_pinmap.d[2] = d2;
+    g_cam_pinmap.d[3] = d3;
+    g_cam_pinmap.d[4] = d4;
+    g_cam_pinmap.d[5] = d5;
+    g_cam_pinmap.d[6] = d6;
+    g_cam_pinmap.d[7] = d7;
+    g_cam_pinmap.vsync = vsync;
+    g_cam_pinmap.href = href;
+    g_cam_pinmap.pclk = pclk;
+    g_cam_pinmap.xclk = xclk;
+}
+
+/********************************************************************************
+function:   Start the camera
+parameter:
+********************************************************************************/
+void start_cam()
+{
+    // Use the lowest data pin as the base for PIO, and 8 pins for D0-D7
+    uint32_t cam_base_pin = g_cam_pinmap.d[0];
+    uint32_t cam_num_pins = 11;
+    mp_printf(MP_PYTHON_PRINTER, "start_cam: PIO base_pin=%d num_pins=%d img_size=%d words\n",
+              (int)cam_base_pin, (int)cam_num_pins, CAM_FUL_SIZE);
+    
+    uint32_t offset_cam = pio_add_program(pio_cam, &picampinos_program);
+    picampinos_program_init(pio_cam, sm_cam, offset_cam, cam_base_pin, cam_num_pins);
+    
+    // Enable the state machine and clear the FIFO
+    pio_sm_set_enabled(pio_cam, sm_cam, false);
+    pio_sm_clear_fifos(pio_cam, sm_cam);
+    pio_sm_restart(pio_cam, sm_cam);
+    pio_sm_set_enabled(pio_cam, sm_cam, true);
+
+    // Setting the X and Y registers
+    pio_sm_put_blocking(pio_cam, sm_cam, 0);                  // X=0 : reserved
+    pio_sm_put_blocking(pio_cam, sm_cam, (CAM_FUL_SIZE - 1)); // Y: total words in an image
+    mp_printf(MP_PYTHON_PRINTER, "start_cam: PIO SM enabled\n");
+    setup_dma_for_capture();
+}
+
+/********************************************************************************
+function:   Reading camera data
+parameter:
+********************************************************************************/
+void read_cam_data_blocking(uint8_t *buffer, size_t length)
+{
+    mp_printf(MP_PYTHON_PRINTER, "read_cam_data_blocking: reading %d bytes\n", (int)length);
+    size_t index = 0;
+    while (index < length)
+    {
+        if (!pio_sm_is_rx_fifo_empty(pio_cam, sm_cam))
+        {
+            uint16_t dat = pio_sm_get(pio_cam, sm_cam);
+            buffer[index++] = (dat >> 8) & 0xFF;
+            buffer[index++] = dat & 0xFF;
+        }
+        else
+        {
+            tight_loop_contents(); // wait for data
+        }
+    }
+    mp_printf(MP_PYTHON_PRINTER, "read_cam_data_blocking: completed %d bytes\n", (int)index);
+}
+
+/********************************************************************************
+function:   Release the camera
+parameter:
+********************************************************************************/
+void free_cam()
+{
+    mp_printf(MP_PYTHON_PRINTER, "free_cam: releasing DMA_CH=%d\n", (int)DMA_CAM_RD_CH);
+    // Disable IRQ settings
+    irq_set_enabled(DMA_IRQ_0, false);
+    dma_channel_set_irq0_enabled(DMA_CAM_RD_CH, false);
+    dma_channel_abort(DMA_CAM_RD_CH);
+    mp_printf(MP_PYTHON_PRINTER, "free_cam: camera released\n");
+}
+
+/********************************************************************************
+function:   Camera dma config
+parameter:
+********************************************************************************/
+dma_channel_config get_cam_config(PIO pio, uint32_t sm, uint32_t dma_chan)
+{
+    dma_channel_config c = dma_channel_get_default_config(dma_chan);
+    channel_config_set_read_increment(&c, false);
+    channel_config_set_write_increment(&c, true);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
+    channel_config_set_dreq(&c, pio_get_dreq(pio, sm, false));
+    return c;
+}
+
+/********************************************************************************
+function:   Configure PWM to provide clock for the camera
+parameter:
+********************************************************************************/
+void set_pwm_freq_kHz(uint32_t freq_khz, uint8_t gpio_num)
+{
+    uint32_t pwm0_slice_num;
+    uint32_t period;
+    static pwm_config pwm_slice_config;
+    uint32_t system_clk_khz = clock_get_hz(clk_sys) / 1000;
+    period = system_clk_khz / freq_khz - 1;
+    if (period < 1)
+        period = 1;
+
+    mp_printf(MP_PYTHON_PRINTER, "set_pwm_freq_kHz: GPIO=%d freq=%dkHz sys_clk=%dkHz period=%d\n",
+              gpio_num, (int)freq_khz, (int)system_clk_khz, (int)period);
+
+    gpio_set_function(gpio_num, GPIO_FUNC_PWM);
+    pwm0_slice_num = pwm_gpio_to_slice_num(gpio_num);
+
+    // config
+    pwm_slice_config = pwm_get_default_config();
+    pwm_config_set_wrap(&pwm_slice_config, period);
+
+    // set clk div
+    pwm_config_set_clkdiv(&pwm_slice_config, 1);
+
+    // set PWM start
+    pwm_init(pwm0_slice_num, &pwm_slice_config, true);
+    pwm_set_gpio_level(gpio_num, (pwm_slice_config.top * 0.50)); // duty:50%
+    
+    mp_printf(MP_PYTHON_PRINTER, "set_pwm_freq_kHz: PWM slice=%d configured with 50%% duty\n", (int)pwm0_slice_num);
+}
+cat modules/camera-colorgood/ov5640.c
+/*****************************************************************************
+* | File      	:   ov5640.c
+* | Author      :   Waveshare team
+* | Function    :   OV5640 configuration function interface
+* | Info        :
+*----------------
+* |	This version:   V1.0
+* | Date        :   2025-03-13
+* | Info        :   
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documnetation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of theex Software, and to permit persons to  whom the Software is
+# furished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS OR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+******************************************************************************/
+#include <stdio.h>
+#include "pico/stdlib.h"
+#include "ov5640.h"
+#include "py/mpprint.h"
+
+// Define the default register settings for the OV5640 sensor
+const uint16_t sensor_default_regs[][2] = {
+    {SYSTEM_CTROL0, 0x82},  // software reset
+    {0XFFFF, 10}, // delay 10ms
+    {SYSTEM_CTROL0, 0x42},  // power down
+
+    //enable pll
+    {0x3103, 0x13},
+
+    //io direction
+    {0x3017, 0xff},
+    {0x3018, 0xff},
+
+    {DRIVE_CAPABILITY, 0xc3},
+    {CLOCK_POL_CONTROL, 0x21},
+
+    {0x4713, 0x02},//jpg mode select
+
+    {ISP_CONTROL_01, 0x83}, // turn color matrix, awb and SDE
+
+    //sys reset
+    {0x3000, 0x20}, // reset MCU
+    {0XFFFF, 10}, // delay 10ms
+    {0x3002, 0x1c},
+
+    //clock enable
+    {0x3004, 0xff},
+    {0x3006, 0xc3},
+
+    //isp control
+    {0x5000, 0xa7},
+    {ISP_CONTROL_01, 0xa3},//+scaling?
+    {0x5003, 0x08},//special_effect
+
+    //unknown
+    {0x370c, 0x02},//!!IMPORTANT
+    {0x3634, 0x40},//!!IMPORTANT
+
+    //AEC/AGC
+    {0x3a02, 0x03},
+    {0x3a03, 0xd8},
+    {0x3a08, 0x01},
+    {0x3a09, 0x27},
+    {0x3a0a, 0x00},
+    {0x3a0b, 0xf6},
+    {0x3a0d, 0x04},
+    {0x3a0e, 0x03},
+    {0x3a0f, 0x30},//ae_level
+    {0x3a10, 0x28},//ae_level
+    {0x3a11, 0x60},//ae_level
+    {0x3a13, 0x43},
+    {0x3a14, 0x03},
+    {0x3a15, 0xd8},
+    {0x3a18, 0x00},//gainceiling
+    {0x3a19, 0xf8},//gainceiling
+    {0x3a1b, 0x30},//ae_level
+    {0x3a1e, 0x26},//ae_level
+    {0x3a1f, 0x14},//ae_level
+
+    //vcm debug
+    {0x3600, 0x08},
+    {0x3601, 0x33},
+
+    //50/60Hz
+    {0x3c01, 0xa4},
+    {0x3c04, 0x28},
+    {0x3c05, 0x98},
+    {0x3c06, 0x00},
+    {0x3c07, 0x08},
+    {0x3c08, 0x00},
+    {0x3c09, 0x1c},
+    {0x3c0a, 0x9c},
+    {0x3c0b, 0x40},
+
+    {0x460c, 0x22},//disable jpeg footer
+
+    //BLC
+    {0x4001, 0x02},
+    {0x4004, 0x02},
+
+    //AWB
+    {0x5180, 0xff},
+    {0x5181, 0xf2},
+    {0x5182, 0x00},
+    {0x5183, 0x14},
+    {0x5184, 0x25},
+    {0x5185, 0x24},
+    {0x5186, 0x09},
+    {0x5187, 0x09},
+    {0x5188, 0x09},
+    {0x5189, 0x75},
+    {0x518a, 0x54},
+    {0x518b, 0xe0},
+    {0x518c, 0xb2},
+    {0x518d, 0x42},
+    {0x518e, 0x3d},
+    {0x518f, 0x56},
+    {0x5190, 0x46},
+    {0x5191, 0xf8},
+    {0x5192, 0x04},
+    {0x5193, 0x70},
+    {0x5194, 0xf0},
+    {0x5195, 0xf0},
+    {0x5196, 0x03},
+    {0x5197, 0x01},
+    {0x5198, 0x04},
+    {0x5199, 0x12},
+    {0x519a, 0x04},
+    {0x519b, 0x00},
+    {0x519c, 0x06},
+    {0x519d, 0x82},
+    {0x519e, 0x38},
+
+    //color matrix (Saturation)
+    {0x5381, 0x1e},
+    {0x5382, 0x5b},
+    {0x5383, 0x08},
+    {0x5384, 0x0a},
+    {0x5385, 0x7e},
+    {0x5386, 0x88},
+    {0x5387, 0x7c},
+    {0x5388, 0x6c},
+    {0x5389, 0x10},
+    {0x538a, 0x01},
+    {0x538b, 0x98},
+
+    //CIP control (Sharpness)
+    {0x5300, 0x10},//sharpness
+    {0x5301, 0x10},//sharpness
+    {0x5302, 0x18},//sharpness
+    {0x5303, 0x19},//sharpness
+    {0x5304, 0x10},
+    {0x5305, 0x10},
+    {0x5306, 0x08},//denoise
+    {0x5307, 0x16},
+    {0x5308, 0x40},
+    {0x5309, 0x10},//sharpness
+    {0x530a, 0x10},//sharpness
+    {0x530b, 0x04},//sharpness
+    {0x530c, 0x06},//sharpness
+
+    //GAMMA
+    {0x5480, 0x01},
+    {0x5481, 0x00},
+    {0x5482, 0x1e},
+    {0x5483, 0x3b},
+    {0x5484, 0x58},
+    {0x5485, 0x66},
+    {0x5486, 0x71},
+    {0x5487, 0x7d},
+    {0x5488, 0x83},
+    {0x5489, 0x8f},
+    {0x548a, 0x98},
+    {0x548b, 0xa6},
+    {0x548c, 0xb8},
+    {0x548d, 0xca},
+    {0x548e, 0xd7},
+    {0x548f, 0xe3},
+    {0x5490, 0x1d},
+
+    //Special Digital Effects (SDE) (UV adjust)
+    {0x5580, 0x04},//enable brightness and contrast
+    {0x5583, 0x40},//special_effect
+    {0x5584, 0x10},//special_effect
+    {0x5586, 0x20},//contrast
+    {0x5587, 0x00},//brightness
+    {0x5588, 0x01},//brightness
+    {0x5589, 0x10},
+    {0x558a, 0x00},
+    {0x558b, 0xf8},
+    {0x501d, 0x40},// enable manual offset of contrast
+
+    //power on
+    {0x3008, 0x02},
+
+    //50Hz
+    {0x3c00, 0x04},
+    
+    {0XFFFF, 300},
+    {0x0000, 0x00}, // tail
+};
+
+// Static variables to hold I2C instance and camera address after sccb_init
+static i2c_inst_t *ov5640_i2c = NULL;
+static uint8_t ov5640_cam_addr = 0x3c;
+
+/********************************************************************************
+ * Function Definitions
+ */
+/********************************************************************************
+function:   Camera register initialization
+parameter:
+********************************************************************************/
+void sccb_init(const uint32_t sda_pin, const uint32_t scl_pin)
+{
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init: SDA=%d SCL=%d addr=0x%02x\n", 
+              (int)sda_pin, (int)scl_pin, 0x3c);
+    
+    ov5640_cam_addr = 0x3c; // default: OV5640
+    ov5640_i2c = i2c1;
+
+    // Initialize I2C port at 100 kHz
+    i2c_init(ov5640_i2c, 100 * 1000);
+
+    // Initialize I2C pins
+    gpio_set_function(sda_pin, GPIO_FUNC_I2C);
+    gpio_set_function(scl_pin, GPIO_FUNC_I2C);
+    gpio_pull_up(sda_pin);
+    gpio_pull_up(scl_pin);
+
+    uint16_t reg;
+    reg=OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0X300A);
+	reg<<=8;
+	reg|=OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0X300B);
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init: OV5640 ID=0x%04x\n", reg);
+
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init: writing %d default registers\n", 
+              (int)(sizeof(sensor_default_regs)/4));
+    for(uint16_t i=0; i<sizeof(sensor_default_regs)/4; i++)
+	{
+		OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,sensor_default_regs[i][0],sensor_default_regs[i][1]);
+	} 
+    sleep_ms(50);
+
+    // set_size_and_colorspace 320x240
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init: setting resolution 320x240\n");
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_ST_H,352,26);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_END_H,1792,1946);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_OUTPUT_SIZE_H,240,320); //1440 1920
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_TOTAL_SIZE_H,2592,1944);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_OFFSET_H,16,14);
+
+    uint8_t dat;
+    dat = OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0x5001) | 0x20;
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x5001, dat);
+    sleep_ms(50);
+
+    // set_image_options
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,TIMING_TC_REG20, 0x01);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,TIMING_TC_REG21, 0X00);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x4514, 0xAA);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x4520, 0x0B);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,X_INCREMENT, 0x31);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,Y_INCREMENT, 0x31);
+    sleep_ms(50);
+
+    // set_pll
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init: configuring PLL\n");
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_5, 0x00);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_0, 0x1A); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_1, 0x11); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_2, 11 & 0xFF); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_3, 0x01); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SYSTEM_ROOT_DIVIDER, 0x16); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,PCLK_RATIO, 0x04); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,VFIFO_CTRL0C, 0x22);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SCCB_SYSTEM_CTRL1, 0x13);
+    sleep_ms(50);
+
+    // set_colorspace
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init: setting colorspace format\n");
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,FORMAT_CTRL,0x01);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,FORMAT_CTRL00,0x61);
+    sleep_ms(50);
+    
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init: OV5640 initialization complete\n");
+}
+
+/********************************************************************************
+function:   Camera register initialization with custom register array
+parameter:  sda_pin, scl_pin, custom_regs array, num_regs
+********************************************************************************/
+void sccb_init_with_registers(const uint32_t sda_pin, const uint32_t scl_pin, const uint16_t custom_regs[][2], uint16_t num_regs)
+{
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init_with_registers: SDA=%d SCL=%d addr=0x%02x custom_regs=%d\n", 
+              (int)sda_pin, (int)scl_pin, 0x3c, num_regs);
+    
+    ov5640_cam_addr = 0x3c;
+    ov5640_i2c = i2c1;
+
+    i2c_init(ov5640_i2c, 100 * 1000);
+
+    gpio_set_function(sda_pin, GPIO_FUNC_I2C);
+    gpio_set_function(scl_pin, GPIO_FUNC_I2C);
+    gpio_pull_up(sda_pin);
+    gpio_pull_up(scl_pin);
+
+    uint16_t reg;
+    reg=OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0X300A);
+    reg<<=8;
+    reg|=OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0X300B);
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init_with_registers: OV5640 ID=0x%04x\n", reg);
+
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init_with_registers: writing %d default registers\n", 
+              (int)(sizeof(sensor_default_regs)/4));
+    for(uint16_t i=0; i<sizeof(sensor_default_regs)/4; i++)
+    {
+        OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,sensor_default_regs[i][0],sensor_default_regs[i][1]);
+    } 
+    sleep_ms(50);
+
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init_with_registers: setting resolution 320x240\n");
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_ST_H,352,26);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_END_H,1792,1946);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_OUTPUT_SIZE_H,240,320);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_TOTAL_SIZE_H,2592,1944);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_OFFSET_H,16,14);
+
+    uint8_t dat;
+    dat = OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0x5001) | 0x20;
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x5001, dat);
+    sleep_ms(50);
+
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,TIMING_TC_REG20, 0x01);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,TIMING_TC_REG21, 0X00);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x4514, 0xAA);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x4520, 0x0B);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,X_INCREMENT, 0x31);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,Y_INCREMENT, 0x31);
+    sleep_ms(50);
+
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init_with_registers: configuring PLL\n");
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_5, 0x00);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_0, 0x1A); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_1, 0x11); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_2, 11 & 0xFF); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_3, 0x01); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SYSTEM_ROOT_DIVIDER, 0x16); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,PCLK_RATIO, 0x04); 
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,VFIFO_CTRL0C, 0x22);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SCCB_SYSTEM_CTRL1, 0x13);
+    sleep_ms(50);
+
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init_with_registers: setting colorspace format with default\n");
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,FORMAT_CTRL,0x01);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,FORMAT_CTRL00,0x61);
+    sleep_ms(50);
+    
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init_with_registers: writing %d custom registers\n", num_regs);
+    for(uint16_t i=0; i<num_regs; i++)
+    {
+        mp_printf(MP_PYTHON_PRINTER, "  [%d] 0x%04X = 0x%02X\n", i, custom_regs[i][0], (uint8_t)custom_regs[i][1]);
+        OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,custom_regs[i][0],(uint8_t)custom_regs[i][1]);
+    }
+    sleep_ms(50);
+    
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init_with_registers: OV5640 initialization complete with %d custom registers\n", num_regs);
+}
+
+/**
+ * @brief Set the OV5640 DATA ORDER register (0x4745)
+ *        Must be called after sccb_init().
+ * @param reverse: true for reverse output data bit order, false for normal
+ */
+void ov5640_set_data_order(bool reverse) {
+    if (!ov5640_i2c) {
+        mp_printf(MP_PYTHON_PRINTER, "ov5640_set_data_order: error - not initialized\n");
+        return;
+    }
+    mp_printf(MP_PYTHON_PRINTER, "ov5640_set_data_order: setting %s\n", 
+              reverse ? "reverse" : "normal");
+    uint8_t val = OV5640_RD_Reg(ov5640_i2c, ov5640_cam_addr, OV5640_REG_DATA_ORDER);
+    if (reverse) {
+        val |= 0x01; // Set bit 0 for reverse
+    } else {
+        val &= ~0x01; // Clear bit 0 for normal
+    }
+    OV5640_WR_Reg(ov5640_i2c, ov5640_cam_addr, OV5640_REG_DATA_ORDER, val);
+}
+
+/**
+ * @brief Write arbitrary register value to OV5640
+ *        Must be called after sccb_init().
+ * @param reg: 16-bit register address
+ * @param value: 8-bit value to write
+ * @return: 0 on success, -1 if not initialized
+ */
+int ov5640_write_register(uint16_t reg, uint8_t value) {
+    if (!ov5640_i2c) {
+        mp_printf(MP_PYTHON_PRINTER, "ov5640_write_register: error - not initialized\n");
+        return -1;
+    }
+    mp_printf(MP_PYTHON_PRINTER, "ov5640_write_register: 0x%04X = 0x%02X\n", reg, value);
+    OV5640_WR_Reg(ov5640_i2c, ov5640_cam_addr, reg, value);
+    return 0;
+}
+
+/**
+ * @brief Read arbitrary register value from OV5640
+ *        Must be called after sccb_init().
+ * @param reg: 16-bit register address
+ * @return: register value (0-255), or -1 if not initialized
+ */
+int ov5640_read_register(uint16_t reg) {
+    if (!ov5640_i2c) {
+        mp_printf(MP_PYTHON_PRINTER, "ov5640_read_register: error - not initialized\n");
+        return -1;
+    }
+    uint8_t val = OV5640_RD_Reg(ov5640_i2c, ov5640_cam_addr, reg);
+    mp_printf(MP_PYTHON_PRINTER, "ov5640_read_register: 0x%04X = 0x%02X\n", reg, val);
+    return val;
+}
+
+/********************************************************************************
+function:   Read 1 byte from the specified register
+parameter:
+********************************************************************************/
+uint8_t OV5640_RD_Reg(i2c_inst_t *i2c,
+                  const uint8_t addr,
+                  uint16_t reg)
+{
+    uint8_t val = 0;
+    uint8_t reg_high = reg >> 8;
+    uint8_t reg_low = reg & 0xFF;
+
+    uint8_t reg_data[2] = {reg_high, reg_low};
+    i2c_write_blocking(i2c, addr, reg_data, 2, true);
+    i2c_read_blocking(i2c, addr, &val, 1, false);  
+    return val;
+}
+
+/********************************************************************************
+function:   Write 1 byte to the specified register
+parameter:
+********************************************************************************/
+uint8_t OV5640_WR_Reg(i2c_inst_t *i2c,
+                  const uint8_t addr,
+                  uint16_t reg,
+                  uint8_t data)
+{
+    uint8_t msg[3];
+    msg[0] = reg >> 8;
+    msg[1] = reg & 0xFF;
+    msg[2] = data;
+
+    uint8_t ret=0;
+    ret = i2c_write_blocking(i2c, addr, msg, 3, false);
+    (void)ret;
+    return ret;
+}
+
+/********************************************************************************
+function:   Write 4 byte to the specified register
+parameter:
+********************************************************************************/
+void OV5640_WR_Reg_2(i2c_inst_t *i2c,
+                  const uint8_t addr,
+                  uint16_t reg,
+                  uint16_t data1,
+                  uint16_t data2)
+{
+    uint8_t msg[3];
+    msg[0] = reg >> 8;
+    msg[1] = reg & 0xFF;
+    msg[2] = data1 >> 8;
+    uint8_t ret=0;
+    ret = i2c_write_blocking(i2c, addr, msg, 3, false);
+
+    reg+=1;
+    msg[0] = reg >> 8;
+    msg[1] = reg & 0xFF;
+    msg[2] = data1 & 0xFF;
+    ret = i2c_write_blocking(i2c, addr, msg, 3, false);
+
+    reg+=1;
+    msg[0] = reg >> 8;
+    msg[1] = reg & 0xFF;
+    msg[2] = data2 >> 8;
+    ret=i2c_write_blocking(i2c, addr, msg, 3, false);
+
+    reg+=1;
+    msg[0] = reg >> 8;
+    msg[1] = reg & 0xFF;
+    msg[2] = data2 & 0xFF;
+    ret = i2c_write_blocking(i2c, addr, msg, 3, false);
+
+    (void)ret;
+}
