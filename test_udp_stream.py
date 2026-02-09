@@ -73,7 +73,8 @@ def main():
     except:
         pass
     
-    udp_sock.bind(('0.0.0.0', udp_port))
+    #udp_sock.bind(('0.0.0.0', udp_port))
+    udp_sock.bind(('172.16.1.2', udp_port))
     udp_sock.settimeout(args.timeout)
     print(f"Listening on UDP port {udp_port}...")
 
@@ -101,6 +102,8 @@ def main():
         
         if b"200 OK" in response:
             print("Server acknowledged, starting UDP receive...")
+            tcp_sock.close()          # <-- close immediately
+            tcp_sock = None
         else:
             print(f"Unexpected response: {response[:200]}")
             return 1
@@ -246,7 +249,8 @@ def main():
     print(f"  (Previous TCP result: ~9.7 Mbps)")
     
     # Cleanup
-    tcp_sock.close()
+    if tcp_sock is not None:
+        tcp_sock.close()
     udp_sock.close()
     
     return 0
