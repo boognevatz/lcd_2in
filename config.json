@@ -1,0 +1,43 @@
+{
+  "headID": 1117,
+  
+  "i2c": {
+    "adc_address": "0x48",
+    "barometer_address": "0x6C",
+    "dac_address": "0x60"
+  },
+  
+  "adc": {
+    "ref_voltage": 2.5
+  },
+  
+  "ntc": {
+    "r0": 10000,
+    "beta": 3380,
+    "t0_kelvin": 298.15,
+    "divider_r": 10000,
+    "divider_vcc": 3.3
+  },
+  
+  "barometer": {
+    "atmospheric_raw": 5463198,
+    "atmospheric_bar": 1.0
+  },
+
+  "camera": {
+    "custom_registers": [
+      {
+        "address": "0x4300",
+        "value": "0x61",
+        "comment": "FORMAT_CTRL00 - RGB565 big-endian (high byte first, matches PIO)"
+      },
+      {
+        "address": "0x503D",
+        "value": "0x80",
+        "comment": "Test pattern",
+        "enabled": false
+      }
+    ]
+  }
+}
+
