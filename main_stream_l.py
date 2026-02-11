@@ -207,8 +207,9 @@ Connection: close
             const format = document.querySelector('input[name="color-format"]:checked').value;
 
             for (let i = 0; i < width * height; i++) {
-                const byte0 = data[i * 2];
-                const byte1 = data[i * 2 + 1];
+                const j = (i ^ 1) * 2;
+                const byte0 = data[j];
+                const byte1 = data[j + 1];
                 const rgb565 = byte0 | (byte1 << 8);
 
                 let r, g, b;
