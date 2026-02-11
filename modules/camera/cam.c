@@ -38,8 +38,83 @@
 #include "picampinos.pio.h"
 #include "ov5640.h"
 
-#include <stdint.h>
-#include <stdbool.h>
+// ============================================================================
+// INLINE PIO program: packs TWO pixels per 32-bit FIFO push.
+// Defined here in cam.c to bypass any pioasm/.pio.h include path issues.
+//
+// ISR left-shift, 4x "in pins,8" per push:
+//   ISR = HH1_LL1_HH2_LL2  (two RGB565 pixels in one 32-bit word)
+// In LE memory: [LL2, HH2, LL1, HH1]
+//   → word[0] (bytes 0,1) = pixel_N+1, word[1] (bytes 2,3) = pixel_N
+// JS must swap each pixel pair to correct display order.
+//
+// X register counts pixel PAIRS (total_pixels / 2 - 1)
+// Y register stores the pair count for reload each frame
+// ============================================================================
+static const uint16_t cam_pio_packed_instructions[] = {
+    0x6020, //  0: out    x, 32           ; X = 0 (reserved)
+    0x6040, //  1: out    y, 32           ; Y = pixel_pairs count
+    0x2028, //  2: wait   0 pin, 8        ; wait VSYNC=0
+    0x20a8, //  3: wait   1 pin, 8        ; wait VSYNC=1 (frame start)
+    0xa022, //  4: mov    x, y            ; x = pixel_pairs
+    0x2029, //  5: wait   0 pin, 9        ; wait HREF=0 (line sync)
+    0x20a9, //  6: wait   1 pin, 9        ; wait HREF=1 (line active)
+    // --- Pixel N (first of pair) ---
+    0x20aa, //  7: wait   1 pin, 10       ; PCLK=1
+    0x4008, //  8: in     pins, 8         ; HH1 → ISR
+    0x202a, //  9: wait   0 pin, 10       ; PCLK=0
+    0x20aa, // 10: wait   1 pin, 10       ; PCLK=1
+    0x4008, // 11: in     pins, 8         ; LL1 → ISR
+    0x202a, // 12: wait   0 pin, 10       ; PCLK=0
+    // --- Pixel N+1 (second of pair) ---
+    0x20aa, // 13: wait   1 pin, 10       ; PCLK=1
+    0x4008, // 14: in     pins, 8         ; HH2 → ISR
+    0x202a, // 15: wait   0 pin, 10       ; PCLK=0
+    0x20aa, // 16: wait   1 pin, 10       ; PCLK=1
+    0x4008, // 17: in     pins, 8         ; LL2 → ISR (32 bits full)
+    0x202a, // 18: wait   0 pin, 10       ; PCLK=0
+    // --- Push and loop ---
+    0xa042, // 19: nop (mov y,y)          ; autopush already fired at 4th in
+    0x0046, // 20: jmp    x--, 6          ; loop pixel pairs
+    0x2029, // 21: wait   0 pin, 9        ; wait HREF=0 (end of line)
+    0x0004, // 22: jmp    4               ; next frame (reload x)
+    0x0002, // 23: jmp    2               ; wait next VSYNC
+};
+
+#define CAM_PIO_PACKED_LEN 24
+#define CAM_PIO_PACKED_WRAP_TARGET 0
+#define CAM_PIO_PACKED_WRAP 23
+
+static const struct pio_program cam_pio_packed_program = {
+    .instructions = cam_pio_packed_instructions,
+    .length = CAM_PIO_PACKED_LEN,
+    .origin = -1,
+    .pio_version = 1,
+#if PICO_PIO_VERSION > 0
+    .used_gpio_ranges = 0x0
+#endif
+};
+
+// Custom init that uses OUR wrap values (not the .pio.h ones)
+static inline void cam_pio_packed_init(PIO pio, uint32_t sm, uint32_t offset,
+                                        uint32_t in_base, uint32_t in_pin_num)
+{
+    pio_sm_config c = pio_get_default_sm_config();
+    sm_config_set_wrap(&c, offset + CAM_PIO_PACKED_WRAP_TARGET,
+                           offset + CAM_PIO_PACKED_WRAP);
+    sm_config_set_set_pins(&c, in_base, in_pin_num);
+    sm_config_set_in_pins(&c, in_base);
+    sm_config_set_in_shift(&c, false, true, 31);   // left shift, autopush at 31 bits (avoids 32→0 encoding bug on RP2350)
+    sm_config_set_out_shift(&c, false, true, 32);   // left shift, auto-pull
+    for (uint32_t i = 0; i < in_pin_num; i++) {
+        pio_gpio_init(pio, in_base + i);
+    }
+    pio_sm_set_consecutive_pindirs(pio, sm, in_base, in_pin_num, false);
+    sm_config_set_clkdiv(&c, 1);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+// ============================================================================
 
 // init PIO
 static PIO pio_cam = pio0;
@@ -50,19 +125,26 @@ static uint32_t sm_cam; // CAMERA's state machines
 // dma channels
 static uint32_t DMA_CAM_RD_CH;
 
-static uint8_t cam_buffer[CAM_FUL_SIZE * 2];
-uint8_t *cam_ptr = cam_buffer;
+// Double buffering: two separate buffers for tear-free capture
+// MUST be 4-byte aligned for DMA_SIZE_32 transfers (RP2350 requires natural alignment)
+static uint8_t cam_buffer_a[CAM_FUL_SIZE * 2] __attribute__((aligned(4)));
+static uint8_t cam_buffer_b[CAM_FUL_SIZE * 2] __attribute__((aligned(4)));
 
+// Pointers for double buffering
+uint8_t *cam_dma_write_buf = cam_buffer_a;    // DMA writes to this buffer
+uint8_t *cam_python_read_buf = cam_buffer_b;  // Python reads from this buffer (safe)
+
+// Legacy pointer for compatibility - points to read buffer
+uint8_t *cam_ptr = cam_buffer_b;
 
 uint8_t pin_i2c1_sda = 22; // default on RP2350 touch 2in
 uint8_t pin_i2c1_scl = 23; // default on RP2350 touch 2in
 uint8_t pin_xclk_pwm = 11; // GPIO11 (camera's xclk(24MHz))
 
 
-// flag
+// flags
 volatile bool buffer_ready = false;
-
-
+volatile bool read_in_progress = false;  // Set by Python to protect read buffer
 
 
 
@@ -81,64 +163,84 @@ parameter:
 ********************************************************************************/
 void init_cam()
 {
-
-    mp_printf(MP_PYTHON_PRINTER, "initialize CAMERA\n");
-    mp_printf(MP_PYTHON_PRINTER, "set camera XCLK (pwm) pin: %d\n", pin_xclk_pwm);
-    mp_printf(MP_PYTHON_PRINTER, "call set_pwm_freq_kHz(pwm) before init_cam() to change it\n");
-    set_pwm_freq_kHz(37000, pin_xclk_pwm); // XCLK
+    set_pwm_freq_kHz(37000, pin_xclk_pwm);
     sleep_ms(50);
-    mp_printf(MP_PYTHON_PRINTER, "set camera I2C pins: SDA: %d, SCL: %d\n", (int)pin_i2c1_sda, (int)pin_i2c1_scl);
-    mp_printf(MP_PYTHON_PRINTER, "call set_i2c_pins(sda,scl) before init_cam() to change it\n");
-
-    sccb_init(pin_i2c1_sda, pin_i2c1_scl); // sda,scl=(gp26,gp27). see 'sccb_if.c' and 'cam.h'
+    sccb_init(pin_i2c1_sda, pin_i2c1_scl);
     sleep_ms(50);
+}
 
+void init_cam_with_registers(const uint16_t custom_regs[][2], uint16_t num_regs)
+{
+    set_pwm_freq_kHz(37000, pin_xclk_pwm);
+    sleep_ms(50);
+    sccb_init_with_registers(pin_i2c1_sda, pin_i2c1_scl, custom_regs, num_regs);
+    sleep_ms(50);
 }
 
 
 
 void setup_dma_for_capture()
 {
-    // init DMA
     DMA_CAM_RD_CH = dma_claim_unused_channel(true);
-    mp_printf(MP_PYTHON_PRINTER, "setup_dma_for_capture()->DMA_CH= %d\n", (int)DMA_CAM_RD_CH);
-    
-    // Disable IRQ
     irq_set_enabled(DMA_IRQ_0, false);
 
-     // Configure DMA Channel 0
     dma_channel_config c0 = get_cam_config(pio_cam, sm_cam, DMA_CAM_RD_CH);
-    
-    channel_config_set_transfer_data_size(&c0, DMA_SIZE_16);
-    
     dma_channel_configure(DMA_CAM_RD_CH, &c0,
-                          cam_ptr,               // Destination pointer
-                          &pio_cam->rxf[sm_cam], // Source pointer
-                          sizeof(cam_buffer) / 2,          // Number of transfers
-                          false                  // Don't Start yet
-    );
-    
-    // IRQ settings
+                          cam_dma_write_buf,
+                          &pio_cam->rxf[sm_cam],
+                          CAM_FUL_SIZE / 2,
+                          false);
+
     dma_channel_set_irq0_enabled(DMA_CAM_RD_CH, true);
-    
-    //irq_set_exclusive_handler(DMA_IRQ_0, cam_handler); //NOT WORKING, micropython has IRQ already!
     irq_add_shared_handler(DMA_IRQ_0, cam_handler, PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
-    mp_printf(MP_PYTHON_PRINTER, "irq_add_shared_handler: cam_handler\n");
-    
     irq_set_enabled(DMA_IRQ_0, true);
-    dma_channel_start(DMA_CAM_RD_CH); // Start DMA transfer
+    dma_channel_start(DMA_CAM_RD_CH);
 }
 
 /********************************************************************************
 function:   DMA interrupt processing function
+            Implements double buffering with read protection
 parameter:
 ********************************************************************************/
 void cam_handler(void)
 {
-    buffer_ready = true;
-    dma_hw->ints0 = 1u << DMA_CAM_RD_CH;  // clear the interrupt flag
-    
-    dma_channel_set_write_addr(DMA_CAM_RD_CH, cam_ptr, true);
+    // Clear the interrupt flag first
+    dma_hw->ints0 = 1u << DMA_CAM_RD_CH;
+
+    if (!read_in_progress) {
+        // Safe to swap buffers - Python is not currently reading
+        uint8_t *temp = cam_dma_write_buf;
+        cam_dma_write_buf = cam_python_read_buf;
+        cam_python_read_buf = temp;
+
+        // Update legacy pointer for compatibility
+        cam_ptr = cam_python_read_buf;
+
+        // Signal that a new frame is ready
+        buffer_ready = true;
+    }
+    // else: Python is reading, don't swap - drop this frame to protect read buffer
+
+    // Restart DMA to write buffer (either swapped or same if read in progress)
+    dma_channel_set_write_addr(DMA_CAM_RD_CH, cam_dma_write_buf, true);
+}
+
+/********************************************************************************
+function:   Double buffer control functions for Python
+********************************************************************************/
+void cam_start_read(void)
+{
+    read_in_progress = true;
+}
+
+void cam_end_read(void)
+{
+    read_in_progress = false;
+}
+
+uint8_t* cam_get_read_buffer(void)
+{
+    return cam_python_read_buf;
 }
 
 
@@ -192,21 +294,15 @@ parameter:
 ********************************************************************************/
 void start_cam()
 {
-    // Use the lowest data pin as the base for PIO, and 8 pins for D0-D7
     uint32_t cam_base_pin = g_cam_pinmap.d[0];
     uint32_t cam_num_pins = 11;
-    uint32_t offset_cam = pio_add_program(pio_cam, &picampinos_program);
-    picampinos_program_init(pio_cam, sm_cam, offset_cam, cam_base_pin, cam_num_pins);
-    // Enable the state machine and clear the FIFO
-    pio_sm_set_enabled(pio_cam, sm_cam, false);
-    pio_sm_clear_fifos(pio_cam, sm_cam);
-    pio_sm_restart(pio_cam, sm_cam);
-    pio_sm_set_enabled(pio_cam, sm_cam, true);
+    uint32_t pixel_pairs = CAM_FUL_SIZE / 2;
 
-    // Setting the X and Y registers
-    pio_sm_put_blocking(pio_cam, sm_cam, 0);                  // X=0 : reserved
-    pio_sm_put_blocking(pio_cam, sm_cam, (CAM_FUL_SIZE - 1)); // Y: total words in an image
-    mp_printf(MP_PYTHON_PRINTER, "start_cam finished, camera started\n");
+    uint32_t offset_cam = pio_add_program(pio_cam, &cam_pio_packed_program);
+    cam_pio_packed_init(pio_cam, sm_cam, offset_cam, cam_base_pin, cam_num_pins);
+    pio_sm_put_blocking(pio_cam, sm_cam, 0);
+    pio_sm_put_blocking(pio_cam, sm_cam, (pixel_pairs - 1));
+
     setup_dma_for_capture();
 }
 
@@ -227,7 +323,7 @@ void read_cam_data_blocking(uint8_t *buffer, size_t length)
         }
         else
         {
-            tight_loop_contents(); // wait for data
+            tight_loop_contents();
         }
     }
 }
@@ -238,7 +334,6 @@ parameter:
 ********************************************************************************/
 void free_cam()
 {
-    // Disable IRQ settings
     irq_set_enabled(DMA_IRQ_0, false);
     dma_channel_set_irq0_enabled(DMA_CAM_RD_CH, false);
     dma_channel_abort(DMA_CAM_RD_CH);
@@ -274,16 +369,9 @@ void set_pwm_freq_kHz(uint32_t freq_khz, uint8_t gpio_num)
 
     gpio_set_function(gpio_num, GPIO_FUNC_PWM);
     pwm0_slice_num = pwm_gpio_to_slice_num(gpio_num);
-
-    // config
     pwm_slice_config = pwm_get_default_config();
     pwm_config_set_wrap(&pwm_slice_config, period);
-
-    // set clk div
     pwm_config_set_clkdiv(&pwm_slice_config, 1);
-
-    // set PWM start
     pwm_init(pwm0_slice_num, &pwm_slice_config, true);
-    pwm_set_gpio_level(gpio_num, (pwm_slice_config.top * 0.50)); // duty:50%
+    pwm_set_gpio_level(gpio_num, (pwm_slice_config.top * 0.50));
 }
-

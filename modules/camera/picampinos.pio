@@ -1,59 +1,53 @@
 .program picampinos
 
 ; pin8=vsync, pin9=href, pin10=pclk, pin0-pin7=D[2:9]
+;
+; Packs TWO pixels per 32-bit FIFO push to fully utilize DMA_SIZE_32 transfers.
+; ISR left-shift, 4x "in pins,8" → ISR = HH1_LL1_HH2_LL2 (two RGB565 pixels)
+; In LE memory: [LL2, HH2, LL1, HH1] → word[0]=pixel_N+1, word[1]=pixel_N (pair-swapped)
+; JS must swap each pixel pair to correct the display order.
+;
+; X register counts pixel PAIRS (total_pixels / 2 - 1)
+; Y register stores the pair count for reload each frame
+
 start0:
-    out     x, 32       ; X <= TX_FIFO(32bit) : X must be zero 
-    out     y, 32       ; Y <= TX_FIFO(32bit) : num of trans
+    out     x, 32       ; X <= TX_FIFO(32bit) : X must be zero (reserved)
+    out     y, 32       ; Y <= TX_FIFO(32bit) : num of pixel PAIRS
 
 start1:
     wait 0  pin 8       ; wait until VSYNC=0
     wait 1  pin 8       ; wait until VSYNC=1 (start of frame)
 
 loop0:
-    mov     x, y        ; x = y (y: number of total pixel (in words: 32bit) in an image)
-    wait 0  pin 9       ; wait until HREF=0 (start of line)
+    mov     x, y        ; x = y (number of pixel pairs in frame)
+    wait 0  pin 9       ; wait until HREF=0 (sync to line boundary)
 
 loop1:
     wait 1  pin 9       ; wait until HREF=1 (start of line)
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    
-    ; Read 8-bit data (high byte: high-order part of RGB565)
-    wait 1  pin 10      ; wait until PCLK = 1 (start of pixel)
-    in      pins, 8     ; get camera RGB high byte (R[4:0], G[5:3]) -> ISR
-    wait 0  pin 10      ; wait until PCLK = 0
 
-    ; Read 8-bit data (low byte: low-order part of RGB565)
-    wait 1  pin 10      ; wait until PCLK = 1 (start of next pixel byte)
-    in      pins, 8     ; get camera RGB low byte (G[2:0], B[4:0]) -> ISR
-    wait 0  pin 10      ; wait until PCLK = 0
+    ; --- Pixel N (first of pair) ---
+    wait 1  pin 10      ; wait PCLK=1
+    in      pins, 8     ; HH1 → ISR[7:0]
+    wait 0  pin 10      ; wait PCLK=0
+    wait 1  pin 10      ; wait PCLK=1
+    in      pins, 8     ; LL1 → ISR[15:8..7:0] = 0x0000_HH1_LL1
+    wait 0  pin 10      ; wait PCLK=0
 
-    ; Combine the high byte and low byte into a complete 16-bit RGB565 data (with bit-reversal if needed)
-    push                ; RX_FIFO <= ISR (push the 16-bit RGB565 data into RX_FIFO)
+    ; --- Pixel N+1 (second of pair) ---
+    wait 1  pin 10      ; wait PCLK=1
+    in      pins, 8     ; HH2 → ISR = 0x00_HH1_LL1_HH2
+    wait 0  pin 10      ; wait PCLK=0
+    wait 1  pin 10      ; wait PCLK=1
+    in      pins, 8     ; LL2 → ISR = HH1_LL1_HH2_LL2 (32 bits full)
+    wait 0  pin 10      ; wait PCLK=0
 
-    jmp     x--, loop1  ; Decrement x (total pixels), and loop until all pixels in the row are read
+    mov     y, y        ; nop — autopush already fired at 4th in
+
+    jmp     x--, loop1  ; Decrement x (pixel pairs), loop until all pairs read
 
     wait 0  pin 9       ; wait until HREF=0 (end of line)
 
-    jmp     loop0       ; Continue to next line (next row of pixels)
+    jmp     loop0       ; Continue to next frame (reload x from y)
 
     ; End of frame - jump back to waiting for next VSYNC signal
     jmp     start1      ; jump to start1 to wait for the next frame (VSYNC high)
@@ -66,7 +60,7 @@ static inline void picampinos_program_init( PIO pio, uint32_t sm, uint32_t offse
     sm_config_set_set_pins(&c, in_base, in_pin_num);
     sm_config_set_in_pins(&c, in_base);
  
-    sm_config_set_in_shift(&c, false, false, 32); // auto push : false
+    sm_config_set_in_shift(&c, false, true, 31);  // left shift, autopush at 31 bits (avoids 32→0 encoding on RP2350)
     sm_config_set_out_shift(&c, false, true, 32); // auto pull : true
 
     uint32_t pin_offset;
@@ -84,4 +78,3 @@ static inline void picampinos_program_init( PIO pio, uint32_t sm, uint32_t offse
     pio_sm_set_enabled(pio, sm, true);
 }
 %}
-

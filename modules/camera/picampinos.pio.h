@@ -13,36 +13,47 @@
 // ---------- //
 
 #define picampinos_wrap_target 0
-#define picampinos_wrap 17
+#define picampinos_wrap 23
 #define picampinos_pio_version 1
+
+// Packs TWO pixels per 32-bit FIFO push.
+// ISR left-shift: 4x "in pins,8" → ISR = HH1_LL1_HH2_LL2
+// In LE memory: [LL2, HH2, LL1, HH1] → pixel pairs are swapped.
+// X counts pixel PAIRS (total_pixels / 2 - 1).
 
 static const uint16_t picampinos_program_instructions[] = {
             //     .wrap_target
-    0x6020, //  0: out    x, 32
-    0x6040, //  1: out    y, 32
-    0x2028, //  2: wait   0 pin, 8
-    0x20a8, //  3: wait   1 pin, 8
-    0xa022, //  4: mov    x, y
-    0x2029, //  5: wait   0 pin, 9
-    0x20a9, //  6: wait   1 pin, 9
-    0x20aa, //  7: wait   1 pin, 10
-    0x4008, //  8: in     pins, 8
-    0x202a, //  9: wait   0 pin, 10
-    0x20aa, // 10: wait   1 pin, 10
-    0x4008, // 11: in     pins, 8
-    0x202a, // 12: wait   0 pin, 10
-    0x8020, // 13: push   block
-    0x0046, // 14: jmp    x--, 6
-    0x2029, // 15: wait   0 pin, 9
-    0x0004, // 16: jmp    4
-    0x0002, // 17: jmp    2
+    0x6020, //  0: out    x, 32                    ; X = 0 (reserved)
+    0x6040, //  1: out    y, 32                    ; Y = pixel_pairs
+    0x2028, //  2: wait   0 pin, 8                 ; wait VSYNC=0
+    0x20a8, //  3: wait   1 pin, 8                 ; wait VSYNC=1 (frame start)
+    0xa022, //  4: mov    x, y                     ; x = pixel_pairs
+    0x2029, //  5: wait   0 pin, 9                 ; wait HREF=0 (line sync)
+    0x20a9, //  6: wait   1 pin, 9                 ; wait HREF=1 (line start)
+    0x20aa, //  7: wait   1 pin, 10                ; pixel N: PCLK=1
+    0x4008, //  8: in     pins, 8                  ; HH1 → ISR
+    0x202a, //  9: wait   0 pin, 10                ; PCLK=0
+    0x20aa, // 10: wait   1 pin, 10                ; PCLK=1
+    0x4008, // 11: in     pins, 8                  ; LL1 → ISR
+    0x202a, // 12: wait   0 pin, 10                ; PCLK=0
+    0x20aa, // 13: wait   1 pin, 10                ; pixel N+1: PCLK=1
+    0x4008, // 14: in     pins, 8                  ; HH2 → ISR
+    0x202a, // 15: wait   0 pin, 10                ; PCLK=0
+    0x20aa, // 16: wait   1 pin, 10                ; PCLK=1
+    0x4008, // 17: in     pins, 8                  ; LL2 → ISR (32 bits full)
+    0x202a, // 18: wait   0 pin, 10                ; PCLK=0
+    0xa042, // 19: nop (mov y,y)                   ; autopush already fired at 4th in
+    0x0046, // 20: jmp    x--, 6                   ; loop pixel pairs
+    0x2029, // 21: wait   0 pin, 9                 ; wait HREF=0 (end of line)
+    0x0004, // 22: jmp    4                        ; next frame (reload x)
+    0x0002, // 23: jmp    2                        ; wait next VSYNC
             //     .wrap
 };
 
 #if !PICO_NO_HARDWARE
 static const struct pio_program picampinos_program = {
     .instructions = picampinos_program_instructions,
-    .length = 18,
+    .length = 24,
     .origin = -1,
     .pio_version = picampinos_pio_version,
 #if PICO_PIO_VERSION > 0
@@ -61,7 +72,7 @@ static inline void picampinos_program_init( PIO pio, uint32_t sm, uint32_t offse
     pio_sm_config c = picampinos_program_get_default_config(offset);
     sm_config_set_set_pins(&c, in_base, in_pin_num);
     sm_config_set_in_pins(&c, in_base);
-    sm_config_set_in_shift(&c, false, false, 32); // auto push : false
+    sm_config_set_in_shift(&c, false, true, 31);  // left shift, autopush at 31 bits (avoids 32→0 encoding on RP2350)
     sm_config_set_out_shift(&c, false, true, 32); // auto pull : true
     uint32_t pin_offset;
     for (pin_offset = 0; pin_offset < in_pin_num; pin_offset++)
@@ -75,4 +86,3 @@ static inline void picampinos_program_init( PIO pio, uint32_t sm, uint32_t offse
 }
 
 #endif
-

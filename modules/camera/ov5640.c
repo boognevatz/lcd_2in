@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "ov5640.h"
+#include "py/mpprint.h"
 
 // Define the default register settings for the OV5640 sensor
 const uint16_t sensor_default_regs[][2] = {
@@ -225,6 +226,9 @@ parameter:
 ********************************************************************************/
 void sccb_init(const uint32_t sda_pin, const uint32_t scl_pin)
 {
+    mp_printf(MP_PYTHON_PRINTER, "sccb_init: SDA=%d SCL=%d addr=0x%02x\n", 
+              (int)sda_pin, (int)scl_pin, 0x3c);
+    
     ov5640_cam_addr = 0x3c; // default: OV5640
     ov5640_i2c = i2c1;
 
@@ -241,15 +245,13 @@ void sccb_init(const uint32_t sda_pin, const uint32_t scl_pin)
     reg=OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0X300A);
 	reg<<=8;
 	reg|=OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0X300B);
-    printf("ID: %d \r\n",reg);
+    mp_printf(MP_PYTHON_PRINTER, "OV5640 ID=0x%04x\n", reg);
 
     for(uint16_t i=0; i<sizeof(sensor_default_regs)/4; i++)
 	{
 		OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,sensor_default_regs[i][0],sensor_default_regs[i][1]);
-	} 
+	}
     sleep_ms(50);
-
-    // set_size_and_colorspace 320x240
     OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_ST_H,352,26);
     OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_END_H,1792,1946);
     OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_OUTPUT_SIZE_H,240,320); //1440 1920
@@ -270,7 +272,6 @@ void sccb_init(const uint32_t sda_pin, const uint32_t scl_pin)
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,Y_INCREMENT, 0x31);
     sleep_ms(50);
 
-    // set_pll
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_5, 0x00);
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_0, 0x1A); 
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_1, 0x11); 
@@ -282,9 +283,76 @@ void sccb_init(const uint32_t sda_pin, const uint32_t scl_pin)
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SCCB_SYSTEM_CTRL1, 0x13);
     sleep_ms(50);
 
-    // set_colorspace
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,FORMAT_CTRL,0x01);
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,FORMAT_CTRL00,0x61);
+    sleep_ms(50);
+}
+
+/********************************************************************************
+function:   Camera register initialization with custom register array
+parameter:  sda_pin, scl_pin, custom_regs array, num_regs
+********************************************************************************/
+void sccb_init_with_registers(const uint32_t sda_pin, const uint32_t scl_pin, const uint16_t custom_regs[][2], uint16_t num_regs)
+{
+    ov5640_cam_addr = 0x3c;
+    ov5640_i2c = i2c1;
+
+    i2c_init(ov5640_i2c, 100 * 1000);
+
+    gpio_set_function(sda_pin, GPIO_FUNC_I2C);
+    gpio_set_function(scl_pin, GPIO_FUNC_I2C);
+    gpio_pull_up(sda_pin);
+    gpio_pull_up(scl_pin);
+
+    uint16_t reg;
+    reg=OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0X300A);
+    reg<<=8;
+    reg|=OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0X300B);
+    mp_printf(MP_PYTHON_PRINTER, "OV5640 ID=0x%04x\n", reg);
+
+    for(uint16_t i=0; i<sizeof(sensor_default_regs)/4; i++)
+    {
+        OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,sensor_default_regs[i][0],sensor_default_regs[i][1]);
+    }
+    sleep_ms(50);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_ST_H,352,26);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_END_H,1792,1946);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_OUTPUT_SIZE_H,240,320);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_TOTAL_SIZE_H,2592,1944);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_OFFSET_H,16,14);
+
+    uint8_t dat;
+    dat = OV5640_RD_Reg(ov5640_i2c,ov5640_cam_addr,0x5001) | 0x20;
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x5001, dat);
+    sleep_ms(50);
+
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,TIMING_TC_REG20, 0x01);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,TIMING_TC_REG21, 0X00);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x4514, 0xAA);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x4520, 0x0B);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,X_INCREMENT, 0x31);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,Y_INCREMENT, 0x31);
+    sleep_ms(50);
+
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_5, 0x00);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_0, 0x1A);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_1, 0x11);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_2, 11 & 0xFF);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_3, 0x01);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SYSTEM_ROOT_DIVIDER, 0x16);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,PCLK_RATIO, 0x04);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,VFIFO_CTRL0C, 0x22);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SCCB_SYSTEM_CTRL1, 0x13);
+    sleep_ms(50);
+
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,FORMAT_CTRL,0x01);
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,FORMAT_CTRL00,0x61);
+    sleep_ms(50);
+
+    for(uint16_t i=0; i<num_regs; i++)
+    {
+        OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,custom_regs[i][0],(uint8_t)custom_regs[i][1]);
+    }
     sleep_ms(50);
 }
 
@@ -294,7 +362,7 @@ void sccb_init(const uint32_t sda_pin, const uint32_t scl_pin)
  * @param reverse: true for reverse output data bit order, false for normal
  */
 void ov5640_set_data_order(bool reverse) {
-    if (!ov5640_i2c) return; // Not initialized
+    if (!ov5640_i2c) return;
     uint8_t val = OV5640_RD_Reg(ov5640_i2c, ov5640_cam_addr, OV5640_REG_DATA_ORDER);
     if (reverse) {
         val |= 0x01; // Set bit 0 for reverse
@@ -302,6 +370,35 @@ void ov5640_set_data_order(bool reverse) {
         val &= ~0x01; // Clear bit 0 for normal
     }
     OV5640_WR_Reg(ov5640_i2c, ov5640_cam_addr, OV5640_REG_DATA_ORDER, val);
+}
+
+/**
+ * @brief Write arbitrary register value to OV5640
+ *        Must be called after sccb_init().
+ * @param reg: 16-bit register address
+ * @param value: 8-bit value to write
+ * @return: 0 on success, -1 if not initialized
+ */
+int ov5640_write_register(uint16_t reg, uint8_t value) {
+    if (!ov5640_i2c) return -1;
+    OV5640_WR_Reg(ov5640_i2c, ov5640_cam_addr, reg, value);
+    return 0;
+}
+
+/**
+ * @brief Read arbitrary register value from OV5640
+ *        Must be called after sccb_init().
+ * @param reg: 16-bit register address
+ * @return: register value (0-255), or -1 if not initialized
+ */
+int ov5640_read_register(uint16_t reg) {
+    if (!ov5640_i2c) {
+        mp_printf(MP_PYTHON_PRINTER, "ov5640_read_register: error - not initialized\n");
+        return -1;
+    }
+    uint8_t val = OV5640_RD_Reg(ov5640_i2c, ov5640_cam_addr, reg);
+    mp_printf(MP_PYTHON_PRINTER, "ov5640_read_register: 0x%04X = 0x%02X\n", reg, val);
+    return val;
 }
 
 /********************************************************************************

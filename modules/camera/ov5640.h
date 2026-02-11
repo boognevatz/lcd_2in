@@ -294,6 +294,11 @@
 void sccb_init(const uint32_t sda_pin,
                const uint32_t scl_pin);
 
+void sccb_init_with_registers(const uint32_t sda_pin,
+                              const uint32_t scl_pin,
+                              const uint16_t custom_regs[][2],
+                              uint16_t num_regs);
+
 int32_t reg_write(i2c_inst_t *i2c,
                   const uint8_t addr,
                   uint8_t *buf,
@@ -325,6 +330,23 @@ uint8_t OV5640_RD_Reg(i2c_inst_t *i2c,
  * @param reverse: true for reverse output data bit order, false for normal
  */
 void ov5640_set_data_order(bool reverse);
+
+/**
+ * @brief Write arbitrary register value to OV5640
+ *        Must be called after sccb_init().
+ * @param reg: 16-bit register address
+ * @param value: 8-bit value to write
+ * @return: 0 on success, -1 if not initialized
+ */
+int ov5640_write_register(uint16_t reg, uint8_t value);
+
+/**
+ * @brief Read arbitrary register value from OV5640
+ *        Must be called after sccb_init().
+ * @param reg: 16-bit register address
+ * @return: register value (0-255), or -1 if not initialized
+ */
+int ov5640_read_register(uint16_t reg);
 
 extern const uint16_t sensor_default_regs[][2];
 
