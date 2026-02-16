@@ -32,9 +32,14 @@
 #include "LCD_2in.h"
 #include "py/obj.h"
 
-extern uint8_t *cam_ptr;  
-extern uint8_t *cam_ptr1; 
+// Double buffering - DMA writes to one buffer while Python reads from other
+extern uint8_t *cam_dma_write_buf;    // DMA writes here (do not read from Python)
+extern uint8_t *cam_python_read_buf;  // Python reads here (safe, not being written)
 extern volatile bool buffer_ready;
+extern volatile bool read_in_progress; // Set by Python to protect read buffer
+
+// Legacy pointer for compatibility (points to read buffer)
+extern uint8_t *cam_ptr;
 
 #define USE_100BASE_FX (false)
 
@@ -60,6 +65,10 @@ void read_cam_data_blocking(uint8_t *buffer, size_t length);
 dma_channel_config get_cam_config(PIO pio, uint32_t sm, uint32_t dma_chan);
 void cam_handler();
 void setup_dma_for_capture();
+
+// Double buffer control - call from Python
+void cam_start_read(void);   // Call before reading frame - locks read buffer
+void cam_end_read(void);     // Call after reading frame - allows buffer swap
 
 // Camera pin mapping struct for runtime configuration
 typedef struct {

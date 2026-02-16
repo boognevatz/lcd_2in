@@ -50,8 +50,16 @@ static uint32_t sm_cam; // CAMERA's state machines
 // dma channels
 static uint32_t DMA_CAM_RD_CH;
 
-static uint8_t cam_buffer[CAM_FUL_SIZE * 2];
-uint8_t *cam_ptr = cam_buffer;
+// Double buffering: two separate buffers for tear-free capture
+static uint8_t cam_buffer_a[CAM_FUL_SIZE * 2] __attribute__((aligned(4)));
+static uint8_t cam_buffer_b[CAM_FUL_SIZE * 2] __attribute__((aligned(4)));
+
+// Pointers for double buffering
+uint8_t *cam_dma_write_buf = cam_buffer_a;    // DMA writes to this buffer
+uint8_t *cam_python_read_buf = cam_buffer_b;  // Python reads from this buffer (safe)
+
+// Legacy pointer for compatibility - points to read buffer
+uint8_t *cam_ptr = cam_buffer_b;
 
 
 uint8_t pin_i2c1_sda = 22; // default on RP2350 touch 2in
@@ -59,8 +67,9 @@ uint8_t pin_i2c1_scl = 23; // default on RP2350 touch 2in
 uint8_t pin_xclk_pwm = 11; // GPIO11 (camera's xclk(24MHz))
 
 
-// flag
+// flags
 volatile bool buffer_ready = false;
+volatile bool read_in_progress = false;  // Set by Python to protect read buffer
 
 
 
@@ -112,9 +121,9 @@ void setup_dma_for_capture()
     channel_config_set_transfer_data_size(&c0, DMA_SIZE_16);
     
     dma_channel_configure(DMA_CAM_RD_CH, &c0,
-                          cam_ptr,               // Destination pointer
+                          cam_dma_write_buf,      // Destination pointer
                           &pio_cam->rxf[sm_cam], // Source pointer
-                          sizeof(cam_buffer) / 2,          // Number of transfers
+                          CAM_FUL_SIZE * 2 / 2,  // Number of transfers (16-bit)
                           false                  // Don't Start yet
     );
     
@@ -135,10 +144,38 @@ parameter:
 ********************************************************************************/
 void cam_handler(void)
 {
-    buffer_ready = true;
-    dma_hw->ints0 = 1u << DMA_CAM_RD_CH;  // clear the interrupt flag
-    
-    dma_channel_set_write_addr(DMA_CAM_RD_CH, cam_ptr, true);
+    // Clear the interrupt flag first
+    dma_hw->ints0 = 1u << DMA_CAM_RD_CH;
+
+    if (!read_in_progress) {
+        // Safe to swap buffers - Python is not currently reading
+        uint8_t *temp = cam_dma_write_buf;
+        cam_dma_write_buf = cam_python_read_buf;
+        cam_python_read_buf = temp;
+
+        // Update legacy pointer for compatibility
+        cam_ptr = cam_python_read_buf;
+
+        // Signal that a new frame is ready
+        buffer_ready = true;
+    }
+    // else: Python is reading, don't swap - drop this frame to protect read buffer
+
+    // Restart DMA to write buffer (either swapped or same if read in progress)
+    dma_channel_set_write_addr(DMA_CAM_RD_CH, cam_dma_write_buf, true);
+}
+
+/********************************************************************************
+function:   Double buffer control functions for Python
+********************************************************************************/
+void cam_start_read(void)
+{
+    read_in_progress = true;
+}
+
+void cam_end_read(void)
+{
+    read_in_progress = false;
 }
 
 

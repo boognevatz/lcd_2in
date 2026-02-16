@@ -5,7 +5,7 @@
 #include "py/runtime.h"
 #include "py/stream.h"
 
-extern uint8_t *cam_ptr;
+extern uint8_t *cam_python_read_buf;
 
 // Wrapper for init_cam()
 static mp_obj_t camera_init_cam() {
@@ -16,7 +16,7 @@ static MP_DEFINE_CONST_FUN_OBJ_0(camera_init_cam_obj, camera_init_cam);
 
 
 static mp_obj_t camera_frame(void) {
-    return mp_obj_new_bytearray_by_ref(CAM_FUL_SIZE * 2, cam_ptr);
+    return mp_obj_new_bytearray_by_ref(CAM_FUL_SIZE * 2, cam_python_read_buf);
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(camera_frame_obj, camera_frame);
 
@@ -50,7 +50,9 @@ static mp_obj_t camera_send_frame_over_eth(mp_obj_t callback) {
     if (!buffer_ready) {
         return mp_const_none;
     }
-    mp_call_function_1(callback, mp_obj_new_bytearray_by_ref(CAM_FUL_SIZE * 2, cam_ptr));
+    cam_start_read();
+    mp_call_function_1(callback, mp_obj_new_bytearray_by_ref(CAM_FUL_SIZE * 2, cam_python_read_buf));
+    cam_end_read();
     buffer_ready = false;
     return mp_const_none;
 }
@@ -98,35 +100,36 @@ static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_xclk_pin_obj, camera_set_xclk_pin);
 static const char boundary_first[] = "--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
 static const char boundary_subsequent[] = "\r\n--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
 
-// Send frame data directly to socket from C (ported from Python send_frame_data)
+// Send frame data directly to socket from C (with double-buffer protection)
 // Args: socket object, is_first_frame (bool)
-// Returns: True on success, False on failure
+// Returns: True on success, False on failure, None if no frame ready
 static mp_obj_t camera_send_frame_data_c(mp_obj_t socket_obj, mp_obj_t first_frame_obj) {
     if (!buffer_ready) {
-        return mp_const_false;
+        return mp_const_none;
     }
 
     int errcode;
     bool is_first_frame = mp_obj_is_true(first_frame_obj);
 
-    // Send boundary header
     const char *boundary;
     size_t boundary_len;
     if (is_first_frame) {
         boundary = boundary_first;
-        boundary_len = sizeof(boundary_first) - 1;  // -1 for null terminator
+        boundary_len = sizeof(boundary_first) - 1;
     } else {
         boundary = boundary_subsequent;
         boundary_len = sizeof(boundary_subsequent) - 1;
     }
 
-    // Use mp_stream_write_exactly which returns bytes written (MP_STREAM_ERROR on error)
+    cam_start_read();
+
     mp_uint_t ret = mp_stream_write_exactly(socket_obj, boundary, boundary_len, &errcode);
     if (ret == MP_STREAM_ERROR) {
+        cam_end_read();
+        buffer_ready = false;
         return mp_const_false;
     }
 
-    // Send frame data in chunks (16KB each, like Python version)
     const size_t chunk_size = 16384;
     const size_t frame_size = CAM_FUL_SIZE * 2;
     size_t total_sent = 0;
@@ -137,20 +140,23 @@ static mp_obj_t camera_send_frame_data_c(mp_obj_t socket_obj, mp_obj_t first_fra
             to_send = chunk_size;
         }
 
-        ret = mp_stream_write_exactly(socket_obj, cam_ptr + total_sent, to_send, &errcode);
+        ret = mp_stream_write_exactly(socket_obj, cam_python_read_buf + total_sent, to_send, &errcode);
         if (ret == MP_STREAM_ERROR || ret == 0) {
+            cam_end_read();
+            buffer_ready = false;
             return mp_const_false;
         }
 
         total_sent += ret;
     }
 
+    cam_end_read();
     buffer_ready = false;
     return mp_const_true;
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(camera_send_frame_data_c_obj, camera_send_frame_data_c);
 
-// Stream loop in C (ported from Python /streamc while loop lines 1219-1236)
+// Stream loop in C (with double-buffer protection)
 // Args: socket object
 // Returns: frame count when stream ends (disconnect, error, or KeyboardInterrupt)
 static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
@@ -160,29 +166,29 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
     int errcode;
 
     while (streaming) {
-        // Handle pending signals (KeyboardInterrupt)
-        // This will raise MP_OBJ_STOP_ITERATION or similar on Ctrl+C
         mp_handle_pending(true);
 
         if (buffer_ready) {
-            // Send boundary header
             const char *boundary;
             size_t boundary_len;
             if (first_frame) {
                 boundary = boundary_first;
-                boundary_len = sizeof(boundary_first) - 1;  // -1 for null terminator
+                boundary_len = sizeof(boundary_first) - 1;
             } else {
                 boundary = boundary_subsequent;
                 boundary_len = sizeof(boundary_subsequent) - 1;
             }
 
+            cam_start_read();
+
             mp_uint_t ret = mp_stream_write_exactly(socket_obj, boundary, boundary_len, &errcode);
             if (ret == MP_STREAM_ERROR) {
+                cam_end_read();
+                buffer_ready = false;
                 streaming = false;
                 break;
             }
 
-            // Send frame data in chunks (16KB each, like Python version)
             const size_t chunk_size = 16384;
             const size_t frame_size = CAM_FUL_SIZE * 2;
             size_t total_sent = 0;
@@ -193,7 +199,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
                     to_send = chunk_size;
                 }
 
-                ret = mp_stream_write_exactly(socket_obj, cam_ptr + total_sent, to_send, &errcode);
+                ret = mp_stream_write_exactly(socket_obj, cam_python_read_buf + total_sent, to_send, &errcode);
                 if (ret == MP_STREAM_ERROR || ret == 0) {
                     streaming = false;
                     break;
@@ -202,9 +208,11 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
                 total_sent += ret;
             }
 
+            cam_end_read();
+            buffer_ready = false;
+
             if (!streaming) break;
 
-            buffer_ready = false;
             first_frame = false;
             frame_count++;
         }

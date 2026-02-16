@@ -190,69 +190,23 @@ Connection: close
         let requestInProgress = false;
         let abortController = null;
 
-        // Auto-detect byte order: null until first frame
-        let mode = null;
-
         function displayImage(arrayBuffer) {
             const data = new Uint8Array(arrayBuffer);
             const imageData = ctx.createImageData(width, height);
             const totalPixels = width * height;
 
-            // Auto-detect byte order on first frame
-            if (mode === null && data.length >= 8) {
-                mode = (data[2] === 0 && data[3] === 0 && data[6] === 0 && data[7] === 0) ? 'p' : 'k';
-            }
-
-            if (mode === 'p') {
-                // Paired mode: little-endian, process 2 pixels at a time
-                for (let i = 0; i < totalPixels; i += 2) {
-                    const b = i * 2;
-                    if (b + 1 >= data.length) break;
-                    const v = (data[b + 1] << 8) | data[b];
-                    const r5 = (v >> 11) & 0x1F;
-                    const g6 = (v >> 5) & 0x3F;
-                    const b5 = v & 0x1F;
-                    const R = (r5 << 3) | (r5 >> 2);
-                    const G = (g6 << 2) | (g6 >> 4);
-                    const B = (b5 << 3) | (b5 >> 2);
-                    let x = i * 4;
-                    imageData.data[x]     = R;
-                    imageData.data[x + 1] = G;
-                    imageData.data[x + 2] = B;
-                    imageData.data[x + 3] = 255;
-                    imageData.data[x + 4] = R;
-                    imageData.data[x + 5] = G;
-                    imageData.data[x + 6] = B;
-                    imageData.data[x + 7] = 255;
-                }
-            } else {
-                // Swapped mode: process 2 pixels per 4 bytes
-                for (let i = 0; i < totalPixels; i += 2) {
-                    const b = i * 2;
-                    if (b + 3 >= data.length) break;
-
-                    // First pixel from bytes [b+2, b+3]
-                    let v = (data[b + 3] << 8) | data[b + 2];
-                    let r5 = (v >> 11) & 0x1F;
-                    let g6 = (v >> 5) & 0x3F;
-                    let b5 = v & 0x1F;
-                    let x = i * 4;
-                    imageData.data[x]     = (r5 << 3) | (r5 >> 2);
-                    imageData.data[x + 1] = (g6 << 2) | (g6 >> 4);
-                    imageData.data[x + 2] = (b5 << 3) | (b5 >> 2);
-                    imageData.data[x + 3] = 255;
-
-                    // Second pixel from bytes [b, b+1]
-                    v = (data[b + 1] << 8) | data[b];
-                    r5 = (v >> 11) & 0x1F;
-                    g6 = (v >> 5) & 0x3F;
-                    b5 = v & 0x1F;
-                    x = (i + 1) * 4;
-                    imageData.data[x]     = (r5 << 3) | (r5 >> 2);
-                    imageData.data[x + 1] = (g6 << 2) | (g6 >> 4);
-                    imageData.data[x + 2] = (b5 << 3) | (b5 >> 2);
-                    imageData.data[x + 3] = 255;
-                }
+            for (let i = 0; i < totalPixels; i++) {
+                const b = i * 2;
+                if (b + 1 >= data.length) break;
+                const v = (data[b + 1] << 8) | data[b];
+                const r5 = (v >> 11) & 0x1F;
+                const g6 = (v >> 5) & 0x3F;
+                const b5 = v & 0x1F;
+                const x = i * 4;
+                imageData.data[x]     = (r5 << 3) | (r5 >> 2);
+                imageData.data[x + 1] = (g6 << 2) | (g6 >> 4);
+                imageData.data[x + 2] = (b5 << 3) | (b5 >> 2);
+                imageData.data[x + 3] = 255;
             }
 
             ctx.putImageData(imageData, 0, 0);
