@@ -33,6 +33,24 @@ git checkout micropython # branch
 
 ```
 
+## Side quest: build pioasm
+
+cmake -S micropython/lib/pico-sdk/tools/pioasm \
+      -B micropython/lib/pico-sdk/tools/pioasm/build  
+&& cmake --build micropython/lib/pico-sdk/tools/pioasm/build
+
+BUILDFIX if needed: fix is required if build fails, add
+#include <cstdint>
+to 
+micropython/lib/pico-sdk/tools/pioasm/pio_types.h
+micropython/lib/pico-sdk/tools/pioasm/output_format.h
+)
+
+### Use the pioasm:
+
+cd modules/camera 
+../../micropython/lib/pico-sdk/tools/pioasm/build/pioasm -o c-sdk picampinos.pio picampinos.pio.h
+
 
 ## The actual build itself:
 ```
@@ -48,7 +66,9 @@ make -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 clean
 START=$(date +%s); make -j4 -C micropython/ports/rp2/ BOARD=RP2350_TOUCH_LCD_2 USER_C_MODULES=../../../modules/micropython.cmake; echo "Build took $(( $(date +%s) - START )) seconds."; echo "Finished at $(date)"
 
 ```
-# For final build, omit the -j4 parameter!
+### For final build, omit the -j4 parameter!
+
+
 
 #############################
 ### NOT NEEDED (already in git) ### 
