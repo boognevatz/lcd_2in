@@ -47,29 +47,28 @@ static PIO pio_cam = pio0;
 // statemachine's pointer
 static uint32_t sm_cam; // CAMERA's state machines
 
-// dma channels
-static uint32_t DMA_CAM_RD_CH;
+// 3 half-frame buckets (76,800 bytes each = 230,400 total)
+static uint8_t bucket_mem_0[HALF_FRAME_BYTES] __attribute__((aligned(4)));
+static uint8_t bucket_mem_1[HALF_FRAME_BYTES] __attribute__((aligned(4)));
+static uint8_t bucket_mem_2[HALF_FRAME_BYTES] __attribute__((aligned(4)));
+uint8_t *bucket[3] = { bucket_mem_0, bucket_mem_1, bucket_mem_2 };
 
-// Double buffering: two separate buffers for tear-free capture
-static uint8_t cam_buffer_a[CAM_FUL_SIZE * 2] __attribute__((aligned(4)));
-static uint8_t cam_buffer_b[CAM_FUL_SIZE * 2] __attribute__((aligned(4)));
+// DMA channels for half-frame chaining
+static uint32_t DMA_CH_A;
+static uint32_t DMA_CH_B;
 
-// Pointers for double buffering
-uint8_t *cam_dma_write_buf = cam_buffer_a;    // DMA writes to this buffer
-uint8_t *cam_python_read_buf = cam_buffer_b;  // Python reads from this buffer (safe)
+// Rotation counter: increments every half-frame completion
+static volatile uint32_t write_pos = 0;
 
-// Legacy pointer for compatibility - points to read buffer
-uint8_t *cam_ptr = cam_buffer_b;
-
+// Frame state
+volatile bool frame_ready = false;
+volatile uint8_t frame_first_idx = 0;
+volatile uint8_t frame_second_idx = 1;
+volatile bool read_in_progress = false;
 
 uint8_t pin_i2c1_sda = 22; // default on RP2350 touch 2in
 uint8_t pin_i2c1_scl = 23; // default on RP2350 touch 2in
 uint8_t pin_xclk_pwm = 11; // GPIO11 (camera's xclk(24MHz))
-
-
-// flags
-volatile bool buffer_ready = false;
-volatile bool read_in_progress = false;  // Set by Python to protect read buffer
 
 
 
@@ -108,65 +107,91 @@ void init_cam()
 
 void setup_dma_for_capture()
 {
-    // init DMA
-    DMA_CAM_RD_CH = dma_claim_unused_channel(true);
-    mp_printf(MP_PYTHON_PRINTER, "setup_dma_for_capture()->DMA_CH= %d\n", (int)DMA_CAM_RD_CH);
-    
-    // Disable IRQ
+    // Claim two DMA channels for half-frame chaining
+    DMA_CH_A = dma_claim_unused_channel(true);
+    DMA_CH_B = dma_claim_unused_channel(true);
+    mp_printf(MP_PYTHON_PRINTER, "setup_dma_for_capture()-> DMA_CH_A=%d DMA_CH_B=%d\n",
+              (int)DMA_CH_A, (int)DMA_CH_B);
+
     irq_set_enabled(DMA_IRQ_0, false);
 
-     // Configure DMA Channel 0
-    dma_channel_config c0 = get_cam_config(pio_cam, sm_cam, DMA_CAM_RD_CH);
-    
-    channel_config_set_transfer_data_size(&c0, DMA_SIZE_16);
-    
-    dma_channel_configure(DMA_CAM_RD_CH, &c0,
-                          cam_dma_write_buf,      // Destination pointer
-                          &pio_cam->rxf[sm_cam], // Source pointer
-                          CAM_FUL_SIZE * 2 / 2,  // Number of transfers (16-bit)
-                          false                  // Don't Start yet
-    );
-    
-    // IRQ settings
-    dma_channel_set_irq0_enabled(DMA_CAM_RD_CH, true);
-    
-    //irq_set_exclusive_handler(DMA_IRQ_0, cam_handler); //NOT WORKING, micropython has IRQ already!
+    // Configure CH_A: transfers one half-frame, then chains to CH_B
+    dma_channel_config c_a = get_cam_config(pio_cam, sm_cam, DMA_CH_A);
+    channel_config_set_transfer_data_size(&c_a, DMA_SIZE_16);
+    channel_config_set_chain_to(&c_a, DMA_CH_B);
+    dma_channel_configure(DMA_CH_A, &c_a,
+                          bucket[0],              // write to bucket[0]
+                          &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
+                          HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers
+                          false);                 // don't start yet
+
+    // Configure CH_B: transfers one half-frame, then chains to CH_A
+    dma_channel_config c_b = get_cam_config(pio_cam, sm_cam, DMA_CH_B);
+    channel_config_set_transfer_data_size(&c_b, DMA_SIZE_16);
+    channel_config_set_chain_to(&c_b, DMA_CH_A);
+    dma_channel_configure(DMA_CH_B, &c_b,
+                          bucket[1],              // write to bucket[1]
+                          &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
+                          HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers
+                          false);                 // don't start yet
+
+    // Reset rotation state
+    write_pos = 0;
+    frame_ready = false;
+    read_in_progress = false;
+
+    // Enable IRQ on both channels
+    dma_channel_set_irq0_enabled(DMA_CH_A, true);
+    dma_channel_set_irq0_enabled(DMA_CH_B, true);
+
     irq_add_shared_handler(DMA_IRQ_0, cam_handler, PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
-    mp_printf(MP_PYTHON_PRINTER, "irq_add_shared_handler: cam_handler\n");
-    
+    mp_printf(MP_PYTHON_PRINTER, "irq_add_shared_handler: cam_handler (3-bucket)\n");
+
     irq_set_enabled(DMA_IRQ_0, true);
-    dma_channel_start(DMA_CAM_RD_CH); // Start DMA transfer
+    dma_channel_start(DMA_CH_A); // Start first half-frame capture
 }
 
 /********************************************************************************
-function:   DMA interrupt processing function
+function:   DMA interrupt processing function (3-bucket half-frame rotation)
 parameter:
 ********************************************************************************/
+static void handle_half_complete(uint32_t completed_ch)
+{
+    uint8_t completed_bucket = write_pos % 3;
+    write_pos++;
+
+    // Reconfigure this channel's write address for 2 positions ahead in rotation.
+    // It won't be triggered again until the other channel finishes its half,
+    // so we have ~61ms before this address is used.
+    dma_channel_set_write_addr(completed_ch,
+                               bucket[(completed_bucket + 2) % 3], false);
+
+    // Every 2nd half-frame completes a full frame
+    if ((write_pos & 1) == 0) {
+        if (!read_in_progress) {
+            frame_second_idx = completed_bucket;
+            frame_first_idx = (completed_bucket + 2) % 3;
+            frame_ready = true;
+        }
+        // else: frame dropped silently (send loop busy)
+    }
+}
+
 void cam_handler(void)
 {
-    // Clear the interrupt flag first
-    dma_hw->ints0 = 1u << DMA_CAM_RD_CH;
-
-    if (!read_in_progress) {
-        // Safe to swap buffers - Python is not currently reading
-        uint8_t *temp = cam_dma_write_buf;
-        cam_dma_write_buf = cam_python_read_buf;
-        cam_python_read_buf = temp;
-
-        // Update legacy pointer for compatibility
-        cam_ptr = cam_python_read_buf;
-
-        // Signal that a new frame is ready
-        buffer_ready = true;
+    uint32_t ints = dma_hw->ints0;
+    if (ints & (1u << DMA_CH_A)) {
+        dma_hw->ints0 = 1u << DMA_CH_A;
+        handle_half_complete(DMA_CH_A);
     }
-    // else: Python is reading, don't swap - drop this frame to protect read buffer
-
-    // Restart DMA to write buffer (either swapped or same if read in progress)
-    dma_channel_set_write_addr(DMA_CAM_RD_CH, cam_dma_write_buf, true);
+    if (ints & (1u << DMA_CH_B)) {
+        dma_hw->ints0 = 1u << DMA_CH_B;
+        handle_half_complete(DMA_CH_B);
+    }
 }
 
 /********************************************************************************
-function:   Double buffer control functions for Python
+function:   Frame read control functions for Python (protects read buckets)
 ********************************************************************************/
 void cam_start_read(void)
 {
@@ -277,8 +302,10 @@ void free_cam()
 {
     // Disable IRQ settings
     irq_set_enabled(DMA_IRQ_0, false);
-    dma_channel_set_irq0_enabled(DMA_CAM_RD_CH, false);
-    dma_channel_abort(DMA_CAM_RD_CH);
+    dma_channel_set_irq0_enabled(DMA_CH_A, false);
+    dma_channel_set_irq0_enabled(DMA_CH_B, false);
+    dma_channel_abort(DMA_CH_A);
+    dma_channel_abort(DMA_CH_B);
 }
 
 /********************************************************************************

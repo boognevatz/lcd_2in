@@ -5,8 +5,6 @@
 #include "py/runtime.h"
 #include "py/stream.h"
 
-extern uint8_t *cam_python_read_buf;
-
 // Wrapper for init_cam()
 static mp_obj_t camera_init_cam() {
     init_cam();
@@ -16,7 +14,12 @@ static MP_DEFINE_CONST_FUN_OBJ_0(camera_init_cam_obj, camera_init_cam);
 
 
 static mp_obj_t camera_frame(void) {
-    return mp_obj_new_bytearray_by_ref(CAM_FUL_SIZE * 2, cam_python_read_buf);
+    // Return a 2-tuple: (first_half_bytearray, second_half_bytearray)
+    mp_obj_t halves[2] = {
+        mp_obj_new_bytearray_by_ref(HALF_FRAME_BYTES, bucket[frame_first_idx]),
+        mp_obj_new_bytearray_by_ref(HALF_FRAME_BYTES, bucket[frame_second_idx]),
+    };
+    return mp_obj_new_tuple(2, halves);
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(camera_frame_obj, camera_frame);
 
@@ -41,19 +44,24 @@ static mp_obj_t camera_start_cam() {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(camera_start_cam_obj, camera_start_cam);
 
-static mp_obj_t cam_is_buffer_ready(void) {
-    return mp_obj_new_bool(buffer_ready);
+static mp_obj_t cam_is_frame_ready(void) {
+    return mp_obj_new_bool(frame_ready);
 }
-static MP_DEFINE_CONST_FUN_OBJ_0(cam_is_buffer_ready_obj, cam_is_buffer_ready);
+static MP_DEFINE_CONST_FUN_OBJ_0(cam_is_frame_ready_obj, cam_is_frame_ready);
 
 static mp_obj_t camera_send_frame_over_eth(mp_obj_t callback) {
-    if (!buffer_ready) {
+    if (!frame_ready) {
         return mp_const_none;
     }
     cam_start_read();
-    mp_call_function_1(callback, mp_obj_new_bytearray_by_ref(CAM_FUL_SIZE * 2, cam_python_read_buf));
+    // Pass a 2-tuple of half-frame bytearrays to the callback
+    mp_obj_t halves[2] = {
+        mp_obj_new_bytearray_by_ref(HALF_FRAME_BYTES, bucket[frame_first_idx]),
+        mp_obj_new_bytearray_by_ref(HALF_FRAME_BYTES, bucket[frame_second_idx]),
+    };
+    mp_call_function_1(callback, mp_obj_new_tuple(2, halves));
     cam_end_read();
-    buffer_ready = false;
+    frame_ready = false;
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(camera_send_frame_over_eth_obj, camera_send_frame_over_eth);
@@ -100,11 +108,11 @@ static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_xclk_pin_obj, camera_set_xclk_pin);
 static const char boundary_first[] = "--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
 static const char boundary_subsequent[] = "\r\n--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
 
-// Send frame data directly to socket from C (with double-buffer protection)
+// Send frame data directly to socket from C (3-bucket half-frame)
 // Args: socket object, is_first_frame (bool)
 // Returns: True on success, False on failure, None if no frame ready
 static mp_obj_t camera_send_frame_data_c(mp_obj_t socket_obj, mp_obj_t first_frame_obj) {
-    if (!buffer_ready) {
+    if (!frame_ready) {
         return mp_const_none;
     }
 
@@ -123,40 +131,62 @@ static mp_obj_t camera_send_frame_data_c(mp_obj_t socket_obj, mp_obj_t first_fra
 
     cam_start_read();
 
+    // Snapshot bucket indices (ISR won't update them while read_in_progress)
+    uint8_t first_idx = frame_first_idx;
+    uint8_t second_idx = frame_second_idx;
+
     mp_uint_t ret = mp_stream_write_exactly(socket_obj, boundary, boundary_len, &errcode);
     if (ret == MP_STREAM_ERROR) {
         cam_end_read();
-        buffer_ready = false;
+        frame_ready = false;
         return mp_const_false;
     }
 
     const size_t chunk_size = 16384;
-    const size_t frame_size = CAM_FUL_SIZE * 2;
-    size_t total_sent = 0;
 
-    while (total_sent < frame_size) {
-        size_t to_send = frame_size - total_sent;
+    // Send first half-frame bucket
+    size_t half_sent = 0;
+    while (half_sent < HALF_FRAME_BYTES) {
+        size_t to_send = HALF_FRAME_BYTES - half_sent;
         if (to_send > chunk_size) {
             to_send = chunk_size;
         }
 
-        ret = mp_stream_write_exactly(socket_obj, cam_python_read_buf + total_sent, to_send, &errcode);
+        ret = mp_stream_write_exactly(socket_obj, bucket[first_idx] + half_sent, to_send, &errcode);
         if (ret == MP_STREAM_ERROR || ret == 0) {
             cam_end_read();
-            buffer_ready = false;
+            frame_ready = false;
             return mp_const_false;
         }
 
-        total_sent += ret;
+        half_sent += ret;
+    }
+
+    // Send second half-frame bucket
+    half_sent = 0;
+    while (half_sent < HALF_FRAME_BYTES) {
+        size_t to_send = HALF_FRAME_BYTES - half_sent;
+        if (to_send > chunk_size) {
+            to_send = chunk_size;
+        }
+
+        ret = mp_stream_write_exactly(socket_obj, bucket[second_idx] + half_sent, to_send, &errcode);
+        if (ret == MP_STREAM_ERROR || ret == 0) {
+            cam_end_read();
+            frame_ready = false;
+            return mp_const_false;
+        }
+
+        half_sent += ret;
     }
 
     cam_end_read();
-    buffer_ready = false;
+    frame_ready = false;
     return mp_const_true;
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(camera_send_frame_data_c_obj, camera_send_frame_data_c);
 
-// Stream loop in C (with double-buffer protection)
+// Stream loop in C (3-bucket half-frame)
 // Args: socket object
 // Returns: frame count when stream ends (disconnect, error, or KeyboardInterrupt)
 static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
@@ -168,7 +198,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
     while (streaming) {
         mp_handle_pending(true);
 
-        if (buffer_ready) {
+        if (frame_ready) {
             const char *boundary;
             size_t boundary_len;
             if (first_frame) {
@@ -181,35 +211,62 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
 
             cam_start_read();
 
+            // Snapshot bucket indices
+            uint8_t first_idx = frame_first_idx;
+            uint8_t second_idx = frame_second_idx;
+
             mp_uint_t ret = mp_stream_write_exactly(socket_obj, boundary, boundary_len, &errcode);
             if (ret == MP_STREAM_ERROR) {
                 cam_end_read();
-                buffer_ready = false;
+                frame_ready = false;
                 streaming = false;
                 break;
             }
 
             const size_t chunk_size = 16384;
-            const size_t frame_size = CAM_FUL_SIZE * 2;
-            size_t total_sent = 0;
 
-            while (total_sent < frame_size) {
-                size_t to_send = frame_size - total_sent;
+            // Send first half-frame bucket
+            size_t half_sent = 0;
+            while (half_sent < HALF_FRAME_BYTES) {
+                size_t to_send = HALF_FRAME_BYTES - half_sent;
                 if (to_send > chunk_size) {
                     to_send = chunk_size;
                 }
 
-                ret = mp_stream_write_exactly(socket_obj, cam_python_read_buf + total_sent, to_send, &errcode);
+                ret = mp_stream_write_exactly(socket_obj, bucket[first_idx] + half_sent, to_send, &errcode);
                 if (ret == MP_STREAM_ERROR || ret == 0) {
                     streaming = false;
                     break;
                 }
 
-                total_sent += ret;
+                half_sent += ret;
+            }
+
+            if (!streaming) {
+                cam_end_read();
+                frame_ready = false;
+                break;
+            }
+
+            // Send second half-frame bucket
+            half_sent = 0;
+            while (half_sent < HALF_FRAME_BYTES) {
+                size_t to_send = HALF_FRAME_BYTES - half_sent;
+                if (to_send > chunk_size) {
+                    to_send = chunk_size;
+                }
+
+                ret = mp_stream_write_exactly(socket_obj, bucket[second_idx] + half_sent, to_send, &errcode);
+                if (ret == MP_STREAM_ERROR || ret == 0) {
+                    streaming = false;
+                    break;
+                }
+
+                half_sent += ret;
             }
 
             cam_end_read();
-            buffer_ready = false;
+            frame_ready = false;
 
             if (!streaming) break;
 
@@ -230,7 +287,7 @@ static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_set_i2c_pins), MP_ROM_PTR(&camera_set_i2c_pins_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_pwm_pin), MP_ROM_PTR(&camera_set_pwm_pin_obj) },
     { MP_ROM_QSTR(MP_QSTR_start_cam), MP_ROM_PTR(&camera_start_cam_obj) },
-    { MP_ROM_QSTR(MP_QSTR_is_buffer_ready), MP_ROM_PTR(&cam_is_buffer_ready_obj) },
+    { MP_ROM_QSTR(MP_QSTR_is_frame_ready), MP_ROM_PTR(&cam_is_frame_ready_obj) },
     { MP_ROM_QSTR(MP_QSTR_send_frame_over_eth), MP_ROM_PTR(&camera_send_frame_over_eth_obj) },
     { MP_ROM_QSTR(MP_QSTR_send_frame_data_c), MP_ROM_PTR(&camera_send_frame_data_c_obj) },
     { MP_ROM_QSTR(MP_QSTR_stream_loop_c), MP_ROM_PTR(&camera_stream_loop_c_obj) },

@@ -400,7 +400,7 @@ while True:
             
             cl.settimeout(5.0)
             
-            def send_frame_data(frame_data):
+            def send_frame_data(frame_halves):
                 try:
                     # Send boundary
                     if state['first_frame']:
@@ -409,24 +409,25 @@ while True:
                     else:
                         cl.send(frame_boundary)
                     
-                    # Send frame in chunks
-                    mv = memoryview(frame_data)
-                    total_sent = 0
+                    # Send both halves of the frame
                     chunk_size = 16384  # 16KB chunks
-                    
-                    while total_sent < len(frame_data):
-                        end = min(total_sent + chunk_size, len(frame_data))
-                        chunk = mv[total_sent:end]
-                        try:
-                            bytes_sent = cl.send(chunk)
-                            if bytes_sent == 0:
+                    for frame_data in frame_halves:
+                        mv = memoryview(frame_data)
+                        total_sent = 0
+                        
+                        while total_sent < len(frame_data):
+                            end = min(total_sent + chunk_size, len(frame_data))
+                            chunk = mv[total_sent:end]
+                            try:
+                                bytes_sent = cl.send(chunk)
+                                if bytes_sent == 0:
+                                    state['streaming'] = False
+                                    return
+                                total_sent += bytes_sent
+                            except OSError as e:
+                                debug_print(f"Stream send error: {e}")
                                 state['streaming'] = False
                                 return
-                            total_sent += bytes_sent
-                        except OSError as e:
-                            debug_print(f"Stream send error: {e}")
-                            state['streaming'] = False
-                            return
                     
                     state['frame_count'] += 1
                     if state['frame_count'] % 30 == 0:
@@ -439,7 +440,7 @@ while True:
             debug_print("Starting Python-based streaming loop")
             while state['streaming']:
                 try:
-                    if camera.is_buffer_ready():
+                    if camera.is_frame_ready():
                         camera.send_frame_over_eth(send_frame_data)
                 except OSError as e:
                     debug_print(f"Streaming loop error: {e}")

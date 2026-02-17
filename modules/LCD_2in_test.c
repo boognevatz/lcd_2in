@@ -59,15 +59,17 @@ int LCD_2in_test(void)
     sleep_ms(10);
 
     init_cam();          // initialize camera
-    config_cam_buffer(); // config buffer
     start_cam();         // start streaming
 
     while(1)
     {
-        if (buffer_ready)
+        if (frame_ready)
         {
-            buffer_ready = false;  // Reset the flag
-            Paint_DrawImage(cam_ptr, 0, 0, LCD_2IN.WIDTH, LCD_2IN.HEIGHT);
+            frame_ready = false;  // Reset the flag
+            // Draw first half of frame (top 160 rows)
+            Paint_DrawImage(bucket[frame_first_idx], 0, 0, LCD_2IN.WIDTH, LCD_2IN.HEIGHT / 2);
+            // Draw second half of frame (bottom 160 rows)
+            Paint_DrawImage(bucket[frame_second_idx], 0, LCD_2IN.HEIGHT / 2, LCD_2IN.WIDTH, LCD_2IN.HEIGHT / 2);
             LCD_2IN_Display((UBYTE *)BlackImage);
         }
     }

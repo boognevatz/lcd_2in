@@ -32,14 +32,20 @@
 #include "LCD_2in.h"
 #include "py/obj.h"
 
-// Double buffering - DMA writes to one buffer while Python reads from other
-extern uint8_t *cam_dma_write_buf;    // DMA writes here (do not read from Python)
-extern uint8_t *cam_python_read_buf;  // Python reads here (safe, not being written)
-extern volatile bool buffer_ready;
-extern volatile bool read_in_progress; // Set by Python to protect read buffer
+// camera buffer size
+// 240x320, RGB565 picture needs 240x320x2 bytes of buffers.
+#define CAM_FUL_SIZE (LCD_2IN_HEIGHT * LCD_2IN_WIDTH)                 
 
-// Legacy pointer for compatibility (points to read buffer)
-extern uint8_t *cam_ptr;
+// 3-bucket half-frame DMA chaining
+#define FRAME_BYTES       (CAM_FUL_SIZE * 2)                    // 153,600
+#define HALF_FRAME_BYTES  (FRAME_BYTES / 2)                     // 76,800
+#define HALF_FRAME_XFERS  (HALF_FRAME_BYTES / sizeof(uint16_t)) // 38,400
+
+extern uint8_t *bucket[3];              // 3 half-frame buckets
+extern volatile bool frame_ready;       // true when a complete frame is available
+extern volatile uint8_t frame_first_idx;  // bucket index of frame's first half
+extern volatile uint8_t frame_second_idx; // bucket index of frame's second half
+extern volatile bool read_in_progress;  // set by Python to protect read buckets
 
 #define USE_100BASE_FX (false)
 
@@ -52,10 +58,6 @@ extern uint8_t pin_xclk_pwm;
 void set_i2c_pins(uint8_t sda, uint8_t scl);
 void set_pwm_pin(uint8_t pwm);
 
-// camera buffer size
-// 240x320, RGB565 picture needs 240x320x2 bytes of buffers.
-#define CAM_FUL_SIZE (LCD_2IN_HEIGHT * LCD_2IN_WIDTH)                 
-
 // high layer APIs
 void init_cam();
 void start_cam();
@@ -66,9 +68,9 @@ dma_channel_config get_cam_config(PIO pio, uint32_t sm, uint32_t dma_chan);
 void cam_handler();
 void setup_dma_for_capture();
 
-// Double buffer control - call from Python
-void cam_start_read(void);   // Call before reading frame - locks read buffer
-void cam_end_read(void);     // Call after reading frame - allows buffer swap
+// Frame read control - call from Python
+void cam_start_read(void);   // Call before reading frame - protects read buckets
+void cam_end_read(void);     // Call after reading frame - allows frame updates
 
 // Camera pin mapping struct for runtime configuration
 typedef struct {
