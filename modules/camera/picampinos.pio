@@ -15,26 +15,6 @@ loop0:
 
 loop1:
     wait 1  pin 9       ; wait until HREF=1 (start of line)
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
     
     ; Read 8-bit data (high byte: high-order part of RGB565)
     wait 1  pin 10      ; wait until PCLK = 1 (start of pixel)
