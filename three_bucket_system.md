@@ -37,16 +37,34 @@ the old pair). With 3 buckets total and TX just finishing one, exactly two
 candidates remain — those two become the new pair. There is no other
 possibility.
 
-**Order within the new pair:** whichever of the two buckets holds the Upper
-half-frame is sent first; the other (holding the Lower half-frame) is sent
-second.
+**Order within the new pair — exactly two cases exist:**
 
-**Why there is no ambiguity:** because neither camera nor TX ever idles or
-waits, it is impossible for a complete next frame to already exist in the
-two other buckets at the moment TX finishes a pair. The camera is always
-mid-write or has just finished, so the two available buckets always contain
-data from the current or recent camera output, and the Upper/Lower
-assignment is unambiguous.
+Because neither camera nor TX ever idles or waits, it is impossible for a
+complete next frame (both Upper and Lower) to already sit in the two other
+buckets when TX finishes a pair. The camera is always mid-write or has just
+finished one half, so only two situations can occur:
+
+**Case 1 — Camera is currently writing an Upper half-frame.**
+The bucket being written contains the Upper half (in progress or just
+finished). The other bucket holds stale/invalid data (its previous content
+was overwritten or belongs to an older frame whose Upper half was lost).
+There is no valid matching pair available. TX selects the bucket with the
+Upper half as the first bucket of the new pair, and the other bucket as
+the second (it will receive the Lower half by the time TX gets to it, or
+TX sends whatever is there). This case occurs when TX is as fast as or
+faster than the camera 
+
+**Case 2 — Camera is currently writing a Lower half-frame.**
+The bucket being written contains the Lower half (in progress or just
+finished). The other bucket already holds the **same frame's Upper half**
+— a valid, complete Upper half-frame. TX selects the Upper-half bucket
+first, Lower-half bucket second. This produces a matched pair from the
+same frame. This case occurs when camera is faster than TX 
+
+**In both cases the order is unambiguous:** whichever bucket holds (or is
+receiving) the Upper half goes first; the other goes second. There is
+never a situation where both buckets hold unrelated Upper halves, or
+where the assignment is unclear.
 
 These rules are verified in Scenarios 1, 1b, and 2.
 
