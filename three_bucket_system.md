@@ -26,12 +26,16 @@ illustrating how the system behaves at different relative speeds.
 
 **Notation:**
 * TX  = TX is actively sending this bucket (the camera may write it simultaneously)
-* TXP = TX is actively sending this bucket, and it is protected, camera can not write here
-* PD  = protected for TX (queued, not yet being sent)
-* REC = camera is writing to this bucket this tick
-* FREE= bucket is free for writing (empty or stale (frame dropped) data)
-* F2U = Frame 2 Upper
-* F2L = Frame 2 Lower
+* TX REC = TX is sending this bucket AND camera is writing to it simultaneously (unprotected — we          [ ] Write Scenario 3 to file after
+     assume camera is always ahead)                                                                                 user review
+* TXP = TX is actively sending this bucket, and it is protected (camera already finished writing this
+     frame's data)                                                                                              Modified Files
+* PD = bucket is protected but NOT being sent — it's the queued partner of the currently-sending bucket    three_bucket_system.md       +32 -112
+      (e.g., the Lower half while TX sends the Upper half)
+* REC = camera is writing to this bucket
+* FREE = bucket is free
+* Frame labels on PD/TXP cells (e.g., F3U TXP, F5L PD) indicate what data the bucket holds
+
 
 ---
 
