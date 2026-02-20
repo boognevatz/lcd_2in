@@ -25,13 +25,9 @@ The following traces show the state of every bucket at each camera DMA write,
 illustrating how the system behaves at different relative speeds.
 
 **Notation:**
-* TX  = TX is actively sending this bucket (the camera may write it simultaneously)
-* TX REC = TX is sending this bucket AND camera is writing to it simultaneously (unprotected — we          [ ] Write Scenario 3 to file after
-     assume camera is always ahead)                                                                                 user review
-* TXP = TX is actively sending this bucket, and it is protected (camera already finished writing this
-     frame's data)                                                                                              Modified Files
-* PD = bucket is protected but NOT being sent — it's the queued partner of the currently-sending bucket    three_bucket_system.md       +32 -112
-      (e.g., the Lower half while TX sends the Upper half)
+* TX REC = TX is sending this bucket AND camera is writing to it simultaneously (unprotected — we assume camera is always ahead)
+* TXP = TX is actively sending this bucket, and it is protected (camera already finished writing this frame's data)
+* PD = bucket is protected but NOT being sent — it's the queued partner of the currently-sending bucket (e.g., the Lower half while TX sends the Upper half)
 * REC = camera is writing to this bucket
 * FREE = bucket is free
 * Frame labels on PD/TXP cells (e.g., F3U TXP, F5L PD) indicate what data the bucket holds
@@ -119,6 +115,43 @@ A->B->C->A->... Every tick is TX REC (camera and TX on the same bucket). TX
 finishes each half in 1 tick so no bucket is ever held past camera's departure
 — no TXP, no PD, no skips. Frames complete every 2 ticks (F0 at tick 1,
 F1 at tick 3, F2 at tick 5, ...).
+
+---
+
+### Scenario 3 — Camera 2× slower than TX
+
+Camera: 2 ticks per half-frame.
+TX: 1 tick per half-frame. Both start at tick 0.
+
+TX is faster than camera. At tick 0 (startup), TX sends while camera writes
+(TX REC), producing partial data — TX DMA overtakes camera DMA within the
+buffer. After tick 0, TX idles until each half-frame completes before sending.
+
+| Tick | Camera writes    |       A |       B |       C |                                                 TX action |
+|------|------------------|---------|---------|---------|-----------------------------------------------------------|
+|    0 | F0U -> A (1/2)   |  TX REC |    FREE |    FREE | TX starts A (F0U partial — camera mid-write)              |
+|    1 | F0U -> A (2/2)   |     REC |    FREE |    FREE | TX done with A. F0L not written yet. IDLE                 |
+|    2 | F0L -> B (1/2)   |     F0U |     REC |    FREE | F0L being written. IDLE                                   |
+|    3 | F0L -> B (2/2)   |     F0U |     REC |    FREE | F0L still being written. IDLE                             |
+|    4 | F1U -> C (1/2)   |     F0U | F0L TXP |     REC | F0L complete. TX sends B                                  |
+|    5 | F1U -> C (2/2)   |     F0U |    FREE |     REC | TX frees B. Frame 0 sent (F0U partial). IDLE              |
+|    6 | F1L -> A (1/2)   |     REC |    FREE | F1U TXP | F1U complete. TX sends C                                  |
+|    7 | F1L -> A (2/2)   |     REC |    FREE |    FREE | TX frees C. IDLE                                          |
+|    8 | F2U -> B (1/2)   | F1L TXP |     REC |    FREE | F1L complete. TX sends A                                  |
+|    9 | F2U -> B (2/2)   |    FREE |     REC |    FREE | TX frees A. Frame 1 sent. IDLE                            |
+|   10 | F2L -> C (1/2)   |    FREE | F2U TXP |     REC | F2U complete. TX sends B                                  |
+|   11 | F2L -> C (2/2)   |    FREE |    FREE |     REC | TX frees B. IDLE                                          |
+|   12 | F3U -> A (1/2)   |     REC |    FREE | F2L TXP | F2L complete. TX sends C (F2L)                             |
+
+**Result:**
+All frames sent, no frames dropped. TX is 2× faster per half-frame but
+effectively throttled to camera speed — it sends 1 tick, idles 1 tick,
+repeating. Only F0U is broken (startup TX REC where TX overtakes camera).
+From tick 4 onward, TX always sends completed buckets (TXP, clean data).
+No pair protection (PD) ever needed — TX occupies only one bucket at a
+time and finishes before camera returns. Camera never encounters a
+protected bucket, so no skips occur. Frames complete every 4 ticks
+(F0 at tick 4, F1 at tick 8, F2 at tick 12, ...). 0% drop rate.
 
 ---
 
