@@ -17,6 +17,39 @@ Frame N Upper → Frame N Lower → Frame N+1 Upper → Frame N+1 Lower → ...
 
 **Protection lifecycle of a TX pair:** When TX selects a pair, **both** buckets become protected immediately. After the Upper half is sent, its bucket is freed. The Lower bucket stays protected until TX finishes sending it.
 
+## TX Scheduling Rule (must be stated explicitly)
+
+TX never idles.
+When a bucket finishes transmission, TX immediately advances to the next bucket.
+TX does not wait for a full frame before starting.
+If the paired half is incomplete, TX proceeds in sequence and will reach it when its turn comes.
+
+### TX Pair Selection Rule
+
+TX always sends in pairs (Upper half-frame first, then Lower half-frame).
+
+**At startup:** TX selects A+B, because camera starts writing in A→B order
+and no written data exists yet.
+
+**After finishing a pair:** TX always selects the **two buckets that are NOT
+the bucket TX just finished sending** (i.e., not the Lower-half bucket of
+the old pair). With 3 buckets total and TX just finishing one, exactly two
+candidates remain — those two become the new pair. There is no other
+possibility.
+
+**Order within the new pair:** whichever of the two buckets holds the Upper
+half-frame is sent first; the other (holding the Lower half-frame) is sent
+second.
+
+**Why there is no ambiguity:** because neither camera nor TX ever idles or
+waits, it is impossible for a complete next frame to already exist in the
+two other buckets at the moment TX finishes a pair. The camera is always
+mid-write or has just finished, so the two available buckets always contain
+data from the current or recent camera output, and the Upper/Lower
+assignment is unambiguous.
+
+These rules are verified in Scenarios 1, 1b, and 2.
+
 ---
 
 ## Step-by-Step Scenario Walkthroughs
