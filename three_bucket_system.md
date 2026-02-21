@@ -15,7 +15,17 @@ Frame N Upper → Frame N Lower → Frame N+1 Upper → Frame N+1 Lower → ...
 * Each overwrite of a bucket that held a previous half-frame causes a **frame drop** — the lost content means that frame can never be fully sent.
 * Because of this, the mapping between frames and buckets is **not deterministic**. Which bucket holds which half-frame depends entirely on the runtime timing between camera writes and TX sends.
 
-**Protection lifecycle of a TX pair:** When TX selects a pair, **both** buckets become protected immediately. After the Upper half is sent, its bucket is freed. The Lower bucket stays protected until TX finishes sending it.
+**Protection lifecycle of a TX pair:**
+
+A bucket earns protection only through one of three paths:
+
+1. **Valid unsent data at pair selection:** When TX selects a pair, a bucket that already holds valid, unsent camera data and camera is not currently writing it becomes **TXP** immediately. A bucket containing garbage or stale (already-sent) data does not earn protection — camera may freely overwrite it.
+
+2. **Co-write completion (TX REC → TXP):** When TX and camera are simultaneously on the same bucket (TX REC), the bucket is not protected. Once camera completes its write while TX is still sending, the bucket transitions to **TXP**. Camera must skip it until TX finishes.
+
+3. **Queued partner completion (REC → PD):** When the pair's second bucket is being written by camera while TX sends the first, it is not yet protected. Once camera completes its write while TX is still sending the first bucket, the second bucket transitions to **PD**. Camera must skip it until TX sends and finishes it.
+
+Protection ends when TX finishes sending the bucket.
 
 ## TX Scheduling Rule (must be stated explicitly)
 
