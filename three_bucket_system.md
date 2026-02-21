@@ -177,47 +177,22 @@ TX: 1 tick per half-frame. Both start at tick 0.
 TX is faster than camera. TX never idles — it always sends the next pair
 immediately, even if buckets contain garbage or stale data from previous frames.
 
-| Tick | Camera writes    |       A |       B |       C | TX action                                                 |
-|------|------------------|---------|---------|---------|-----------------------------------------------------------|
-|    0 | F0U → A (1/2)   |  TX REC |    FREE |    FREE | Pair A+B. Sends A (F0U partial — camera mid-write)        |
-|    1 | F0U → A (2/2)   |     REC |     TXP |    FREE | Frees A. Sends B (garbage — never written)                |
-|    2 | F0L → B (1/2)   | F0U TXP |     REC |    FREE | Pair A+C. Sends A (F0U valid)                             |
-|    3 | F0L → B (2/2)   |    FREE |     REC |     TXP | Frees A. Sends C (garbage — never written)                |
-|    4 | F1U → C (1/2)   |     TXP |  F0L PD |     REC | Pair A+B. Sends A (stale F0U, already sent)               |
-|    5 | F1U → C (2/2)   |    FREE | F0L TXP |     REC | Frees A. Sends B (F0L valid)                              |
-|    6 | F1L → B (1/2)   |      PD |     REC | F1U TXP | Pair C+A. Sends C (F1U valid)                             |
-|    7 | F1L → B (2/2)   |     TXP |     REC |    FREE | Frees C. Sends A (stale)                                  |
-|    8 | F2U → A (1/2)   |     REC |  F1L PD |     TXP | Pair C+B. Sends C (stale F1U, already sent)               |
-|    9 | F2U → A (2/2)   |     REC | F1L TXP |    FREE | Frees C. Sends B (F1L valid)                              |
-|   10 | F2L → B (1/2)   | F2U TXP |     REC |      PD | Pair A+C. Sends A (F2U valid)                             |
-|   11 | F2L → B (2/2)   |    FREE |     REC |     TXP | Frees A. Sends C (stale)                                  |
-|   12 | F3U → C (1/2)   |     TXP |  F2L PD |     REC | Pair A+B. Sends A (stale F2U, already sent)               |
-|   13 | F3U → C (2/2)   |    FREE | F2L TXP |     REC | Frees A. Sends B (F2L valid)                              |
-|   14 | F3L → B (1/2)   |      PD |     REC | F3U TXP | Pair C+A. Sends C (F3U valid)                             |
-|   15 | F3L → B (2/2)   |     TXP |     REC |    FREE | Frees C. Sends A (stale)                                  |
-|   16 | F4U → A (1/2)   |     REC |  F3L PD |     TXP | Pair C+B. Sends C (stale F3U, already sent)               |
+| Tick | Camera writes   |       A |       B |       C | TX action                                                 |
+|------|-----------------|---------|---------|---------|-----------------------------------------------------------|
+|    0 | F0U → A (1/2)   |  TX REC |      -  |      -  | Pair A+B. Sends A (F0U partial — camera mid-write)        |
+|    1 | F0U → A (2/2)   |     REC |      TX |      -  | Frees A. Sends B (garbage — never written)                |
+|    2 | F0L → B (1/2)   |      TX |     REC |      -  | Pair A+C. Sends A (F0U valid)                             |
+|    3 | F0L → B (2/2)   |      -  |     REC |      TX | Frees A. Sends C (garbage — never written)                |
+|    4 | F1U → C (1/2)   |      -  |      TX |     REC | Pair A+B. Sends A (stale F0U, already sent)               |
+|    5 | F1U → C (2/2)   |      TX |      -  |     REC | Frees A. Sends B (F0L valid)                              |
+|    6 | F1L → A (1/2)   |     REC |      -  |      TX | Pair C+A. Sends C (F1U valid)                             |
+|    7 | F1L → A (2/2)   |     REC |      TX |      -  | Frees C. Sends A (stale)                                  |
+|    8 | F2U → B (1/2)   |      TX |     REC |      -  | Pair C+B. Sends C (stale F1U, already sent)               |
+|    9 | F2U → B (2/2)   |      -  |     REC |      TX | Frees C. Sends B (F1L valid)                              |
 
 **Result:**
 TX never idles — it always sends immediately, even at startup when buckets
-contain garbage (ticks 1, 3). Every half-frame is eventually sent as valid
-TXP (F0U at tick 2, F0L at tick 5, F1U at tick 6, F1L at tick 9, …). In the
-steady state (from tick 4 onward), TX pairs alternate between matched and
-broken: pairs at ticks 4–5, 8–9, 12–13, 16–17 produce matched frames
-(e.g., F0U + F0L, F1U + F1L, F2U + F2L), while pairs at ticks 6–7, 10–11,
-14–15 are broken (a valid newly-sent Upper half paired with a stale Upper
-half from a different frame). The matched pairs form because the freed
-bucket holding the Upper half is never overwritten before the next pair
-re-selects it alongside the freshly-completed Lower half in B. Camera
-round-robin is disrupted by pair protection: at ticks 6–7 and 14–15, camera
-skips both protected buckets and writes to B. In steady state, B receives
-every Lower half-frame, while A and C alternate receiving Upper half-frames.
-The 8-tick / 4-pair cycle is: A+B (matched F_n) → C+A (broken) → C+B
-(matched F_{n+1}) → A+C (broken), repeating. 50% of Ethernet frames are
-valid matched pairs; every camera frame is eventually transmitted correctly.
-Camera produces 1 frame per 4 ticks; TX sends 1 matched frame per 4 ticks,
-matching camera throughput exactly. 0% drop rate. The previous (incorrect)
-version of this table had TX idling between sends — this violates the system
-rule that TX never waits.
+contain garbage.
 
 ---
 
