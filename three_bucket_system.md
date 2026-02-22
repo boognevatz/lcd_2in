@@ -86,12 +86,26 @@ The following traces show the state of every bucket at each camera DMA write,
 illustrating how the system behaves at different relative speeds.
 
 **Notation:**
-* TX REC = TX is sending this bucket AND camera is writing to it simultaneously (unprotected — we assume camera is always ahead)
-* TXP = TX is actively sending this bucket, and it is protected (camera already finished writing this frame's data)
-* PD = bucket is protected but NOT being sent — it's the queued partner of the currently-sending bucket (e.g., the Lower half while TX sends the Upper half)
-* REC = camera is writing to this bucket
-* FREE = bucket is free
-* Frame labels on PD/TXP cells (e.g., F3U TXP, F5L PD) indicate what data the bucket holds
+
+* TX REC = TX is actively sending this bucket and camera is simultaneously
+  writing to it. The bucket is unprotected — camera is assumed to always be
+  ahead, so no protection is granted yet.
+
+* TXP = TX is actively sending this bucket and camera has already finished
+  writing it. The bucket is protected — camera must skip it.
+
+* PD = TX is not yet sending this bucket, but it is the queued partner of the
+  currently-sending bucket. Camera has already finished writing it. 
+  Protected — camera must skip it.
+
+* REC = Camera is actively writing to this bucket. TX is not sending it.
+
+* TX = TX is actively sending this bucket. Camera is not writing to it and
+  has not recently finished writing it (bucket holds stale or garbage data). No
+  protection is relevant.
+
+* - = Bucket is not being written by camera and not being sent by TX. Holds
+  stale or previously written data but is freely overwritable.
 
 
 ---
@@ -232,13 +246,18 @@ There is no persistent EMPTY state during normal operation.
   possible. This is best-effort — TX never idles, so when a matched pair
   is unavailable, TX sends whatever is in the selected buckets. Broken or
   mismatched half-frames are an accepted outcome by design.
-* TX always prefers to transmit a matched Upper+Lower pair from the same
-  logical frame. However, TX never idles — transmission is continuous. When a
-  matched pair is not available (e.g., at startup, or when TX outpaces camera),
-  TX sends whatever is in the selected buckets, which may be garbage, stale,
-  or mismatched data. The receiver is responsible for discarding incomplete
-  or invalid frames.
 * Frame drops are allowed.
+* TX always selects the two buckets that are not the bucket just finished.
+* The selection of buckets is deterministic and cannot be changed.
 
+* TX only controls the order of the two selected buckets.
+
+* TX orders the buckets so that an Upper half-frame is transmitted before a Lower half-frame whenever possible.
+
+* If the two selected buckets contain a matched Upper+Lower pair from the same frame, TX sends them in that order.
+
+* If no matched pair exists, TX still chooses the order consistent with the camera write direction (Upper first).
+
+* TX never idles — transmission is continuous. When a matched pair is not available (e.g., at startup or when TX outpaces camera), TX sends whatever is in the selected buckets, which may be garbage, stale, or mismatched data. The receiver is responsible for discarding incomplete or invalid frames.
 
 
