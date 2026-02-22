@@ -101,21 +101,21 @@ illustrating how the system behaves at different relative speeds.
 Camera: 1 tick per half-frame. 
 TX: 2 ticks per half-frame. Both start at tick 0.
 
-| Tick | Camera writes |     A |     B |     C |                                           TX action |
-|------|---------------|-------|-------|-------|-----------------------------------------------------|
-|    0 |      F0U -> A | TX REC|  FREE |  FREE | TX starts sending A, which contains partial F0U     |
-|    1 |      F0L -> B |   TXP |   REC |  FREE | TX is still sending A, it is protected now          |
-|    2 |      F1U -> C |  FREE |   TXP |   REC | TX frees A. Starts sending B                        |
-|    3 |      F1L -> A |   REC |   TXP |   F1U | TX finishes B, Camera finishes A                    |
-|    4 |      F2U -> B | F1L PD|   REC |   TXP | TX starts C+A (protected), camera can use B and B only|
-|    5 |      F2L -> B | F1L PD|   REC |   TXP | TX continues sending C. Camera overwrites B, since A is protected.|
-|    6 |      F3U -> C |   TXP |   F2L |   REC | TX frees C, starts sending A. Camera immediately starts using C.  |
-|    7 |      F3L -> B |   TXP |   REC |   F3U | TX finishes A,                                      |
-|    8 |      F4U -> A |   REC | F3L PD|F3U TXP| TX starts to send C+B                               |
-|    9 |      F4L -> A |   REC | F3L PD|F3U TXP| Only A free. Overwrite A. Frame 4 dropped.          |
-|   10 |      F5U -> C |   F4L |F3L TXP|   REC | TX frees C. Camera immediately starts using it.      |
-|   11 |      F5L -> A |   REC |F3L TXP|   F5U | F5 is ready, camera: C->A (free), TX frees B.       |
-|   12 |      F6U -> B | F5L PD|   REC |F5U TXP| and so on and so on                                 |
+| Tick | Cam          |  TX   | A      | B      | C      | inA | inB | inC |
+|------|--------------|-------|--------|--------|--------|-----|-----|-----|
+|    0 | F0U->A 1/1   | 'A+b  | TX REC | -      | -      | F0U |  -  |  -  |
+|    1 | F0L->B 1/1   | 'A+b  | TXP    | REC    | -      | F0U | F0L |  -  |
+|    2 | F1U->C 1/1   | 'a+B  | -      | TXP    | REC    | F0U | F0L | F1U |
+|    3 | F1L->A 1/1   | 'a+B  | REC    | TXP    | -      | F1L | F0L | F1U |
+|    4 | F2U->B 1/1   | "C+a  | PD     | REC    | TXP    | F1L | F2U | F1U |
+|    5 | F2L->B 1/1   | "C+a  | PD     | REC    | TXP    | F1L | F2L | F1U |
+|    6 | F3U->C 1/1   | "c+A  | TXP    | -      | REC    | F1L | F2L | F3U |
+|    7 | F3L->B 1/1   | "c+A  | TXP    | REC    | -      | F1L | F3L | F3U |
+|    8 | F4U->A 1/1   | 'C+b  | REC    | PD     | TXP    | F4U | F3L | F3U |
+|    9 | F4L->A 1/1   | 'C+b  | REC    | PD     | TXP    | F4L | F3L | F3U |
+|   10 | F5U->C 1/1   | 'c+B  | -      | TXP    | REC    | F4L | F3L | F5U |
+|   11 | F5L->A 1/1   | 'c+B  | REC    | TXP    | -      | F5L | F3L | F5U |
+|   12 | F6U->B 1/1   | "C+a  | PD     | REC    | TXP    | F5L | F6U | F5U |
 
 **Result:** Frame 0 sent immediately at startup. 
 Sent: F0U + F0L, F1U + F1L, F3U + F3L, F5U+(this is already tick 12)
@@ -127,27 +127,27 @@ Sent: F0U + F0L, F1U + F1L, F3U + F3L, F5U+(this is already tick 12)
 Camera: 1 tick per half-frame. 
 TX: 3 ticks per half-frame. Both start at tick 0.
 
-| Tick | Camera writes |     A |     B |     C |                                           TX action |
-|------|---------------|-------|-------|-------|-----------------------------------------------------|
-|    0 |      F0U -> A | TX REC|  FREE |  FREE | TX starts sending A (F0U), ticks 0-2                |
-|    1 |      F0L -> B |   TXP |   REC |  FREE | TX sending A (tick 2/3)                             |
-|    2 |      F1U -> C |   TXP |F0L PD |   REC | TX sending A (tick 3/3). B protected (F0L queued)   |
-|    3 |      F1L -> A |   REC |   TXP |   F1U | TX finishes A. Starts sending B (F0L), ticks 3-5    |
-|    4 |      F2U -> C |   F1L |   TXP |   REC | TX sending B (tick 2/3). Camera skips B, writes C   |
-|    5 |      F2L -> A |   REC |   TXP |   F2U | TX sending B (tick 3/3)                             |
-|    6 |      F3U -> B | F2L PD|   REC |   TXP | TX finishes B. Picks C+A (F2). Starts C, ticks 6-8  |
-|    7 |      F3L -> B | F2L PD|   REC |   TXP | TX sending C (tick 2/3). Only B free, overwrites B  |
-|    8 |      F4U -> B | F2L PD|   REC |   TXP | TX sending C (tick 3/3). Only B free, overwrites B  |
-|    9 |      F4L -> C |   TXP |   F4U |   REC | TX finishes C. Starts sending A (F2L), ticks 9-11   |
-|   10 |      F5U -> B |   TXP |   REC |   F4L | TX sending A (tick 2/3). Camera skips A, writes B   |
-|   11 |      F5L -> C |   TXP |   F5U |   REC | TX sending A (tick 3/3)                             |
-|   12 |      F6U -> A |   REC |   TXP | F5L PD| TX finishes A. Picks B+C (F5). Starts B, ticks 12-14|
-|   13 |      F6L -> A |   REC |   TXP | F5L PD| TX sending B (tick 2/3). Only A free, overwrites A  |
-|   14 |      F7U -> A |   REC |   TXP | F5L PD| TX sending B (tick 3/3). Only A free, overwrites A  |
-|   15 |      F7L -> B |   F7U |   REC |   TXP | TX finishes B. Starts sending C (F5L), ticks 15-17  |
-|   16 |      F8U -> A |   REC |   F7L |   TXP | TX sending C (tick 2/3). Camera skips C, writes A   |
-|   17 |      F8L -> B |   F8U |   REC |   TXP | TX sending C (tick 3/3)                             |
-|   18 |      F9U -> C |   TXP | F8L PD|   REC | TX finishes C. Picks A+B (F8). Starts A, ticks 18-20|
+| Tick | Cam          |  TX   | A      | B      | C      | inA | inB | inC |
+|------|--------------|-------|--------|--------|--------|-----|-----|-----|
+|    0 | F0U->A 1/1   | 'A+b  | TX REC | -      | -      | F0U |  -  |  -  |
+|    1 | F0L->B 1/1   | 'A+b  | TXP    | REC    | -      | F0U | F0L |  -  |
+|    2 | F1U->C 1/1   | 'A+b  | TXP    | PD     | REC    | F0U | F0L | F1U |
+|    3 | F1L->A 1/1   | 'a+B  | REC    | TXP    | -      | F1L | F0L | F1U |
+|    4 | F2U->C 1/1   | 'a+B  | -      | TXP    | REC    | F1L | F0L | F2U |
+|    5 | F2L->A 1/1   | 'a+B  | REC    | TXP    | -      | F2L | F0L | F2U |
+|    6 | F3U->B 1/1   | "C+a  | PD     | REC    | TXP    | F2L | F3U | F2U |
+|    7 | F3L->B 1/1   | "C+a  | PD     | REC    | TXP    | F2L | F3L | F2U |
+|    8 | F4U->B 1/1   | "C+a  | PD     | REC    | TXP    | F2L | F4U | F2U |
+|    9 | F4L->C 1/1   | "c+A  | TXP    | -      | REC    | F2L | F4U | F4L |
+|   10 | F5U->B 1/1   | "c+A  | TXP    | REC    | -      | F2L | F5U | F4L |
+|   11 | F5L->C 1/1   | "c+A  | TXP    | -      | REC    | F2L | F5U | F5L |
+|   12 | F6U->A 1/1   | 'B+c  | REC    | TXP    | PD     | F6U | F5U | F5L |
+|   13 | F6L->A 1/1   | 'B+c  | REC    | TXP    | PD     | F6L | F5U | F5L |
+|   14 | F7U->A 1/1   | 'B+c  | REC    | TXP    | PD     | F7U | F5U | F5L |
+|   15 | F7L->B 1/1   | 'b+C  | -      | REC    | TXP    | F7U | F7L | F5L |
+|   16 | F8U->A 1/1   | 'b+C  | REC    | -      | TXP    | F8U | F7L | F5L |
+|   17 | F8L->B 1/1   | 'b+C  | -      | REC    | TXP    | F8U | F8L | F5L |
+|   18 | F9U->C 1/1   | "A+b  | TXP    | PD     | REC    | F8U | F8L | F9U |
 
 **Result:** Frame 0 sent at startup (F0U+F0L). Then Frame 2, Frame 5, Frame 8, Frame 11, ... Steady-state: every 3rd frame sent, 67% drop rate. The 6-tick TX cycle (3 ticks upper + 3 ticks lower) repeats with the pair rotating C+A -> B+C -> A+B -> C+A -> ...
 
@@ -158,17 +158,17 @@ TX: 3 ticks per half-frame. Both start at tick 0.
 Camera: 1 tick per half-frame.
 TX: 1 tick per half-frame. Both start at tick 0.
 
-| Tick | Camera writes |     A |     B |     C |                                            TX action |
-|------|---------------|-------|-------|-------|------------------------------------------------------|
-|    0 |      F0U -> A | TX REC|  FREE |  FREE | TX starts sending A (F0U), camera writing A same time|
-|    1 |      F0L -> B |  FREE | TX REC|  FREE | TX frees A. Starts sending B (F0L), camera writing B |
-|    2 |      F1U -> C |  FREE |  FREE | TX REC| TX frees B. Frame 0 sent. Starts sending C (F1U)     |
-|    3 |      F1L -> A | TX REC|  FREE |  FREE | TX frees C. Starts sending A (F1L), camera writing A |
-|    4 |      F2U -> B |  FREE | TX REC|  FREE | TX frees A. Frame 1 sent. Starts sending B (F2U)     |
-|    5 |      F2L -> C |  FREE |  FREE | TX REC| TX frees B. Starts sending C (F2L), camera writing C |
-|    6 |      F3U -> A | TX REC|  FREE |  FREE | TX frees C. Frame 2 sent. Starts sending A (F3U)     |
-|    7 |      F3L -> B |  FREE | TX REC|  FREE | TX frees A. Starts sending B (F3L), camera writing B |
-|    8 |      F4U -> C |  FREE |  FREE | TX REC| TX frees B. Frame 3 sent. Starts sending C (F4U)     |
+| Tick | Cam          |  TX   | A      | B      | C      | inA | inB | inC |
+|------|--------------|-------|--------|--------|--------|-----|-----|-----|
+|    0 | F0U->A 1/1   | 'A+b  | TX REC | -      | -      | F0U |  -  |  -  |
+|    1 | F0L->B 1/1   | 'a+B  | -      | TX REC | -      | F0U | F0L |  -  |
+|    2 | F1U->C 1/1   | "C+a  | -      | -      | TX REC | F0U | F0L | F1U |
+|    3 | F1L->A 1/1   | "c+A  | TX REC | -      | -      | F1L | F0L | F1U |
+|    4 | F2U->B 1/1   | 'B+c  | -      | TX REC | -      | F1L | F2U | F1U |
+|    5 | F2L->C 1/1   | 'b+C  | -      | -      | TX REC | F1L | F2U | F2L |
+|    6 | F3U->A 1/1   | "A+b  | TX REC | -      | -      | F3U | F2U | F2L |
+|    7 | F3L->B 1/1   | "a+B  | -      | TX REC | -      | F3U | F3L | F2L |
+|    8 | F4U->C 1/1   | 'C+a  | -      | -      | TX REC | F3U | F3L | F4U |
 
 **Result:** 
 Every frame sent, no frames dropped. TX and camera move in lockstep through
@@ -187,18 +187,24 @@ TX: 1 tick per half-frame. Both start at tick 0.
 TX is faster than camera. TX never idles — it always sends the next pair
 immediately, even if buckets contain garbage or stale data from previous frames.
 
-| Tick | Camera writes   |       A |       B |       C | TX action                                                 |
-|------|-----------------|---------|---------|---------|-----------------------------------------------------------|
-|    0 | F0U → A (1/2)   |  TX REC |      -  |      -  | Pair A+B. Sends A (F0U partial — camera mid-write)        |
-|    1 | F0U → A (2/2)   |     REC |      TX |      -  | Frees A. Sends B (garbage — never written)                |
-|    2 | F0L → B (1/2)   |      TX |     REC |      -  | Pair A+C. Sends A (F0U valid)                             |
-|    3 | F0L → B (2/2)   |      -  |     REC |      TX | Frees A. Sends C (garbage — never written)                |
-|    4 | F1U → C (1/2)   |      -  |      TX |     REC | Pair A+B. Sends A (stale F0U, already sent)               |
-|    5 | F1U → C (2/2)   |      TX |      -  |     REC | Frees A. Sends B (F0L valid)                              |
-|    6 | F1L → A (1/2)   |     REC |      -  |      TX | Pair C+A. Sends C (F1U valid)                             |
-|    7 | F1L → A (2/2)   |     REC |      TX |      -  | Frees C. Sends A (stale)                                  |
-|    8 | F2U → B (1/2)   |      TX |     REC |      -  | Pair C+B. Sends C (stale F1U, already sent)               |
-|    9 | F2U → B (2/2)   |      -  |     REC |      TX | Frees C. Sends B (F1L valid)                              |
+| Tick | Cam          |  TX  | A      | B      | C      | inA | inB | inC |
+|------|--------------|------|--------|--------|--------|-----|-----|-----|
+|    0 | F0U->A 1/2   | 'A+b | TX REC | -      | -      | F0U |  -  |  -  |
+|    1 | F0U->A 2/2   | 'a+B | REC    | TX     | -      | F0U |  -  |  -  |
+|    2 | F0L->B 1/2   | "A+c | TXP    | REC    | -      | F0U | F0L |  -  |
+|    3 | F0L->B 2/2   | "a+C | -      | REC    | TX     | F0U | F0L |  -  |
+|    4 | F1U->C 1/2   | 'A+b | TX     | PD     | REC    | F0U | F0L | F1U |
+|    5 | F1U->C 2/2   | 'a+B | -      | TXP    | REC    | F0U | F0L | F1U |
+|    6 | F1L->A 1/2   | "C+a | REC    | -      | TXP    | F1L | F0L | F1U |
+|    7 | F1L->A 2/2   | "c+A | TX REC | -      | -      | F1L | F0L | F1U |
+|    8 | F2U->B 1/2   | 'B+c | -      | TX REC | -      | F1L | F2U | F1U |
+|    9 | F2U->B 2/2   | 'b+C | -      | REC    | TX     | F1L | F2U | F1U |
+|   10 | F2L->C 1/2   | "B+a | PD     | TXP    | REC    | F1L | F2U | F2L |
+|   11 | F2L->C 2/2   | "b+A | TXP    | -      | REC    | F1L | F2U | F2L |
+|   12 | F3U->A 1/2   | 'B+c | REC    | TX     | PD     | F3U | F2U | F2L |
+|   13 | F3U->A 2/2   | 'b+C | REC    | -      | TXP    | F3U | F2U | F2L |
+
+
 
 **Result:**
 TX never idles — it always sends immediately, even at startup when buckets
@@ -222,7 +228,16 @@ There is no persistent EMPTY state during normal operation.
 
 * Camera never waits.
 * Ethernet never waits.
-* We always transmit one Upper and one Lower belonging to the same logical frame.
+* TX always sends a matched Upper+Lower pair from the same frame when
+  possible. This is best-effort — TX never idles, so when a matched pair
+  is unavailable, TX sends whatever is in the selected buckets. Broken or
+  mismatched half-frames are an accepted outcome by design.
+* TX always prefers to transmit a matched Upper+Lower pair from the same
+  logical frame. However, TX never idles — transmission is continuous. When a
+  matched pair is not available (e.g., at startup, or when TX outpaces camera),
+  TX sends whatever is in the selected buckets, which may be garbage, stale,
+  or mismatched data. The receiver is responsible for discarding incomplete
+  or invalid frames.
 * Frame drops are allowed.
 
 
