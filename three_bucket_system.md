@@ -136,7 +136,7 @@ Sent: F0U + F0L, F1U + F1L, F3U + F3L, F5U+(this is already tick 12)
 
 ---
 
-### Scenario 1b — Camera 3× faster than TX
+### Scenario 2 — Camera 3× faster than TX
 
 Camera: 1 tick per half-frame. 
 TX: 3 ticks per half-frame. Both start at tick 0.
@@ -167,7 +167,7 @@ TX: 3 ticks per half-frame. Both start at tick 0.
 
 ---
 
-### Scenario 2 — Camera same speed as TX
+### Scenario 3 — Camera same speed as TX
 
 Camera: 1 tick per half-frame.
 TX: 1 tick per half-frame. Both start at tick 0.
@@ -193,7 +193,7 @@ F1 at tick 3, F2 at tick 5, ...).
 
 ---
 
-### Scenario 3 — Camera 2× slower than TX
+### Scenario 4 — Camera 2× slower than TX
 
 Camera: 2 ticks per half-frame.
 TX: 1 tick per half-frame. Both start at tick 0.
@@ -225,6 +225,178 @@ TX never idles — it always sends immediately, even at startup when buckets
 contain garbage.
 
 ---
+
+
+### Scenario 5 — Camera 5 ticks, TX 4 ticks per half-frame (TX slightly faster)
+
+
+| Tick | Cam          | TX    | A      | B      | C      | inA  | inB  | inC  |
+|------|--------------|-------|--------|--------|--------|------|------|------|
+|    0 | F0U->A 1/5   | 'A+b  | TX REC | -      | -      | -    | -    | -    |
+|    1 | F0U->A 2/5   | 'A+b  | TX REC | -      | -      | -    | -    | -    |
+|    2 | F0U->A 3/5   | 'A+b  | TX REC | -      | -      | -    | -    | -    |
+|    3 | F0U->A 4/5   | 'A+b  | TX REC | -      | -      | -    | -    | -    |
+|    4 | F0U->A 5/5   | 'a+B  | REC    | TX     | -      | -    | -    | -    |
+|    5 | F0L->B 1/5   | 'a+B  | -      | TX REC | -      | F0U  | -    | -    |
+|    6 | F0L->B 2/5   | 'a+B  | -      | TX REC | -      | F0U  | -    | -    |
+|    7 | F0L->B 3/5   | 'a+B  | -      | TX REC | -      | F0U  | -    | -    |
+|    8 | F0L->B 4/5   | "A+c  | TXP    | REC    | -      | F0U  | -    | -    |
+|    9 | F0L->B 5/5   | "A+c  | TXP    | REC    | -      | F0U  | -    | -    |
+|   10 | F1U->C 1/5   | "A+c  | TXP    | -      | REC    | F0U  | F0L  | -    |
+|   11 | F1U->C 2/5   | "A+c  | TXP    | -      | REC    | F0U  | F0L  | -    |
+|   12 | F1U->C 3/5   | "a+C  | -      | -      | TX REC | F0U  | F0L  | -    |
+|   13 | F1U->C 4/5   | "a+C  | -      | -      | TX REC | F0U  | F0L  | -    |
+|   14 | F1U->C 5/5   | "a+C  | -      | -      | TX REC | F0U  | F0L  | -    |
+|   15 | F1L->A 1/5   | "a+C  | REC    | -      | TXP    | F0U  | F0L  | F1U  |
+|   16 | F1L->A 2/5   | 'A+b  | TX REC | PD     | -      | F0U  | F0L  | F1U  |
+|   17 | F1L->A 3/5   | 'A+b  | TX REC | PD     | -      | F0U  | F0L  | F1U  |
+|   18 | F1L->A 4/5   | 'A+b  | TX REC | PD     | -      | F0U  | F0L  | F1U  |
+|   19 | F1L->A 5/5   | 'A+b  | TX REC | PD     | -      | F0U  | F0L  | F1U  |
+|   20 | F2U->C 1/5   | 'a+B  | -      | TXP    | REC    | F1L  | F0L  | F1U  |
+|   21 | F2U->C 2/5   | 'a+B  | -      | TXP    | REC    | F1L  | F0L  | F1U  |
+|   22 | F2U->C 3/5   | 'a+B  | -      | TXP    | REC    | F1L  | F0L  | F1U  |
+|   23 | F2U->C 4/5   | 'a+B  | -      | TXP    | REC    | F1L  | F0L  | F1U  |
+|   24 | F2U->C 5/5   | 'C+a  | -      | -      | TX REC | F1L  | F0L  | F1U  |
+|   25 | F2L->A 1/5   | 'C+a  | REC    | -      | TXP    | F1L  | F0L  | F2U  |
+|   26 | F2L->A 2/5   | 'C+a  | REC    | -      | TXP    | F1L  | F0L  | F2U  |
+|   27 | F2L->A 3/5   | 'C+a  | REC    | -      | TXP    | F1L  | F0L  | F2U  |
+|   28 | F2L->A 4/5   | 'c+A  | TX REC | -      | -      | F1L  | F0L  | F2U  |
+|   29 | F2L->A 5/5   | 'c+A  | TX REC | -      | -      | F1L  | F0L  | F2U  |
+|   30 | F3U->B 1/5   | 'c+A  | TXP    | REC    | -      | F2L  | F0L  | F2U  |
+|   31 | F3U->B 2/5   | 'c+A  | TXP    | REC    | -      | F2L  | F0L  | F2U  |
+|   32 | F3U->B 3/5   | 'B+c  | -      | TX REC | -      | F2L  | F0L  | F2U  |
+|   33 | F3U->B 4/5   | 'B+c  | -      | TX REC | -      | F2L  | F0L  | F2U  |
+|   34 | F3U->B 5/5   | 'B+c  | -      | TX REC | -      | F2L  | F0L  | F2U  |
+|   35 | F3L->C 1/5   | 'B+c  | -      | TXP    | REC    | F2L  | F3U  | F2U  |
+|   36 | F3L->C 2/5   | 'b+C  | -      | -      | TX REC | F2L  | F3U  | F2U  |
+|   37 | F3L->C 3/5   | 'b+C  | -      | -      | TX REC | F2L  | F3U  | F2U  |
+|   38 | F3L->C 4/5   | 'b+C  | -      | -      | TX REC | F2L  | F3U  | F2U  |
+|   39 | F3L->C 5/5   | 'b+C  | -      | -      | TX REC | F2L  | F3U  | F2U  |
+|   40 | F4U->A 1/5   | 'A+b  | TX REC | -      | -      | F2L  | F3U  | F3L  |
+|   41 | F4U->A 2/5   | 'A+b  | TX REC | -      | -      | F2L  | F3U  | F3L  |
+|   42 | F4U->A 3/5   | 'A+b  | TX REC | -      | -      | F2L  | F3U  | F3L  |
+|   43 | F4U->A 4/5   | 'A+b  | TX REC | -      | -      | F2L  | F3U  | F3L  |
+
+
+---
+
+### Scenario 6 — Camera 3 ticks, TX 7 ticks per half-frame (TX ~2.33× slower than camera)
+
+| Tick | Cam          | TX    | A      | B      | C      | inA  | inB  | inC  |
+|------|--------------|-------|--------|--------|--------|------|------|------|
+|    0 | F0U->A 1/3   | 'A+b  | TX REC | -      | -      | -    | -    | -    |
+|    1 | F0U->A 2/3   | 'A+b  | TX REC | -      | -      | -    | -    | -    |
+|    2 | F0U->A 3/3   | 'A+b  | TX REC | -      | -      | -    | -    | -    |
+|    3 | F0L->B 1/3   | "A+b  | TXP    | REC    | -      | F0U  | -    | -    |
+|    4 | F0L->B 2/3   | "A+b  | TXP    | REC    | -      | F0U  | -    | -    |
+|    5 | F0L->B 3/3   | "A+b  | TXP    | REC    | -      | F0U  | -    | -    |
+|    6 | F1U->C 1/3   | "A+b  | TXP    | PD     | REC    | F0U  | F0L  | -    |
+|    7 | F1U->C 2/3   | "a+B  | -      | TXP    | REC    | F0U  | F0L  | -    |
+|    8 | F1U->C 3/3   | "a+B  | -      | TXP    | REC    | F0U  | F0L  | -    |
+|    9 | F1L->A 1/3   | "a+B  | REC    | TXP    | -      | F0U  | F0L  | F1U  |
+|   10 | F1L->A 2/3   | "a+B  | REC    | TXP    | -      | F0U  | F0L  | F1U  |
+|   11 | F1L->A 3/3   | "a+B  | REC    | TXP    | -      | F0U  | F0L  | F1U  |
+|   12 | F2U->C 1/3   | "a+B  | -      | TXP    | REC    | F1L  | F0L  | F1U  |
+|   13 | F2U->C 2/3   | "a+B  | -      | TXP    | REC    | F1L  | F0L  | F1U  |
+|   14 | F2U->C 3/3   | 'C+a  | PD     | -      | TX REC | F1L  | F0L  | F1U  |
+|   15 | F2L->B 1/3   | "C+a  | PD     | REC    | TXP    | F1L  | F0L  | F2U  |
+|   16 | F2L->B 2/3   | "C+a  | PD     | REC    | TXP    | F1L  | F0L  | F2U  |
+|   17 | F2L->B 3/3   | "C+a  | PD     | REC    | TXP    | F1L  | F0L  | F2U  |
+|   18 | F3U->B 1/3   | "C+a  | PD     | REC    | TXP    | F1L  | F2L  | F2U  |
+|   19 | F3U->B 2/3   | "C+a  | PD     | REC    | TXP    | F1L  | F2L  | F2U  |
+|   20 | F3U->B 3/3   | "C+a  | PD     | REC    | TXP    | F1L  | F2L  | F2U  |
+|   21 | F3L->B 1/3   | "c+A  | TXP    | REC    | -      | F1L  | F3U  | F2U  |
+|   22 | F3L->B 2/3   | "c+A  | TXP    | REC    | -      | F1L  | F3U  | F2U  |
+|   23 | F3L->B 3/3   | "c+A  | TXP    | REC    | -      | F1L  | F3U  | F2U  |
+|   24 | F4U->C 1/3   | "c+A  | TXP    | -      | REC    | F1L  | F3L  | F2U  |
+|   25 | F4U->C 2/3   | "c+A  | TXP    | -      | REC    | F1L  | F3L  | F2U  |
+|   26 | F4U->C 3/3   | "c+A  | TXP    | -      | REC    | F1L  | F3L  | F4U  |
+|   27 | F4L->B 1/3   | "c+A  | TXP    | REC    | -      | F1L  | F3L  | F4U  |
+|   28 | F4L->B 2/3   | "C+b  | -      | REC    | TXP    | F1L  | F3L  | F4U  |
+|   29 | F4L->B 3/3   | "C+b  | -      | REC    | TXP    | F1L  | F3L  | F4U  |
+|   30 | F5U->A 1/3   | "C+b  | REC    | PD     | TXP    | F1L  | F4L  | F4U  |
+|   31 | F5U->A 2/3   | "C+b  | REC    | PD     | TXP    | F1L  | F4L  | F4U  |
+|   32 | F5U->A 3/3   | "C+b  | REC    | PD     | TXP    | F1L  | F4L  | F4U  |
+|   33 | F5L->A 1/3   | "C+b  | REC    | PD     | TXP    | F5U  | F4L  | F4U  |
+|   34 | F5L->A 2/3   | "C+b  | REC    | PD     | TXP    | F5U  | F4L  | F4U  |
+|   35 | F5L->A 3/3   | "c+B  | REC    | TXP    | -      | F5U  | F4L  | F4U  |
+|   36 | F6U->C 1/3   | "c+B  | -      | TXP    | REC    | F5L  | F4L  | F4U  |
+|   37 | F6U->C 2/3   | "c+B  | -      | TXP    | REC    | F5L  | F4L  | F4U  |
+|   38 | F6U->C 3/3   | "c+B  | -      | TXP    | REC    | F5L  | F4L  | F6U  |
+|   39 | F6L->A 1/3   | "c+B  | REC    | TXP    | -      | F5L  | F4L  | F6U  |
+|   40 | F6L->A 2/3   | "c+B  | REC    | TXP    | -      | F5L  | F4L  | F6U  |
+|   41 | F6L->A 3/3   | "c+B  | REC    | TXP    | -      | F5L  | F4L  | F6U  |
+|   42 | F7U->C 1/3   | 'C+a  | PD     | -      | TX REC | F6L  | F4L  | F6U  |
+|   43 | F7U->C 2/3   | 'C+a  | PD     | -      | TX REC | F6L  | F4L  | F6U  |
+|   44 | F7U->C 3/3   | 'C+a  | PD     | -      | TX REC | F6L  | F4L  | F7U  |
+|   45 | F7L->B 1/3   | "C+a  | PD     | REC    | TXP    | F6L  | F4L  | F7U  |
+|   46 | F7L->B 2/3   | "C+a  | PD     | REC    | TXP    | F6L  | F4L  | F7U  |
+|   47 | F7L->B 3/3   | "C+a  | PD     | REC    | TXP    | F6L  | F4L  | F7U  |
+|   48 | F8U->B 1/3   | "C+a  | PD     | REC    | TXP    | F6L  | F7L  | F7U  |
+|   49 | F8U->B 2/3   | "c+A  | TXP    | REC    | -      | F6L  | F7L  | F7U  |
+|   50 | F8U->B 3/3   | "c+A  | TXP    | REC    | -      | F6L  | F7L  | F8U  |
+|   51 | F8L->C 1/3   | "c+A  | TXP    | -      | REC    | F6L  | F8U  | F7U  |
+|   52 | F8L->C 2/3   | "c+A  | TXP    | -      | REC    | F6L  | F8U  | F7U  |
+|   53 | F8L->C 3/3   | "c+A  | TXP    | -      | REC    | F6L  | F8U  | F8L  |
+|   54 | F9U->B 1/3   | "c+A  | TXP    | REC    | -      | F6L  | F8U  | F8L  |
+|   55 | F9U->B 2/3   | "c+A  | TXP    | REC    | -      | F6L  | F8U  | F8L  |
+|   56 | F9U->B 3/3   | 'B+c  | -      | TX REC | PD     | F6L  | F8U  | F8L  |
+|   57 | F9L->A 1/3   | "B+c  | REC    | TXP    | PD     | F6L  | F9U  | F8L  |
+|   58 | F9L->A 2/3   | "B+c  | REC    | TXP    | PD     | F6L  | F9U  | F8L  |
+|   59 | F9L->A 3/3   | "B+c  | REC    | TXP    | PD     | F6L  | F9U  | F8L  |
+|   60 | F10U->A 1/3  | "B+c  | REC    | TXP    | PD     | F9L  | F9U  | F8L  |
+|   61 | F10U->A 2/3  | "B+c  | REC    | TXP    | PD     | F9L  | F9U  | F8L  |
+|   62 | F10U->A 3/3  | "B+c  | REC    | TXP    | PD     | F9L  | F9U  | F8L  |
+|   63 | F10L->A 1/3  | "b+C  | REC    | -      | TXP    | F10U | F9U  | F8L  |
+|   64 | F10L->A 2/3  | "b+C  | REC    | -      | TXP    | F10U | F9U  | F8L  |
+|   65 | F10L->A 3/3  | "b+C  | REC    | -      | TXP    | F10U | F9U  | F8L  |
+|   66 | F11U->B 1/3  | "b+C  | -      | REC    | TXP    | F10L | F9U  | F8L  |
+|   67 | F11U->B 2/3  | "b+C  | -      | REC    | TXP    | F10L | F9U  | F8L  |
+|   68 | F11U->B 3/3  | "b+C  | -      | REC    | TXP    | F10L | F9U  | F8L  |
+|   69 | F11L->A 1/3  | "b+C  | REC    | -      | TXP    | F10L | F11U | F8L  |
+|   70 | F11L->A 2/3  | "B+a  | REC    | TXP    | -      | F10L | F11U | F8L  |
+|   71 | F11L->A 3/3  | "B+a  | REC    | TXP    | -      | F10L | F11U | F8L  |
+|   72 | F12U->C 1/3  | "B+a  | PD     | TXP    | REC    | F11L | F11U | F8L  |
+|   73 | F12U->C 2/3  | "B+a  | PD     | TXP    | REC    | F11L | F11U | F8L  |
+|   74 | F12U->C 3/3  | "B+a  | PD     | TXP    | REC    | F11L | F11U | F12U |
+|   75 | F12L->C 1/3  | "B+a  | PD     | TXP    | REC    | F11L | F11U | F12U |
+|   76 | F12L->C 2/3  | "B+a  | PD     | TXP    | REC    | F11L | F11U | F12U |
+|   77 | F12L->C 3/3  | "b+A  | TXP    | -      | REC    | F11L | F11U | F12U |
+|   78 | F13U->B 1/3  | "b+A  | TXP    | REC    | -      | F11L | F11U | F12L |
+|   79 | F13U->B 2/3  | "b+A  | TXP    | REC    | -      | F11L | F11U | F12L |
+|   80 | F13U->B 3/3  | "b+A  | TXP    | REC    | -      | F11L | F13U | F12L |
+|   81 | F13L->C 1/3  | "b+A  | TXP    | -      | REC    | F11L | F13U | F12L |
+|   82 | F13L->C 2/3  | "b+A  | TXP    | -      | REC    | F11L | F13U | F12L |
+|   83 | F13L->C 3/3  | "b+A  | TXP    | -      | REC    | F11L | F13U | F13L |
+|   84 | F14U->B 1/3  | 'B+c  | -      | TX REC | PD     | F11L | F13U | F13L |
+|   85 | F14U->B 2/3  | 'B+c  | -      | TX REC | PD     | F11L | F13U | F13L |
+|   86 | F14U->B 3/3  | 'B+c  | -      | TX REC | PD     | F11L | F13U | F13L |
+|   87 | F14L->A 1/3  | "B+c  | REC    | TXP    | PD     | F11L | F14U | F13L |
+|   88 | F14L->A 2/3  | "B+c  | REC    | TXP    | PD     | F11L | F14U | F13L |
+|   89 | F14L->A 3/3  | "B+c  | REC    | TXP    | PD     | F11L | F14U | F13L |
+
+---
+
+**Key observations — this is the richest scenario yet:**
+
+**Tick 5→6:** Camera finishes F0L→B while TX still on A (TXP). B was `tx_partner` → instantly becomes `PD`. This is the earliest PD appearance across all scenarios — camera is so fast it fills the partner slot while TX is still on the first bucket.
+
+**Ticks 14→15: `'C+a` — Case 1 moment.** TX finishes B (second half). Candidates: {A, C}. Camera writing F2U (Upper) into C → Case 1. C is taken immediately as TX's upper slot. But cam_wrote_valid[A] was reset (TX sent it) → A is **not** PD. A just sits free. Then camera finishes C at tick 14 simultaneously with TX arriving → `TX REC`.
+
+**Ticks 30–34: A=REC, B=PD, C=TXP simultaneously** — all three buckets in a non-idle, non-free state at the same time. Camera is writing A (which it keeps overwriting since it can't go to B or C), B is queued protected, C is being sent. This is the "camera trapped on one bucket" scenario from the rules, demonstrated live.
+
+**Sent pair results:**
+
+| Completed at tick | Upper  | Lower  | Result         |
+|-------------------|--------|--------|----------------|
+| 13                | F0U ✓  | F0L ✓  | **Frame 0 ✓**  |
+| 27                | F2U ✓  | F1L ✓  | mismatch       |
+| 41                | F4U ✓  | F4L ✓  | **Frame 4 ✓**  |
+| 55                | F7U ✓  | F6L ✓  | mismatch       |
+| 69                | F9U ✓  | F8L ✓  | mismatch       |
+| 83                | F11U ✓ | F11L ✓ | **Frame 11 ✓** |
+
+**Result:** Every 14 ticks TX completes a pair. Matched frames appear irregularly — not every 3rd frame as in Scenario 1b, but with an aperiodic pattern driven by the 3:7 ratio. Drop rate is high (~67% of frames lost), but the mismatches are always valid data (both halves complete, just from different frames). The `"` prefix dominates throughout — Case 2 rules this scenario, with camera almost always having a complete upper half ready when TX needs a new pair.
 
 # 🔹 Bucket States
 
