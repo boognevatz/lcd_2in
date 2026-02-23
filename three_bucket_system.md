@@ -47,36 +47,44 @@ the old pair). With 3 buckets total and TX just finishing one, exactly two
 candidates remain — those two become the new pair. There is no other
 possibility.
 
-**Order within the new pair — exactly two cases exist:**
+**Order within the new pair — three cases exist:**
 
-Because neither camera nor TX ever idles or waits, it is impossible for a
-complete next frame (both Upper and Lower) to already sit in the two other
-buckets when TX finishes a pair. The camera is always mid-write or has just
-finished one half, so only two situations can occur:
+Because neither camera nor TX ever idles or waits, their relative speeds 
+determine the state of the two available candidate buckets when TX finishes 
+a pair. The core rule always applies: TX selects the bucket holding (or 
+receiving) the Upper half first, and the other bucket second.
 
-**Case 1 — Camera is currently writing an Upper half-frame.**
+Depending on the camera's speed relative to TX, three situations can occur:
+
+**Case 1 — The Race (Complete Frame Available):**
+When the camera is significantly faster than TX, it can finish writing a 
+complete frame (both Upper and Lower halves) into the two available 
+candidate buckets while TX is still sending the previous bucket. In this 
+exact moment, a race occurs: TX must immediately lock these two buckets 
+for transmission (Upper first, then Lower) to protect them, just as the 
+camera wraps around to start writing into the bucket TX just freed.
+
+**Case 2 — Camera is currently writing a Lower half-frame.**
+The camera has finished the Upper half in one candidate bucket and is 
+currently writing the Lower half into the other candidate bucket. TX 
+selects the complete Upper-half bucket first, and the Lower-half bucket 
+second. This seamlessly forms a matched pair from the same frame.
+
+**Case 3 — Camera is currently writing an Upper half-frame.**
 The bucket being written contains the Upper half (in progress or just
 finished). The other bucket holds stale/invalid data (its previous content
 was overwritten or belongs to an older frame whose Upper half was lost).
 There is no valid matching pair available. TX selects the bucket with the
 Upper half as the first bucket of the new pair, and the other bucket as
 the second (it will receive the Lower half by the time TX gets to it, or
-TX sends whatever is there). This case occurs when TX is as fast as or
-faster than the camera 
+TX sends whatever is there). 
 
-**Case 2 — Camera is currently writing a Lower half-frame.**
-The bucket being written contains the Lower half (in progress or just
-finished). The other bucket already holds the **same frame's Upper half**
-— a valid, complete Upper half-frame. TX selects the Upper-half bucket
-first, Lower-half bucket second. This produces a matched pair from the
-same frame. This case occurs when camera is faster than TX 
-
-**In both cases the order is unambiguous:** whichever bucket holds (or is
+**In all cases the order is unambiguous:** whichever bucket holds (or is
 receiving) the Upper half goes first; the other goes second. There is
 never a situation where both buckets hold unrelated Upper halves, or
 where the assignment is unclear.
 
-These rules are verified in Scenarios 1, 1b, and 2.
+These rules are verified in Scenarios 1, 2, and 3.
 
 ---
 
