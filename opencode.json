@@ -1,0 +1,78 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "build": {
+      "mode": "primary",
+      "model": "google/antigravity-claude-opus-4-6-thinking",
+      "description": "Orchestrator. Plans and delegates all tasks to subagents. Never executes directly. Limited model — orchestrates only, does not solve tasks."
+    },
+    "big-pickle": {
+      "mode": "subagent",
+      "model": "opencode/big-pickle",
+      "prompt": "You are a coding subagent. Only use tools from this list: bash, read, glob, grep, edit, write, webfetch, websearch, codesearch, skill. Never call agent names as tools, eg: trinity.",
+      "description": "Large context reasoning, long document analysis, complex multi-step logic, code exploration on large codebases. Unlimited — use freely.",
+      "temperature": 0.1,
+      "tools": {
+        "write": false,
+        "edit": false,
+        "bash": false
+      }
+    },
+    "minimax": {
+      "mode": "subagent",
+      "model": "opencode/minimax-m2.5-free",
+      "description": "Fast summarization, structured data extraction, light parallel tasks, todo list compilation. Unlimited — use freely and in parallel.",
+      "temperature": 0.1,
+      "tools": {
+        "write": false,
+        "edit": false,
+        "bash": false
+      }
+    },
+    "trinity": {
+      "mode": "subagent",
+      "model": "opencode/trinity-large-preview-free",
+      "prompt": "You are a coding subagent. Only use tools from this list: bash, read, glob, grep, edit, write, webfetch, websearch, codesearch, skill. Never call agent names as tools, eg: trinity.",
+      "description": "Code generation, refactoring, and technical deep-dives. Best for writing and editing code. Unlimited — use freely.",
+      "temperature": 0.0,
+      "tools": {
+        "write": true,
+        "edit": true,
+        "bash": true
+      }
+    },
+    "glm5": {
+      "mode": "subagent",
+      "model": "opencode/glm-5-free",
+      "description": "Balanced code and prose tasks, todo list compilation. Unlimited — use freely. Preferred over limited models for general-purpose subagent work.",
+      "temperature": 0.2,
+      "tools": {
+        "write": true,
+        "edit": true,
+        "bash": false
+      }
+    },
+    "opus-judge": {
+      "mode": "subagent",
+      "model": "google/antigravity-claude-opus-4-6-thinking",
+      "description": "Senior evaluator. Receives multiple subagent outputs and picks or synthesizes the best one. LIMITED — invoke only after parallel workers complete, never for routine tasks.",
+      "temperature": 0.0,
+      "tools": {
+        "write": false,
+        "edit": false,
+        "bash": false
+      }
+    },
+    "opus-fallback": {
+      "mode": "subagent",
+      "model": "google/antigravity-claude-opus-4-6-thinking",
+      "description": "Last resort subagent. Invoked ONLY when opus-judge has flagged all parallel outputs as low quality. LIMITED — treat as an emergency escalation, not a default worker.",
+      "temperature": 0.1,
+      "tools": {
+        "write": true,
+        "edit": true,
+        "bash": true
+      }
+    }
+  }
+}
