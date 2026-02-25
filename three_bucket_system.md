@@ -333,13 +333,13 @@ camera is writing to.
 |    8 | F1U->C 3/3   | 'a+B  | -      | TXP    | REC    | F0U  | F0L  | F1U  |
 |    9 | F1L->A 1/3   | 'a+B  | REC    | TXP    | -      | F0U  | F0L  | F1U  |
 |   10 | F1L->A 2/3   | 'a+B  | REC    | TXP    | -      | F0U  | F0L  | F1U  |
-|   11 | F1L->A 3/3   | 'a+B  | REC    | TXP    | -      | F1L  | F0L  | F1U  |
+|   11 | F1L->A 3/3   | 'a+B  | PD     | TXP    | -      | F1L  | F0L  | F1U  |
 |   12 | F2U->C 1/3   | 'a+B  | -      | TXP    | REC    | F1L  | F0L  | F1U  |
 |   13 | F2U->C 2/3   | 'a+B  | -      | TXP    | REC    | F1L  | F0L  | F1U  |
 |   14 | F2U->C 3/3   | "C+a  | PD     | -      | TX REC | F1L  | F0L  | F2U  |
 |   15 | F2L->B 1/3   | "C+a  | PD     | REC    | TXP    | F1L  | F0L  | F2U  |
 |   16 | F2L->B 2/3   | "C+a  | PD     | REC    | TXP    | F1L  | F0L  | F2U  |
-|   17 | F2L->B 3/3   | "C+a  | PD     | REC    | TXP    | F1L  | F2L  | F2U  |
+|   17 | F2L->B 3/3   | "C+a  | PD     | PD     | TXP    | F1L  | F2L  | F2U  |
 |   18 | F3U->B 1/3   | "C+a  | PD     | REC    | TXP    | F1L  | F2L  | F2U  |
 |   19 | F3U->B 2/3   | "C+a  | PD     | REC    | TXP    | F1L  | F2L  | F2U  |
 |   20 | F3U->B 3/3   | "C+a  | PD     | REC    | TXP    | F1L  | F3U  | F2U  |
