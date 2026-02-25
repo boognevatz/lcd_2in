@@ -1,20 +1,38 @@
-# Three-Bucket Scenario 2 Verification Action Plan
+# Three-Bucket Scenario Verification Action Plan
 
 ## Overview
-This action plan describes a methodical verification process for Scenario 2
-in the three-bucket camera-to-TX system. The scenario table has 19 rows (ticks
-0–18). All rules and the scenario table are in `three_bucket_system.md`.
-When in doubt, Scenario 1 can be used for refence, it was already debugged and 
+This action plan describes a methodical verification process for Scenario 6
+in the three-bucket camera-to-TX system.
+All rules and the scenario table are in `three_bucket_system.md`.
+When in doubt, Scenario 1,2,3,4,5 can be used for refence, it was already debugged and 
 can be safely considered error-free.
 
 ## IMPORTANT
 
-Always execute all 4 subagents in parallel!
+Always execute all subagents in parallel!
+Always run subagents on only one row at a time! So each report can correspond
+to only one row. The main agent saves each report to the file. It is
+the job of @opus-judge, if there is not decision making necessary, the 
+file saving job is still his. If there are more work needed (as described below), 
+then those also.
+The table rows are always numbered starting from 0, the first column (tick0, tick1, etc), 
+can be directly see as the row number also.
+
+### Mandatory Subagent Prompt Preamble
+Every subagent dispatch (worker, judge, or fallback) MUST include the following
+preamble at the top of its prompt, verbatim:
+
+> **ROW NUMBERING RULE:** Table rows are numbered starting from 0.
+> The first column in the table (tick0, tick1, tick2, …) doubles as the row number.
+> For example, the row whose first column reads "tick 0" is row 0,
+> "tick 1" is row 1, and so on. Use this zero-based numbering in all
+> references, filenames, and reasoning.
+
+Do NOT omit or paraphrase this preamble — paste it unchanged into every prompt.
 
 ## Worker Agents
 - `@big-pickle` - Large context reasoning, complex multi-step logic
 - `@trinity` - Code generation, technical deep-dives
-- `@glm5` - Balanced code and prose tasks, todo list compilation.
 - `@minimax` - Fast summarization, structured extraction
 
 ## Judge Agent
@@ -27,14 +45,14 @@ Always execute all 4 subagents in parallel!
 A row is correct if it needs NO changes — the file is assumed correct as-is. The burden of proof is on any ERROR claim. Subagents validate each row against the rules and the previous row's state.
 
 ## File Naming Convention
-- OK: `./analyzed/three_scenario2_row{N}_{agent}_OK.md`
-- ERROR: `./analyzed/three_scenario2_row{N}_{agent}_ERROR.md`
-- Cross-check: `./analyzed/three_scenario2_row{N}_{agent}_ERROR_{crosscheck_agent}_OK.md` (or `_ERROR.md`)
+- OK: `./analyzed2/three_scenario2_row{N}_{agent}_OK.md`
+- ERROR: `./analyzed2/three_scenario2_row{N}_{agent}_ERROR.md`
+- Cross-check: `./analyzed2/three_scenario2_row{N}_{agent}_ERROR_{crosscheck_agent}_OK.md` (or `_ERROR.md`)
 
 ## Verification Protocol
 
 ### Step 1: Initial Row Verification
-For each row N (0–18):
+For each row N :
 1. Dispatch all three worker agents to verify row N against the rules in `three_bucket_system.md`
 2. Each agent reads `three_bucket_system.md` directly
 3. Each agent returns a verdict: OK or ERROR with reasoning
@@ -53,15 +71,24 @@ If any agent flags ERROR:
 3. Apply correction if needed before proceeding to next row
 
 ### Step 4: Sequential Progression
-- Each row is verified in order (0 to 18)
+- Each row is verified in order 
 - If a row is corrected, the fix is applied before moving to the next row
 - Each row's state depends on all previous rows being correct
 
 ## Report File Requirements
-Each report file must contain:
-- Question: Which row, which rules were checked
-- Answer: Subagent's verdict and complete reasoning
-- This enables re-running the analysis independently
+Each report file must contain, in this order:
+
+1. **Prompt (verbatim):** The exact, unedited prompt that was sent to the subagent,
+   enclosed in a fenced block (` ```prompt ... ``` `). This includes the mandatory
+   ROW NUMBERING RULE preamble and the full task description.
+2. **Thinking / Reasoning:** The subagent's complete chain-of-thought — every
+   intermediate step, rule application, and deduction it performed. Nothing may
+   be summarised or omitted; include the full thinking as returned by the agent.
+3. **Verdict:** OK or ERROR, with a concise final summary.
+4. **Correction (if ERROR):** The proposed fix and justification.
+
+This structure ensures any report can be independently audited and re-run
+without needing to reconstruct what the subagent was asked or how it reasoned.
 
 ## Final Validation Pass
 After all 19 rows are processed:
