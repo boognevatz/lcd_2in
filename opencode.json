@@ -9,6 +9,7 @@
     "big-pickle": {
       "mode": "subagent",
       "model": "opencode/big-pickle",
+      "steps": 10,
       "prompt": "You are a coding subagent. Only use tools from this list: bash, read, glob, grep, edit, write, webfetch, websearch, codesearch, skill. Never call agent names as tools, eg: trinity.",
       "description": "Large context reasoning, long document analysis, complex multi-step logic, code exploration on large codebases. Unlimited — use freely.",
       "temperature": 0.1,
@@ -21,6 +22,7 @@
     "minimax": {
       "mode": "subagent",
       "model": "opencode/minimax-m2.5-free",
+      "steps": 10,
       "description": "Fast summarization, structured data extraction, light parallel tasks, todo list compilation. Unlimited — use freely and in parallel.",
       "temperature": 0.1,
       "tools": {
@@ -31,6 +33,7 @@
     },
     "trinity": {
       "mode": "subagent",
+      "steps": 10,
       "model": "opencode/trinity-large-preview-free",
       "prompt": "You are a coding subagent. Only use tools from this list: bash, read, glob, grep, edit, write, webfetch, websearch, codesearch, skill. Never call agent names as tools, eg: trinity.",
       "description": "Code generation, refactoring, and technical deep-dives. Best for writing and editing code. Unlimited — use freely.",
@@ -44,6 +47,7 @@
     "glm5": {
       "mode": "subagent",
       "model": "opencode/glm-5-free",
+      "steps": 10,
       "description": "Balanced code and prose tasks, todo list compilation. Unlimited — use freely. Preferred over limited models for general-purpose subagent work.",
       "temperature": 0.2,
       "tools": {

@@ -118,6 +118,29 @@ If `@opus-judge` determines that **no subagent output meets the quality bar**, e
 - Pass it the original task + a brief note on what the other agents got wrong
 - Do not invoke it speculatively or as a shortcut — it is expensive
 
+
+### Subagent Failure & Retry Policy
+
+This retry policy applies before invoking `@opus-fallback`.
+
+1. **Do not stop.**
+2. **Summarize what the subagent attempted.**
+3. **Retry the subagent call.**
+
+On each retry:
+
+- Narrow the scope
+- Simplify the request
+- Avoid repeating the same query
+
+Maximum retries: **3**
+
+After 3 failed retries:
+
+- Treat the task as a failed parallel round
+- Proceed with normal escalation rules
+
+
 ### Context Saving Rules
 
 1. **Your context is precious.** Never load raw file contents into your own context — ask `@big-pickle` or `@trinity` to explore and return a summary.
