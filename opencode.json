@@ -67,6 +67,17 @@
         "bash": false
       }
     },
+    "codex-judge": {
+      "mode": "subagent",
+      "model": "openai/gpt-5.2-codex",
+      "description": "Senior evaluator. Receives multiple subagent outputs and picks or synthesizes the best one. LIMITED — invoke only after parallel workers complete, never for routine tasks.",
+      "temperature": 0.0,
+      "tools": {
+        "write": false,
+        "edit": false,
+        "bash": false
+      }
+    },
     "opus-fallback": {
       "mode": "subagent",
       "model": "google/antigravity-claude-opus-4-6-thinking",
