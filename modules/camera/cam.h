@@ -45,20 +45,42 @@ extern uint8_t *bucket[3];              // 3 half-frame buckets
 
 // --- Three-bucket system shared state ---
 
-// Half-frame type constants
-#define HALF_UPPER   0
-#define HALF_LOWER   1
-#define HALF_UNKNOWN 2
+// 32-bit atomic bucket state layout:
+//   Bits 31-3: Frame number (29 bits)
+//   Bit 2:     Half (1=UPPER, 0=LOWER)
+//   Bit 1:     Dirty (1 = camera writing in progress)
+//   Bit 0:     Valid (1 = valid data present, 0 = empty)
+#define BUCKET_VALID_MASK   0x00000001U
+#define BUCKET_DIRTY_MASK   0x00000002U
+#define BUCKET_HALF_MASK    0x00000004U
+#define BUCKET_FRAME_SHIFT  3
 
-// Per-bucket state (written by ISR, read by TX main thread)
-extern volatile bool     bucket_valid[3];       // true = camera finished writing, data complete
-extern volatile bool     bucket_cam_writing[3]; // true = camera DMA actively writing this bucket
-extern volatile uint8_t  bucket_half_type[3];   // HALF_UPPER, HALF_LOWER, or HALF_UNKNOWN
-extern volatile uint16_t bucket_frame_num[3];   // frame number this half belongs to
+static inline uint32_t bucket_get_frame(volatile uint32_t s)       { return s >> BUCKET_FRAME_SHIFT; }
+static inline bool     bucket_is_valid(volatile uint32_t s)       { return (s & BUCKET_VALID_MASK) != 0; }
+static inline bool     bucket_is_dirty(volatile uint32_t s)       { return (s & BUCKET_DIRTY_MASK) != 0; }
+static inline bool     bucket_half_is_upper(volatile uint32_t s)  { return (s & BUCKET_HALF_MASK) != 0; }
+static inline bool     bucket_is_complete(volatile uint32_t s)    { return bucket_is_valid(s) && !bucket_is_dirty(s); }
 
-// Camera position tracking (written by ISR, read by TX)
-extern volatile uint8_t  cam_half_counter;      // 0 = writing upper, 1 = writing lower
-extern volatile uint16_t cam_frame_counter;     // current camera frame number
+static inline uint32_t bucket_make_empty(void) {
+    return 0;
+}
+
+static inline uint32_t bucket_make_complete(uint32_t frame, bool is_upper) {
+    return (frame << BUCKET_FRAME_SHIFT) | BUCKET_VALID_MASK |
+           (is_upper ? BUCKET_HALF_MASK : 0);
+}
+
+static inline uint32_t bucket_make_dirty(uint32_t frame, bool is_upper) {
+    return (frame << BUCKET_FRAME_SHIFT) | BUCKET_VALID_MASK | BUCKET_DIRTY_MASK |
+           (is_upper ? BUCKET_HALF_MASK : 0);
+}
+
+// Camera counter: increments every half-frame
+// frame = counter / 2, half = counter % 2 (0=UPPER, 1=LOWER)
+extern volatile uint32_t cam_counter;
+
+// Bucket state array: [0]=A, [1]=B, [2]=C
+extern volatile uint32_t bucket_info[3];
 
 // TX intent declaration (written by TX main thread, read by ISR)
 extern volatile bool     tx_wants[3];           // TX has selected this bucket for its pair

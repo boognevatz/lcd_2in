@@ -57,17 +57,14 @@ uint8_t *bucket[3] = { bucket_mem_0, bucket_mem_1, bucket_mem_2 };
 static uint32_t DMA_CH_A;
 static uint32_t DMA_CH_B;
 
-// --- Three-bucket system state ---
+// --- Three-bucket system state (32-bit atomic) ---
 
-// Per-bucket tracking (ISR writes, TX reads)
-volatile bool     bucket_valid[3]       = {false, false, false};
-volatile bool     bucket_cam_writing[3] = {false, false, false};
-volatile uint8_t  bucket_half_type[3]   = {HALF_UNKNOWN, HALF_UNKNOWN, HALF_UNKNOWN};
-volatile uint16_t bucket_frame_num[3]   = {0, 0, 0};
+// Per-bucket state packed into single uint32_t (see cam.h for layout)
+volatile uint32_t bucket_info[3] = {0, 0, 0};
 
-// Camera position (ISR writes, TX reads)
-volatile uint8_t  cam_half_counter  = 0;  // 0=upper next, 1=lower next
-volatile uint16_t cam_frame_counter = 0;
+// Camera counter: increments every half-frame
+// frame = cam_counter / 2, is_upper = (cam_counter % 2) == 0
+volatile uint32_t cam_counter = 0;
 
 // TX intent (TX writes, ISR reads)
 volatile bool tx_wants[3] = {false, false, false};
@@ -143,19 +140,16 @@ void setup_dma_for_capture()
 
     // Reset three-bucket system state
     for (int i = 0; i < 3; i++) {
-        bucket_valid[i] = false;
-        bucket_cam_writing[i] = false;
-        bucket_half_type[i] = HALF_UNKNOWN;
-        bucket_frame_num[i] = 0;
+        bucket_info[i] = bucket_make_empty();
         tx_wants[i] = false;
     }
-    cam_half_counter = 0;   // First write will be upper half
-    cam_frame_counter = 0;
+    cam_counter = 0;
     ch_target[0] = 0;       // CH_A starts at bucket 0
     ch_target[1] = 1;       // CH_B starts at bucket 1
 
-    // Mark bucket 0 as being written (CH_A is about to start)
-    bucket_cam_writing[0] = true;
+    // Mark bucket 0 as dirty (being written)
+    // cam_counter=0 → frame=0, half=(0%2)=0 → UPPER, so is_upper=true
+    bucket_info[0] = bucket_make_dirty(0, true);
 
     // Enable IRQ on both channels
     dma_channel_set_irq0_enabled(DMA_CH_A, true);
@@ -176,22 +170,23 @@ function:   Protection check for camera skip logic.
 ********************************************************************************/
 static inline bool is_protected(uint8_t b)
 {
-    return tx_wants[b] && bucket_valid[b];
+    return tx_wants[b] && bucket_is_complete(bucket_info[b]);
 }
 
 /********************************************************************************
 function:   DMA interrupt handler -- 3-bucket system with skip logic.
 
             When a DMA channel finishes one half-frame:
-            1. Updates bucket state (valid, half_type, frame_num)
-            2. Marks the other channel's target as being written
-            3. Advances camera half/frame counters
-            4. Chooses next write target using round-robin with skip
-            5. Reconfigures the completing channel for its next firing
+            1. Captures current cam_counter state (frame + half)
+            2. Marks completed bucket as complete (atomic 32-bit write)
+            3. Increments cam_counter
+            4. Marks other channel's target as dirty (atomic 32-bit write)
+            5. Chooses next write target using round-robin with skip
+            6. Reconfigures the completing channel for its next firing
 
             Skip rule (from three_bucket_system.md):
             - Round-robin A->B->C->A...
-            - Skip protected buckets (tx_wants AND bucket_valid)
+            - Skip protected buckets (tx_wants AND bucket_is_complete)
             - If both candidates protected, camera trapped on one bucket
 ********************************************************************************/
 static void handle_half_complete(uint32_t completed_ch)
@@ -205,24 +200,23 @@ static void handle_half_complete(uint32_t completed_ch)
     uint8_t other_idx = 1 - ch_idx;
     uint8_t other_target = ch_target[other_idx];
 
-    // --- Update completed bucket state ---
-    bucket_cam_writing[completed] = false;
-    bucket_valid[completed] = true;
-    bucket_half_type[completed] = cam_half_counter;
-    bucket_frame_num[completed] = cam_frame_counter;
+    // --- Capture current counter state BEFORE incrementing ---
+    uint32_t old_counter = cam_counter;
+    uint32_t old_frame = old_counter / 2;
+    bool old_half_is_upper = (old_counter % 2) == 0;
 
-    // --- Update other channel's target state ---
+    // --- Update completed bucket state (single atomic write) ---
+    bucket_info[completed] = bucket_make_complete(old_frame, old_half_is_upper);
+
+    // --- Advance camera counter ---
+    cam_counter++;
+
+    // --- Update other channel's target state (single atomic write) ---
     // The other channel just started writing, so its target is being overwritten.
-    bucket_cam_writing[other_target] = true;
-    bucket_valid[other_target] = false;
-
-    // --- Advance camera half/frame counters ---
-    // cam_half_counter: 0=just wrote upper, next is lower
-    //                   1=just wrote lower, next is upper (new frame)
-    cam_half_counter = 1 - cam_half_counter;
-    if (cam_half_counter == 0) {
-        cam_frame_counter++;
-    }
+    uint32_t new_counter = cam_counter;
+    uint32_t new_frame = new_counter / 2;
+    bool new_half_is_upper = (new_counter % 2) == 0;
+    bucket_info[other_target] = bucket_make_dirty(new_frame, new_half_is_upper);
 
     // --- Decide next write target for this (completing) channel ---
     // This channel will fire AFTER the other channel finishes other_target.

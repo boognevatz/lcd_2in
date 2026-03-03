@@ -82,33 +82,16 @@ static const char boundary_subsequent[] = "\r\n--frame\r\nContent-Type: applicat
 function:   Determine if a bucket holds (or is receiving) an Upper half-frame.
             Used for TX pair ordering: Upper always goes first.
 
-            During an active write (bucket_cam_writing[b] == true),
-            cam_half_counter reflects what the current write IS producing.
-            This is because the ISR flips cam_half_counter after the write
-            completes, and sets bucket_cam_writing on the other channel's
-            target at that same moment.
-
-            Trace proof:
-              Startup: cam_half_counter=0, CH_A writing bucket 0
-              CH_A ISR: sets bucket_half_type[0]=0(U), flips cam_half_counter->1
-                        sets bucket_cam_writing[other_target]=true
-              Now CH_B is writing, cam_half_counter=1 -> CH_B is writing Lower
-              CH_B ISR: sets bucket_half_type[1]=1(L), flips cam_half_counter->0
-                        sets bucket_cam_writing[next]=true
-              Now next channel writing, cam_half_counter=0 -> writing Upper
-            So: cam_half_counter correctly reflects the in-progress write type.
+            With the consolidated bucket_info[] state, both complete and dirty
+            (in-progress) states encode the half type in the Half bit (bit 2).
+            So we only need: is the bucket valid AND is it upper?
 ********************************************************************************/
 static bool bucket_has_upper(uint8_t b)
 {
-    // Bucket has valid complete data and it's an Upper half
-    if (bucket_valid[b] && bucket_half_type[b] == HALF_UPPER) {
-        return true;
-    }
-    // Camera is currently writing to this bucket and it's writing an Upper half
-    if (bucket_cam_writing[b] && cam_half_counter == HALF_UPPER) {
-        return true;
-    }
-    return false;
+    uint32_t info = bucket_info[b];
+    // Both complete and dirty states encode the half type in the Half bit,
+    // so we just need: is valid AND is upper.
+    return bucket_is_valid(info) && bucket_half_is_upper(info);
 }
 
 
@@ -240,19 +223,35 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
         uint8_t cand_a = (just_finished + 1) % 3;
         uint8_t cand_b = (just_finished + 2) % 3;
 
-        // Order: whichever has (or is receiving) Upper half goes first.
-        // "In all cases the order is unambiguous: whichever bucket holds
-        //  (or is receiving) the Upper half goes first; the other goes second."
-        if (bucket_has_upper(cand_a)) {
-            tx_first = cand_a;
-            tx_second = cand_b;
-        } else if (bucket_has_upper(cand_b)) {
-            tx_first = cand_b;
-            tx_second = cand_a;
+        // Check if both candidates are complete and from the same frame
+        uint32_t info_a = bucket_info[cand_a];
+        uint32_t info_b = bucket_info[cand_b];
+        bool a_complete = bucket_is_complete(info_a);
+        bool b_complete = bucket_is_complete(info_b);
+        bool matched = a_complete && b_complete &&
+                       (bucket_get_frame(info_a) == bucket_get_frame(info_b));
+
+        if (matched) {
+            // Matched pair from same frame -- order: Upper first
+            if (bucket_half_is_upper(info_a)) {
+                tx_first = cand_a;
+                tx_second = cand_b;
+            } else {
+                tx_first = cand_b;
+                tx_second = cand_a;
+            }
         } else {
-            // Neither has upper -- default: natural round-robin order
-            tx_first = cand_a;
-            tx_second = cand_b;
+            // No matched pair -- fall back to Upper-first heuristic
+            if (bucket_has_upper(cand_a)) {
+                tx_first = cand_a;
+                tx_second = cand_b;
+            } else if (bucket_has_upper(cand_b)) {
+                tx_first = cand_b;
+                tx_second = cand_a;
+            } else {
+                tx_first = cand_a;
+                tx_second = cand_b;
+            }
         }
 
         // Declare TX intent for the new pair.
