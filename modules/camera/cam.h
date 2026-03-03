@@ -42,10 +42,26 @@
 #define HALF_FRAME_XFERS  (HALF_FRAME_BYTES / sizeof(uint16_t)) // 38,400
 
 extern uint8_t *bucket[3];              // 3 half-frame buckets
-extern volatile bool frame_ready;       // true when a complete frame is available
-extern volatile uint8_t frame_first_idx;  // bucket index of frame's first half
-extern volatile uint8_t frame_second_idx; // bucket index of frame's second half
-extern volatile bool read_in_progress;  // set by Python to protect read buckets
+
+// --- Three-bucket system shared state ---
+
+// Half-frame type constants
+#define HALF_UPPER   0
+#define HALF_LOWER   1
+#define HALF_UNKNOWN 2
+
+// Per-bucket state (written by ISR, read by TX main thread)
+extern volatile bool     bucket_valid[3];       // true = camera finished writing, data complete
+extern volatile bool     bucket_cam_writing[3]; // true = camera DMA actively writing this bucket
+extern volatile uint8_t  bucket_half_type[3];   // HALF_UPPER, HALF_LOWER, or HALF_UNKNOWN
+extern volatile uint16_t bucket_frame_num[3];   // frame number this half belongs to
+
+// Camera position tracking (written by ISR, read by TX)
+extern volatile uint8_t  cam_half_counter;      // 0 = writing upper, 1 = writing lower
+extern volatile uint16_t cam_frame_counter;     // current camera frame number
+
+// TX intent declaration (written by TX main thread, read by ISR)
+extern volatile bool     tx_wants[3];           // TX has selected this bucket for its pair
 
 #define USE_100BASE_FX (false)
 
@@ -67,10 +83,6 @@ void read_cam_data_blocking(uint8_t *buffer, size_t length);
 dma_channel_config get_cam_config(PIO pio, uint32_t sm, uint32_t dma_chan);
 void cam_handler();
 void setup_dma_for_capture();
-
-// Frame read control - call from Python
-void cam_start_read(void);   // Call before reading frame - protects read buckets
-void cam_end_read(void);     // Call after reading frame - allows frame updates
 
 // Camera pin mapping struct for runtime configuration
 typedef struct {

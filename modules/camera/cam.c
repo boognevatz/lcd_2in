@@ -57,22 +57,28 @@ uint8_t *bucket[3] = { bucket_mem_0, bucket_mem_1, bucket_mem_2 };
 static uint32_t DMA_CH_A;
 static uint32_t DMA_CH_B;
 
-// Rotation counter: increments every half-frame completion
-static volatile uint32_t write_pos = 0;
+// --- Three-bucket system state ---
 
-// Frame state
-volatile bool frame_ready = false;
-volatile uint8_t frame_first_idx = 0;
-volatile uint8_t frame_second_idx = 1;
-volatile bool read_in_progress = false;
+// Per-bucket tracking (ISR writes, TX reads)
+volatile bool     bucket_valid[3]       = {false, false, false};
+volatile bool     bucket_cam_writing[3] = {false, false, false};
+volatile uint8_t  bucket_half_type[3]   = {HALF_UNKNOWN, HALF_UNKNOWN, HALF_UNKNOWN};
+volatile uint16_t bucket_frame_num[3]   = {0, 0, 0};
+
+// Camera position (ISR writes, TX reads)
+volatile uint8_t  cam_half_counter  = 0;  // 0=upper next, 1=lower next
+volatile uint16_t cam_frame_counter = 0;
+
+// TX intent (TX writes, ISR reads)
+volatile bool tx_wants[3] = {false, false, false};
+
+// Internal ISR tracking: which bucket each DMA channel targets
+// ch_target[0] = CH_A's target bucket, ch_target[1] = CH_B's target bucket
+static volatile uint8_t ch_target[2] = {0, 1};
 
 uint8_t pin_i2c1_sda = 22; // default on RP2350 touch 2in
 uint8_t pin_i2c1_scl = 23; // default on RP2350 touch 2in
 uint8_t pin_xclk_pwm = 11; // GPIO11 (camera's xclk(24MHz))
-
-
-
-
 
 
 void set_i2c_pins(uint8_t sda, uint8_t scl) {
@@ -135,46 +141,116 @@ void setup_dma_for_capture()
                           HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers
                           false);                 // don't start yet
 
-    // Reset rotation state
-    write_pos = 0;
-    frame_ready = false;
-    read_in_progress = false;
+    // Reset three-bucket system state
+    for (int i = 0; i < 3; i++) {
+        bucket_valid[i] = false;
+        bucket_cam_writing[i] = false;
+        bucket_half_type[i] = HALF_UNKNOWN;
+        bucket_frame_num[i] = 0;
+        tx_wants[i] = false;
+    }
+    cam_half_counter = 0;   // First write will be upper half
+    cam_frame_counter = 0;
+    ch_target[0] = 0;       // CH_A starts at bucket 0
+    ch_target[1] = 1;       // CH_B starts at bucket 1
+
+    // Mark bucket 0 as being written (CH_A is about to start)
+    bucket_cam_writing[0] = true;
 
     // Enable IRQ on both channels
     dma_channel_set_irq0_enabled(DMA_CH_A, true);
     dma_channel_set_irq0_enabled(DMA_CH_B, true);
 
     irq_add_shared_handler(DMA_IRQ_0, cam_handler, PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
-    mp_printf(MP_PYTHON_PRINTER, "irq_add_shared_handler: cam_handler (3-bucket)\n");
+    mp_printf(MP_PYTHON_PRINTER, "irq_add_shared_handler: cam_handler (3-bucket skip)\n");
 
     irq_set_enabled(DMA_IRQ_0, true);
     dma_channel_start(DMA_CH_A); // Start first half-frame capture
 }
 
 /********************************************************************************
-function:   DMA interrupt processing function (3-bucket half-frame rotation)
-parameter:
+function:   Protection check for camera skip logic.
+            A bucket is protected if TX declared interest (tx_wants) AND the
+            bucket contains valid complete data. If camera is still writing
+            to it, it is NOT protected (TX REC state -- camera is ahead).
+********************************************************************************/
+static inline bool is_protected(uint8_t b)
+{
+    return tx_wants[b] && bucket_valid[b];
+}
+
+/********************************************************************************
+function:   DMA interrupt handler -- 3-bucket system with skip logic.
+
+            When a DMA channel finishes one half-frame:
+            1. Updates bucket state (valid, half_type, frame_num)
+            2. Marks the other channel's target as being written
+            3. Advances camera half/frame counters
+            4. Chooses next write target using round-robin with skip
+            5. Reconfigures the completing channel for its next firing
+
+            Skip rule (from three_bucket_system.md):
+            - Round-robin A->B->C->A...
+            - Skip protected buckets (tx_wants AND bucket_valid)
+            - If both candidates protected, camera trapped on one bucket
 ********************************************************************************/
 static void handle_half_complete(uint32_t completed_ch)
 {
-    uint8_t completed_bucket = write_pos % 3;
-    write_pos++;
+    // Identify which DMA channel completed and which bucket it wrote to
+    uint8_t ch_idx = (completed_ch == DMA_CH_A) ? 0 : 1;
+    uint8_t completed = ch_target[ch_idx];
 
-    // Reconfigure this channel's write address for 2 positions ahead in rotation.
-    // It won't be triggered again until the other channel finishes its half,
-    // so we have ~61ms before this address is used.
-    dma_channel_set_write_addr(completed_ch,
-                               bucket[(completed_bucket + 2) % 3], false);
+    // The other DMA channel has already started via hardware chaining.
+    // It is writing to its pre-configured target.
+    uint8_t other_idx = 1 - ch_idx;
+    uint8_t other_target = ch_target[other_idx];
 
-    // Every 2nd half-frame completes a full frame
-    if ((write_pos & 1) == 0) {
-        if (!read_in_progress) {
-            frame_second_idx = completed_bucket;
-            frame_first_idx = (completed_bucket + 2) % 3;
-            frame_ready = true;
-        }
-        // else: frame dropped silently (send loop busy)
+    // --- Update completed bucket state ---
+    bucket_cam_writing[completed] = false;
+    bucket_valid[completed] = true;
+    bucket_half_type[completed] = cam_half_counter;
+    bucket_frame_num[completed] = cam_frame_counter;
+
+    // --- Update other channel's target state ---
+    // The other channel just started writing, so its target is being overwritten.
+    bucket_cam_writing[other_target] = true;
+    bucket_valid[other_target] = false;
+
+    // --- Advance camera half/frame counters ---
+    // cam_half_counter: 0=just wrote upper, next is lower
+    //                   1=just wrote lower, next is upper (new frame)
+    cam_half_counter = 1 - cam_half_counter;
+    if (cam_half_counter == 0) {
+        cam_frame_counter++;
     }
+
+    // --- Decide next write target for this (completing) channel ---
+    // This channel will fire AFTER the other channel finishes other_target.
+    // Natural round-robin: the bucket after other_target.
+    // Skip if protected (TX wants it AND it has valid data).
+
+    // With 3 buckets, the two candidates (excluding other_target) are:
+    uint8_t cand_a = (other_target + 1) % 3;  // Natural round-robin next
+    uint8_t cand_b = (other_target + 2) % 3;  // Alternative
+
+    uint8_t chosen;
+    if (!is_protected(cand_a)) {
+        // Natural next is available
+        chosen = cand_a;
+    } else if (!is_protected(cand_b)) {
+        // Skip one, use alternative
+        chosen = cand_b;
+    } else {
+        // Both protected -- camera is trapped on one bucket.
+        // Write to other_target (same bucket as the other channel).
+        // By the time this channel fires, the other channel will have finished,
+        // so there's no DMA conflict.
+        chosen = other_target;
+    }
+
+    // --- Configure this channel for its next write ---
+    ch_target[ch_idx] = chosen;
+    dma_channel_set_write_addr(completed_ch, bucket[chosen], false);
 }
 
 void cam_handler(void)
@@ -188,19 +264,6 @@ void cam_handler(void)
         dma_hw->ints0 = 1u << DMA_CH_B;
         handle_half_complete(DMA_CH_B);
     }
-}
-
-/********************************************************************************
-function:   Frame read control functions for Python (protects read buckets)
-********************************************************************************/
-void cam_start_read(void)
-{
-    read_in_progress = true;
-}
-
-void cam_end_read(void)
-{
-    read_in_progress = false;
 }
 
 
@@ -350,4 +413,3 @@ void set_pwm_freq_kHz(uint32_t freq_khz, uint8_t gpio_num)
     pwm_init(pwm0_slice_num, &pwm_slice_config, true);
     pwm_set_gpio_level(gpio_num, (pwm_slice_config.top * 0.50)); // duty:50%
 }
-
