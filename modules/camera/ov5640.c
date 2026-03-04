@@ -253,7 +253,7 @@ void sccb_init(const uint32_t sda_pin, const uint32_t scl_pin)
     OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_ST_H,352,26);
     OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_ADDR_END_H,1792,1946);
     OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_OUTPUT_SIZE_H,240,320); //1440 1920
-    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_TOTAL_SIZE_H,2592,1944);
+    OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_TOTAL_SIZE_H,1896,984); // was 2592,1944 (full 5MP timing)
     OV5640_WR_Reg_2(ov5640_i2c,ov5640_cam_addr,X_OFFSET_H,16,14);
 
     uint8_t dat;
