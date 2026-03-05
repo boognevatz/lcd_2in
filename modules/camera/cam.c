@@ -68,6 +68,7 @@ volatile uint32_t cam_counter = 0;
 
 // TX intent (TX writes, ISR reads)
 volatile bool tx_wants[3] = {false, false, false};
+volatile int32_t mcu_temp_x10 = 365;            // default 36.5C until Python updates
 
 // Internal ISR tracking: which bucket each DMA channel targets
 // ch_target[0] = CH_A's target bucket, ch_target[1] = CH_B's target bucket

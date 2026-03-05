@@ -84,6 +84,7 @@ extern volatile uint32_t bucket_state[3];
 
 // TX intent declaration (written by TX main thread, read by ISR)
 extern volatile bool     tx_wants[3];           // TX has selected this bucket for its pair
+extern volatile int32_t  mcu_temp_x10;          // MCU temperature x10 (365 = 36.5C)
 
 #define USE_100BASE_FX (false)
 

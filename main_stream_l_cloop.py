@@ -475,10 +475,29 @@ while True:
 
             cl.settimeout(5.0)
 
-            # C streaming loop - eliminates Python callback overhead
+            # Temperature reading setup
+            temp_sensor = machine.ADC(4)
+            VREF = 3.3
+            BATCH_SIZE = 100
+
+            # C streaming loop with batched temperature updates.
+            # stream_start() initializes static state, then stream_loop_c()
+            # sends BATCH_SIZE frames and returns. Between batches, we read
+            # the ADC (~50us) and push the temperature into C-land.
             debug_print("Starting C-based streaming loop")
-            frame_count = camera.stream_loop_c(cl)
-            debug_print(f"Stream ended after {frame_count} frames")
+            camera.stream_start()
+            total_frames = 0
+            while True:
+                sent = camera.stream_loop_c(cl, BATCH_SIZE)
+                total_frames += sent
+                if sent < BATCH_SIZE:
+                    break
+                # Read MCU temperature between batches (~50us, invisible)
+                raw = temp_sensor.read_u16()
+                voltage = raw * VREF / 65535.0
+                temp_c = 27.0 - ((voltage - 0.706) / 0.001721)
+                camera.set_temperature(int(temp_c * 10))
+            debug_print(f"Stream ended after {total_frames} frames")
 
             try:
                 cl.close()
