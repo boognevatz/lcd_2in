@@ -192,8 +192,9 @@ Connection: close
         #controls button { padding: 8px 16px; margin-right: 10px; font-size: 14px; cursor: pointer; }
         #btn-stream { background: #c33; color: #fff; border: none; }
         #btn-stream.stopped { background: #3a3; }
-        #btn-led { background: #555; color: #fff; border: none; }
-        #btn-led:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-led { background: #555; color: #fff; border: none; }
+        .btn-led:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-led.active { background: #c90; }
         #color-format-options { margin-top: 10px; }
         #color-format-options label { display: block; margin: 5px 0; }
     </style>
@@ -208,7 +209,12 @@ Connection: close
     </div>
     <div id="controls">
         <button id="btn-stream" onclick="toggleStream()">Stop Stream</button>
-        <button id="btn-led" onclick="sendLedCommand(30)">LED 30%</button>
+        <button class="btn-led" onclick="sendLedCommand(0)">LED 0%</button>
+        <button class="btn-led" onclick="sendLedCommand(8)">LED 8%</button>
+        <button class="btn-led" onclick="sendLedCommand(10)">LED 10%</button>
+        <button class="btn-led" onclick="sendLedCommand(15)">LED 15%</button>
+        <button class="btn-led" onclick="sendLedCommand(20)">LED 20%</button>
+        <button class="btn-led" onclick="sendLedCommand(100)">LED 100%</button>
     </div>
     <div id="color-format-options">
         <strong>Color Format:</strong><br>
@@ -289,8 +295,8 @@ Connection: close
         }
 
         async function sendLedCommand(percent) {
-            const btn = document.getElementById('btn-led');
-            btn.disabled = true;
+            const btns = document.querySelectorAll('.btn-led');
+            btns.forEach(b => b.disabled = true);
             const wasStreaming = streamEnabled;
 
             // Stop stream first (frees the single socket)
@@ -315,7 +321,8 @@ Connection: close
             // Wait for MCU to close command socket and recreate listener
             await new Promise(r => setTimeout(r, 600));
 
-            btn.disabled = false;
+            btns.forEach(b => { b.disabled = false; b.classList.remove('active'); });
+            btns.forEach(b => { if (b.textContent === 'LED ' + percent + '%') b.classList.add('active'); });
 
             // Restart stream if it was running before
             if (wasStreaming) {
