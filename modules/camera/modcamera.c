@@ -73,9 +73,21 @@ static mp_obj_t camera_set_xclk_pin(mp_obj_t xclk) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_xclk_pin_obj, camera_set_xclk_pin);
 
-// Boundary headers for MJPEG streaming (matches Python version in /streamc)
-static const char boundary_first[] = "--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
-static const char boundary_subsequent[] = "\r\n--frame\r\nContent-Type: application/octet-stream\r\n\r\n";
+// Boundary headers for MJPEG-style multipart streaming.
+// Content-Length is zero-padded to fixed width (8 digits).
+// X-Temperature is a placeholder (update when sensor is wired up).
+static const char boundary_first[] =
+    "--frame\r\n"
+    "Content-Type: application/octet-stream\r\n"
+    "Content-Length: 00153600\r\n"
+    "X-Temperature: 36.5\r\n"
+    "\r\n";
+static const char boundary_subsequent[] =
+    "\r\n--frame\r\n"
+    "Content-Type: application/octet-stream\r\n"
+    "Content-Length: 00153600\r\n"
+    "X-Temperature: 36.5\r\n"
+    "\r\n";
 
 
 /********************************************************************************
