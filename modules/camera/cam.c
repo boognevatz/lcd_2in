@@ -60,7 +60,7 @@ static uint32_t DMA_CH_B;
 // --- Three-bucket system state (32-bit atomic) ---
 
 // Per-bucket state packed into single uint32_t (see cam.h for layout)
-volatile uint32_t bucket_info[3] = {0, 0, 0};
+volatile uint32_t bucket_state[3] = {0, 0, 0};
 
 // Camera counter: increments every half-frame
 // frame = cam_counter / 2, is_upper = (cam_counter % 2) == 0
@@ -140,7 +140,7 @@ void setup_dma_for_capture()
 
     // Reset three-bucket system state
     for (int i = 0; i < 3; i++) {
-        bucket_info[i] = bucket_make_empty();
+        bucket_state[i] = bucket_make_empty();
         tx_wants[i] = false;
     }
     cam_counter = 0;
@@ -149,7 +149,7 @@ void setup_dma_for_capture()
 
     // Mark bucket 0 as dirty (being written)
     // cam_counter=0 → frame=0, half=(0%2)=0 → UPPER, so is_upper=true
-    bucket_info[0] = bucket_make_dirty(0, true);
+    bucket_state[0] = bucket_make_dirty(0, true);
 
     // Enable IRQ on both channels
     dma_channel_set_irq0_enabled(DMA_CH_A, true);
@@ -170,7 +170,7 @@ function:   Protection check for camera skip logic.
 ********************************************************************************/
 static inline bool is_protected(uint8_t b)
 {
-    return tx_wants[b] && bucket_is_complete(bucket_info[b]);
+    return tx_wants[b] && bucket_is_complete(bucket_state[b]);
 }
 
 /********************************************************************************
@@ -206,7 +206,7 @@ static void handle_half_complete(uint32_t completed_ch)
     bool old_half_is_upper = (old_counter % 2) == 0;
 
     // --- Update completed bucket state (single atomic write) ---
-    bucket_info[completed] = bucket_make_complete(old_frame, old_half_is_upper);
+    bucket_state[completed] = bucket_make_complete(old_frame, old_half_is_upper);
 
     // --- Advance camera counter ---
     cam_counter++;
@@ -216,7 +216,7 @@ static void handle_half_complete(uint32_t completed_ch)
     uint32_t new_counter = cam_counter;
     uint32_t new_frame = new_counter / 2;
     bool new_half_is_upper = (new_counter % 2) == 0;
-    bucket_info[other_target] = bucket_make_dirty(new_frame, new_half_is_upper);
+    bucket_state[other_target] = bucket_make_dirty(new_frame, new_half_is_upper);
 
     // --- Decide next write target for this (completing) channel ---
     // This channel will fire AFTER the other channel finishes other_target.

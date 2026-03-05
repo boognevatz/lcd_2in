@@ -82,16 +82,16 @@ static const char boundary_subsequent[] = "\r\n--frame\r\nContent-Type: applicat
 function:   Determine if a bucket holds (or is receiving) an Upper half-frame.
             Used for TX pair ordering: Upper always goes first.
 
-            With the consolidated bucket_info[] state, both complete and dirty
+            With the consolidated bucket_state[] state, both complete and dirty
             (in-progress) states encode the half type in the Half bit (bit 2).
             So we only need: is the bucket valid AND is it upper?
 ********************************************************************************/
 static bool bucket_has_upper(uint8_t b)
 {
-    uint32_t info = bucket_info[b];
+    uint32_t state = bucket_state[b];
     // Both complete and dirty states encode the half type in the Half bit,
     // so we just need: is valid AND is upper.
-    return bucket_is_valid(info) && bucket_half_is_upper(info);
+    return bucket_is_valid(state) && bucket_half_is_upper(state);
 }
 
 
@@ -220,12 +220,12 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
         // the two buckets that are NOT the bucket TX just finished sending").
         // The selection is deterministic. TX only controls the ORDER.
         uint8_t just_finished = tx_second;
-        uint8_t c0 = (just_finished + 1) % 3;
-        uint8_t c1 = (just_finished + 2) % 3;
+        uint8_t cand_a = (just_finished + 1) % 3;
+        uint8_t cand_b = (just_finished + 2) % 3;
 
         // Observe both candidate bucket states (single atomic read each)
-        uint32_t s0 = bucket_info[c0];
-        uint32_t s1 = bucket_info[c1];
+        uint32_t state_a = bucket_state[cand_a];
+        uint32_t state_b = bucket_state[cand_b];
 
         // Order rule (spec): "whichever bucket holds (or is receiving) the
         // Upper half goes first; the other goes second."
@@ -234,26 +234,26 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
         //   Case 1: Both complete same frame → one Upper, one Lower
         //   Case 2: Upper complete + Lower in-progress → Upper first
         //   Case 3: Upper in-progress + stale other → Upper first
-        bool c0_upper = bucket_has_upper(c0);
-        bool c1_upper = bucket_has_upper(c1);
+        bool cand_a_upper = bucket_has_upper(cand_a);
+        bool cand_b_upper = bucket_has_upper(cand_b);
 
-        if (c0_upper && !c1_upper) {
-            tx_first = c0;
-            tx_second = c1;
-        } else if (c1_upper && !c0_upper) {
-            tx_first = c1;
-            tx_second = c0;
+        if (cand_a_upper && !cand_b_upper) {
+            tx_first = cand_a;
+            tx_second = cand_b;
+        } else if (cand_b_upper && !cand_a_upper) {
+            tx_first = cand_b;
+            tx_second = cand_a;
         } else {
             // Ambiguous: both or neither claim Upper.
             // Pick the bucket with the higher (more recent) frame number first.
-            uint32_t f0 = bucket_get_frame(s0);
-            uint32_t f1 = bucket_get_frame(s1);
-            if (f1 > f0) {
-                tx_first = c1;
-                tx_second = c0;
+            uint32_t frame_a = bucket_get_frame(state_a);
+            uint32_t frame_b = bucket_get_frame(state_b);
+            if (frame_b > frame_a) {
+                tx_first = cand_b;
+                tx_second = cand_a;
             } else {
-                tx_first = c0;
-                tx_second = c1;
+                tx_first = cand_a;
+                tx_second = cand_b;
             }
         }
 

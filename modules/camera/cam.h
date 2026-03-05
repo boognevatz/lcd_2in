@@ -80,7 +80,7 @@ static inline uint32_t bucket_make_dirty(uint32_t frame, bool is_upper) {
 extern volatile uint32_t cam_counter;
 
 // Bucket state array: [0]=A, [1]=B, [2]=C
-extern volatile uint32_t bucket_info[3];
+extern volatile uint32_t bucket_state[3];
 
 // TX intent declaration (written by TX main thread, read by ISR)
 extern volatile bool     tx_wants[3];           // TX has selected this bucket for its pair
