@@ -132,19 +132,19 @@ static const char bucket_name[] = "ABC";
 //    159 = prev-end bucket C     (12 chars)
 //   Line 4 (2 bytes): \r\n at 173-174
 
-#define XHDR_LEN        175
-#define XHDR_SLOT_LEN    12
-#define XHDR_TX1_NAME    11
-#define XHDR_TX2_NAME    13
-#define XHDR_A_SLOT      15
-#define XHDR_B_SLOT      28
-#define XHDR_C_SLOT      41
-#define XHDR_MID_A       74
-#define XHDR_MID_B       87
-#define XHDR_MID_C      100
-#define XHDR_END_A      133
-#define XHDR_END_B      146
-#define XHDR_END_C      159
+#define X_HEADER_LEN        175
+#define X_HEADER_SLOT_LEN    12
+#define X_HEADER_TX1_NAME    11
+#define X_HEADER_TX2_NAME    13
+#define X_HEADER_A_SLOT      15
+#define X_HEADER_B_SLOT      28
+#define X_HEADER_C_SLOT      41
+#define X_HEADER_MID_A       74
+#define X_HEADER_MID_B       87
+#define X_HEADER_MID_C      100
+#define X_HEADER_END_A      133
+#define X_HEADER_END_B      146
+#define X_HEADER_END_C      159
 
 static const char x_header_template[] =
     "X-Buckets: A,A,"
@@ -176,7 +176,7 @@ function:   Write a 12-char fixed-width bucket state into a slot buffer.
 static void write_bucket_slot(char *slot, uint32_t state)
 {
     if (!bucket_is_valid(state)) {
-        memcpy(slot, "           -", XHDR_SLOT_LEN);
+        memcpy(slot, "           -", X_HEADER_SLOT_LEN);
         return;
     }
     // Dirty or complete prefix
@@ -218,7 +218,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
     int errcode;
 
     // X-Buckets diagnostic header buffer (filled per frame, sent after prefix)
-    char x_header[XHDR_LEN];
+    char x_header[X_HEADER_LEN];
 
     // Previous frame snapshots: captured at mid-point and end-point of the
     // previous iteration, reported in the next frame's headers.
@@ -246,18 +246,18 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
     // Pre-build x_header for the first frame (startup pair A,B).
     // At startup, prev_mid/prev_end are zero (empty) and bucket states
     // reflect initial setup (bucket 0 dirty, others empty).
-    memcpy(x_header, x_header_template, XHDR_LEN);
-    x_header[XHDR_TX1_NAME] = bucket_name[tx_first];
-    x_header[XHDR_TX2_NAME] = bucket_name[tx_second];
-    write_bucket_slot(&x_header[XHDR_A_SLOT], bucket_state[0]);
-    write_bucket_slot(&x_header[XHDR_B_SLOT], bucket_state[1]);
-    write_bucket_slot(&x_header[XHDR_C_SLOT], bucket_state[2]);
-    write_bucket_slot(&x_header[XHDR_MID_A], prev_mid[0]);
-    write_bucket_slot(&x_header[XHDR_MID_B], prev_mid[1]);
-    write_bucket_slot(&x_header[XHDR_MID_C], prev_mid[2]);
-    write_bucket_slot(&x_header[XHDR_END_A], prev_end[0]);
-    write_bucket_slot(&x_header[XHDR_END_B], prev_end[1]);
-    write_bucket_slot(&x_header[XHDR_END_C], prev_end[2]);
+    memcpy(x_header, x_header_template, X_HEADER_LEN);
+    x_header[X_HEADER_TX1_NAME] = bucket_name[tx_first];
+    x_header[X_HEADER_TX2_NAME] = bucket_name[tx_second];
+    write_bucket_slot(&x_header[X_HEADER_A_SLOT], bucket_state[0]);
+    write_bucket_slot(&x_header[X_HEADER_B_SLOT], bucket_state[1]);
+    write_bucket_slot(&x_header[X_HEADER_C_SLOT], bucket_state[2]);
+    write_bucket_slot(&x_header[X_HEADER_MID_A], prev_mid[0]);
+    write_bucket_slot(&x_header[X_HEADER_MID_B], prev_mid[1]);
+    write_bucket_slot(&x_header[X_HEADER_MID_C], prev_mid[2]);
+    write_bucket_slot(&x_header[X_HEADER_END_A], prev_end[0]);
+    write_bucket_slot(&x_header[X_HEADER_END_B], prev_end[1]);
+    write_bucket_slot(&x_header[X_HEADER_END_C], prev_end[2]);
 
     uint32_t t_frame_start = mp_hal_ticks_us();
 
@@ -289,7 +289,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
         // or before the loop for the first frame), so Line 1 is coherent
         // with the ordering decision.
         ret = mp_stream_write_exactly(
-            socket_obj, x_header, XHDR_LEN, &errcode);
+            socket_obj, x_header, X_HEADER_LEN, &errcode);
         if (ret == MP_STREAM_ERROR) {
             streaming = false;
             break;
@@ -405,18 +405,18 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
         // Line 1 uses snap[] from the ordering decision above,
         // so the reported states are coherent with the ordering decision.
         // Lines 2-3 use prev_mid/prev_end from the sends just completed.
-        memcpy(x_header, x_header_template, XHDR_LEN);
-        x_header[XHDR_TX1_NAME] = bucket_name[tx_first];
-        x_header[XHDR_TX2_NAME] = bucket_name[tx_second];
-        write_bucket_slot(&x_header[XHDR_A_SLOT], snap[0]);
-        write_bucket_slot(&x_header[XHDR_B_SLOT], snap[1]);
-        write_bucket_slot(&x_header[XHDR_C_SLOT], snap[2]);
-        write_bucket_slot(&x_header[XHDR_MID_A], prev_mid[0]);
-        write_bucket_slot(&x_header[XHDR_MID_B], prev_mid[1]);
-        write_bucket_slot(&x_header[XHDR_MID_C], prev_mid[2]);
-        write_bucket_slot(&x_header[XHDR_END_A], prev_end[0]);
-        write_bucket_slot(&x_header[XHDR_END_B], prev_end[1]);
-        write_bucket_slot(&x_header[XHDR_END_C], prev_end[2]);
+        memcpy(x_header, x_header_template, X_HEADER_LEN);
+        x_header[X_HEADER_TX1_NAME] = bucket_name[tx_first];
+        x_header[X_HEADER_TX2_NAME] = bucket_name[tx_second];
+        write_bucket_slot(&x_header[X_HEADER_A_SLOT], snap[0]);
+        write_bucket_slot(&x_header[X_HEADER_B_SLOT], snap[1]);
+        write_bucket_slot(&x_header[X_HEADER_C_SLOT], snap[2]);
+        write_bucket_slot(&x_header[X_HEADER_MID_A], prev_mid[0]);
+        write_bucket_slot(&x_header[X_HEADER_MID_B], prev_mid[1]);
+        write_bucket_slot(&x_header[X_HEADER_MID_C], prev_mid[2]);
+        write_bucket_slot(&x_header[X_HEADER_END_A], prev_end[0]);
+        write_bucket_slot(&x_header[X_HEADER_END_B], prev_end[1]);
+        write_bucket_slot(&x_header[X_HEADER_END_C], prev_end[2]);
     }
 
     // Cleanup: release all protection on exit
