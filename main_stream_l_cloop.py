@@ -108,6 +108,41 @@ except Exception as e:
     print(f"ERROR: Camera: {e}")
 
 
+# Initialize MCP4725 DAC for head LED brightness control
+MCP4725_ADDR = 0x60
+dac_ready = False
+try:
+    i2c = machine.I2C(0, sda=machine.Pin(12), scl=machine.Pin(13), freq=400000)
+    devices = i2c.scan()
+    if MCP4725_ADDR in devices:
+        dac_ready = True
+        debug_print(f"MCP4725 DAC found at 0x{MCP4725_ADDR:02x}")
+    else:
+        print(f"MCP4725 not found (scanned: {[hex(d) for d in devices]})")
+except Exception as e:
+    print(f"ERROR: DAC init: {e}")
+
+
+def set_head_led_brightness(percent):
+    """Set LED brightness using MCP4725 DAC (0-100%)."""
+    global dac_ready
+    if not dac_ready:
+        return False
+    if percent < 0:
+        percent = 0
+    elif percent > 100:
+        percent = 100
+    try:
+        dac_value = int((percent / 100.0) * 4095)
+        msb = (dac_value >> 4) & 0xFF
+        lsb = (dac_value << 4) & 0xF0
+        i2c.writeto(MCP4725_ADDR, bytes([0x40, msb, lsb]))
+        return True
+    except Exception as e:
+        print(f"ERROR: LED brightness: {e}")
+        return False
+
+
 # Cleanup function
 def cleanup():
     debug_print("\nCleaning up...")
@@ -153,6 +188,12 @@ Connection: close
         #camera-canvas { border: 2px solid #0f0; display: block; }
         #stats { margin-top: 10px; font-size: 16px; }
         .metric { display: inline-block; margin-right: 20px; padding: 5px 10px; background: #333; }
+        #controls { margin-top: 10px; }
+        #controls button { padding: 8px 16px; margin-right: 10px; font-size: 14px; cursor: pointer; }
+        #btn-stream { background: #c33; color: #fff; border: none; }
+        #btn-stream.stopped { background: #3a3; }
+        #btn-led { background: #555; color: #fff; border: none; }
+        #btn-led:disabled { opacity: 0.4; cursor: not-allowed; }
         #color-format-options { margin-top: 10px; }
         #color-format-options label { display: block; margin: 5px 0; }
     </style>
@@ -164,6 +205,10 @@ Connection: close
         <div class="metric">FPS: <span id="fps">0.00</span></div>
         <div class="metric">Frame: <span id="frame-count">0</span></div>
         <div class="metric">Status: <span id="status">Starting...</span></div>
+    </div>
+    <div id="controls">
+        <button id="btn-stream" onclick="toggleStream()">Stop Stream</button>
+        <button id="btn-led" onclick="sendLedCommand(30)">LED 30%</button>
     </div>
     <div id="color-format-options">
         <strong>Color Format:</strong><br>
@@ -189,6 +234,8 @@ Connection: close
         // Single-socket guard: only one active request at a time
         let requestInProgress = false;
         let abortController = null;
+        let streamEnabled = true;
+        let commandPending = null;  // URL to fetch after stream stops
 
         function displayImage(arrayBuffer) {
             const data = new Uint8Array(arrayBuffer);
@@ -224,7 +271,65 @@ Connection: close
             }
         }
 
+        function toggleStream() {
+            const btn = document.getElementById('btn-stream');
+            if (streamEnabled) {
+                // Stop
+                streamEnabled = false;
+                btn.textContent = 'Start Stream';
+                btn.classList.add('stopped');
+                if (abortController) abortController.abort();
+            } else {
+                // Start
+                streamEnabled = true;
+                btn.textContent = 'Stop Stream';
+                btn.classList.remove('stopped');
+                startStream();
+            }
+        }
+
+        async function sendLedCommand(percent) {
+            const btn = document.getElementById('btn-led');
+            btn.disabled = true;
+            const wasStreaming = streamEnabled;
+
+            // Stop stream first (frees the single socket)
+            if (abortController) {
+                streamEnabled = false;
+                abortController.abort();
+            }
+
+            // Wait for MCU to close the stream socket
+            await new Promise(r => setTimeout(r, 600));
+
+            // Send command on the now-free socket
+            try {
+                document.getElementById('status').textContent = 'Sending LED command...';
+                const resp = await fetch('/headled/' + percent);
+                const text = await resp.text();
+                document.getElementById('status').textContent = 'LED: ' + text;
+            } catch (err) {
+                document.getElementById('status').textContent = 'LED error: ' + err.message;
+            }
+
+            // Wait for MCU to close command socket and recreate listener
+            await new Promise(r => setTimeout(r, 600));
+
+            btn.disabled = false;
+
+            // Restart stream if it was running before
+            if (wasStreaming) {
+                streamEnabled = true;
+                const sbtn = document.getElementById('btn-stream');
+                sbtn.textContent = 'Stop Stream';
+                sbtn.classList.remove('stopped');
+                startStream();
+            }
+        }
+
         async function startStream() {
+            if (!streamEnabled) return;
+
             // Single-socket guard: block concurrent requests
             if (requestInProgress) {
                 console.log('Request already in progress, skipping');
@@ -310,18 +415,19 @@ Connection: close
             } catch (err) {
                 if (err.name === 'AbortError') {
                     console.log('Request aborted');
-                    document.getElementById('status').textContent = 'Aborted';
+                    document.getElementById('status').textContent = 'Stopped';
                 } else {
                     console.error('Stream error:', err);
                     document.getElementById('status').textContent = 'Error: ' + err.message;
                 }
             } finally {
-                // Cleanup: allow next request after delay for MCU socket teardown
                 requestInProgress = false;
                 abortController = null;
-                document.getElementById('status').textContent = 'Reconnecting...';
-                // Wait 500ms for MCU to fully close socket before reconnecting
-                setTimeout(startStream, 500);
+                // Only auto-reconnect if stream is enabled
+                if (streamEnabled) {
+                    document.getElementById('status').textContent = 'Reconnecting...';
+                    setTimeout(startStream, 500);
+                }
             }
         }
 
@@ -511,6 +617,18 @@ while True:
         elif path == "/":
             debug_print("[MAIN] / html stream")
             response = generate_html_root()
+        elif path.startswith('/headled/'):
+            # /headled/30 -> set LED to 30%
+            try:
+                percent = int(path.split('/')[-1])
+                ok = set_head_led_brightness(percent)
+                if ok:
+                    body = f"OK {percent}%"
+                else:
+                    body = "DAC not ready"
+            except ValueError:
+                body = "Bad value"
+            response = f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: {len(body)}\r\n\r\n{body}".encode()
         else:
             # 404 for unknown paths
             debug_print("[MAIN] Calling generate_html_404()")
