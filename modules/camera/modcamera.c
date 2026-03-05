@@ -91,9 +91,14 @@ static const char boundary_prefix_subsequent[] =
 // Bucket name lookup: index 0->'A', 1->'B', 2->'C'
 static const char bucket_name[] = "ABC";
 
-// --- X-Buckets diagnostic header (fixed-length, filled per frame) ---
+// --- X-Buckets diagnostic headers (fixed-length, filled per frame) ---
 //
-// Format: X-Buckets: <tx1>,<tx2>,<slot_tx1>,<slot_tx2>,<A>,<B>,<C>\r\n\r\n
+// Three header lines + blank line terminator, sent as a single buffer.
+//
+// Line 1: X-Buckets: <tx1>,<tx2>,<A>,<B>,<C>          (current snapshot)
+// Line 2: X-Buckets-prev-mid: <A>,<B>,<C>             (prev frame after 1st half sent)
+// Line 3: X-Buckets-prev-end: <A>,<B>,<C>             (prev frame after 2nd half sent)
+// Line 4: blank line (header terminator)
 //
 // Each slot is 12 chars fixed:
 //   Complete: " F000000000U"  (space + F + 9-digit padded frame + U/L)
@@ -101,35 +106,61 @@ static const char bucket_name[] = "ABC";
 //   Empty:   "           -"  (11 spaces + dash)
 //
 // Frame number: 29 bits -> max 536870911 -> 9 decimal digits.
-// Total line length: 83 chars (including \r\n\r\n terminator).
 //
-// Positions:
-//   11  = tx_first bucket name  (1 char: A/B/C)
-//   13  = tx_second bucket name (1 char: A/B/C)
-//   15  = tx_first content slot (12 chars)
-//   28  = tx_second content slot(12 chars)
-//   41  = bucket A slot         (12 chars)
-//   54  = bucket B slot         (12 chars)
-//   67  = bucket C slot         (12 chars)
+// Temporal separation:
+//   Line 1 = snapshot at header-build time (frame N start)
+//   Line 2 = snapshot from frame N-1, after first half-frame was sent (~20-40ms in)
+//   Line 3 = snapshot from frame N-1, after second half-frame was sent (~40-80ms in)
+//   This lets the receiver detect dirty->complete transitions during TX.
+//
+// Positions (byte offsets in combined 175-byte buffer):
+//   Line 1 (55 bytes):
+//     11 = tx_first bucket name  (1 char: A/B/C)
+//     13 = tx_second bucket name (1 char: A/B/C)
+//     15 = bucket A slot         (12 chars)
+//     28 = bucket B slot         (12 chars)
+//     41 = bucket C slot         (12 chars)
+//   Line 2 (59 bytes, starts at offset 55):
+//     74 = prev-mid bucket A     (12 chars)
+//     87 = prev-mid bucket B     (12 chars)
+//    100 = prev-mid bucket C     (12 chars)
+//   Line 3 (59 bytes, starts at offset 114):
+//    133 = prev-end bucket A     (12 chars)
+//    146 = prev-end bucket B     (12 chars)
+//    159 = prev-end bucket C     (12 chars)
+//   Line 4 (2 bytes): \r\n at 173-174
 
-#define XBUCKETS_LEN       83
-#define XBUCKETS_SLOT_LEN  12
-#define XBUCKETS_TX1_NAME  11
-#define XBUCKETS_TX2_NAME  13
-#define XBUCKETS_TX1_SLOT  15
-#define XBUCKETS_TX2_SLOT  28
-#define XBUCKETS_A_SLOT    41
-#define XBUCKETS_B_SLOT    54
-#define XBUCKETS_C_SLOT    67
+#define XHDR_LEN        175
+#define XHDR_SLOT_LEN    12
+#define XHDR_TX1_NAME    11
+#define XHDR_TX2_NAME    13
+#define XHDR_A_SLOT      15
+#define XHDR_B_SLOT      28
+#define XHDR_C_SLOT      41
+#define XHDR_MID_A       74
+#define XHDR_MID_B       87
+#define XHDR_MID_C      100
+#define XHDR_END_A      133
+#define XHDR_END_B      146
+#define XHDR_END_C      159
 
-static const char xbuckets_template[] =
+static const char xhdr_template[] =
     "X-Buckets: A,A,"
     "           -,"
     "           -,"
+    "           -"
+    "\r\n"
+    "X-Buckets-prev-mid:"
     "           -,"
     "           -,"
     "           -"
-    "\r\n\r\n";
+    "\r\n"
+    "X-Buckets-prev-end:"
+    "           -,"
+    "           -,"
+    "           -"
+    "\r\n"
+    "\r\n";
 
 
 /********************************************************************************
@@ -143,7 +174,7 @@ function:   Write a 12-char fixed-width bucket state into a slot buffer.
 static void write_bucket_slot(char *slot, uint32_t state)
 {
     if (!bucket_is_valid(state)) {
-        memcpy(slot, "           -", XBUCKETS_SLOT_LEN);
+        memcpy(slot, "           -", XHDR_SLOT_LEN);
         return;
     }
     // Dirty or complete prefix
@@ -201,8 +232,14 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
     uint32_t frame_count = 0;
     int errcode;
 
-    // X-Buckets line buffer (filled per frame, sent after boundary prefix)
-    char xbuckets[XBUCKETS_LEN];
+    // X-Buckets diagnostic header buffer (filled per frame, sent after prefix)
+    char xhdr[XHDR_LEN];
+
+    // Previous frame snapshots: captured at mid-point and end-point of the
+    // previous iteration, reported in the next frame's headers.
+    // Initialized to 0 (empty) so first frame shows "           -" for prev.
+    uint32_t prev_mid[3] = {0, 0, 0};
+    uint32_t prev_end[3] = {0, 0, 0};
 
     // Timing accumulators (reset every 50 frames)
     uint32_t accum_send_us = 0;
@@ -246,25 +283,29 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
             break;
         }
 
-        // --- Build and send X-Buckets diagnostic header ---
+        // --- Build and send X-Buckets diagnostic headers ---
         // Start from template, then fill in dynamic slots
-        memcpy(xbuckets, xbuckets_template, XBUCKETS_LEN);
+        memcpy(xhdr, xhdr_template, XHDR_LEN);
 
-        // TX pair bucket names
-        xbuckets[XBUCKETS_TX1_NAME] = bucket_name[tx_first];
-        xbuckets[XBUCKETS_TX2_NAME] = bucket_name[tx_second];
+        // Line 1: TX pair names + current bucket state snapshot
+        xhdr[XHDR_TX1_NAME] = bucket_name[tx_first];
+        xhdr[XHDR_TX2_NAME] = bucket_name[tx_second];
+        write_bucket_slot(&xhdr[XHDR_A_SLOT], bucket_state[0]);
+        write_bucket_slot(&xhdr[XHDR_B_SLOT], bucket_state[1]);
+        write_bucket_slot(&xhdr[XHDR_C_SLOT], bucket_state[2]);
 
-        // TX pair content slots (snapshot states at send time)
-        write_bucket_slot(&xbuckets[XBUCKETS_TX1_SLOT], bucket_state[tx_first]);
-        write_bucket_slot(&xbuckets[XBUCKETS_TX2_SLOT], bucket_state[tx_second]);
+        // Line 2: previous frame mid-point snapshot (after 1st half sent)
+        write_bucket_slot(&xhdr[XHDR_MID_A], prev_mid[0]);
+        write_bucket_slot(&xhdr[XHDR_MID_B], prev_mid[1]);
+        write_bucket_slot(&xhdr[XHDR_MID_C], prev_mid[2]);
 
-        // All three bucket states: A, B, C
-        write_bucket_slot(&xbuckets[XBUCKETS_A_SLOT], bucket_state[0]);
-        write_bucket_slot(&xbuckets[XBUCKETS_B_SLOT], bucket_state[1]);
-        write_bucket_slot(&xbuckets[XBUCKETS_C_SLOT], bucket_state[2]);
+        // Line 3: previous frame end-point snapshot (after 2nd half sent)
+        write_bucket_slot(&xhdr[XHDR_END_A], prev_end[0]);
+        write_bucket_slot(&xhdr[XHDR_END_B], prev_end[1]);
+        write_bucket_slot(&xhdr[XHDR_END_C], prev_end[2]);
 
         ret = mp_stream_write_exactly(
-            socket_obj, xbuckets, XBUCKETS_LEN, &errcode);
+            socket_obj, xhdr, XHDR_LEN, &errcode);
         if (ret == MP_STREAM_ERROR) {
             streaming = false;
             break;
@@ -283,6 +324,11 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
         // Release first bucket -- camera can now overwrite it
         tx_wants[tx_first] = false;
 
+        // Snapshot mid-point: bucket states after 1st half sent
+        prev_mid[0] = bucket_state[0];
+        prev_mid[1] = bucket_state[1];
+        prev_mid[2] = bucket_state[2];
+
         // --- Send second half-frame (76,800 bytes) ---
         ret = mp_stream_write_exactly(
             socket_obj, bucket[tx_second], HALF_FRAME_BYTES, &errcode);
@@ -293,6 +339,11 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
 
         // Release second bucket
         tx_wants[tx_second] = false;
+
+        // Snapshot end-point: bucket states after 2nd half sent
+        prev_end[0] = bucket_state[0];
+        prev_end[1] = bucket_state[1];
+        prev_end[2] = bucket_state[2];
 
         first_frame = false;
         frame_count++;
