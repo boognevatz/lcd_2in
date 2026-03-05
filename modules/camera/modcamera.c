@@ -5,6 +5,7 @@
 #include "py/runtime.h"
 #include "py/stream.h"
 #include "py/mphal.h"
+#include "hardware/sync.h"
 
 // Wrapper for init_cam()
 static mp_obj_t camera_init_cam() {
@@ -108,10 +109,11 @@ static const char bucket_name[] = "ABC";
 // Frame number: 29 bits -> max 536870911 -> 9 decimal digits.
 //
 // Temporal separation:
-//   Line 1 = snapshot at header-build time (frame N start)
-//   Line 2 = snapshot from frame N-1, after first half-frame was sent (~20-40ms in)
-//   Line 3 = snapshot from frame N-1, after second half-frame was sent (~40-80ms in)
-//   This lets the receiver detect dirty->complete transitions during TX.
+//   Line 1 = snapshot at pair-selection time (coherent with ordering decision)
+//   Line 2 = snapshot from previous frame, after first half-frame was sent
+//   Line 3 = snapshot from previous frame, after second half-frame was sent
+//   Line 1 is captured in the same critical section as the ordering decision,
+//   so the reported states exactly match what TX observed when choosing order.
 //
 // Positions (byte offsets in combined 175-byte buffer):
 //   Line 1 (55 bytes):
@@ -192,23 +194,6 @@ static void write_bucket_slot(char *slot, uint32_t state)
 
 
 /********************************************************************************
-function:   Determine if a bucket holds (or is receiving) an Upper half-frame.
-            Used for TX pair ordering: Upper always goes first.
-
-            With the consolidated bucket_state[] state, both complete and dirty
-            (in-progress) states encode the half type in the Half bit (bit 2).
-            So we only need: is the bucket valid AND is it upper?
-********************************************************************************/
-static bool bucket_has_upper(uint8_t b)
-{
-    uint32_t state = bucket_state[b];
-    // Both complete and dirty states encode the half type in the Half bit,
-    // so we just need: is valid AND is upper.
-    return bucket_is_valid(state) && bucket_half_is_upper(state);
-}
-
-
-/********************************************************************************
 function:   Stream loop in C -- three-bucket system implementation.
 
             TX NEVER IDLES. Continuously sends pairs of half-frames.
@@ -258,6 +243,22 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
     tx_wants[tx_first] = true;
     tx_wants[tx_second] = true;
 
+    // Pre-build xhdr for the first frame (startup pair A,B).
+    // At startup, prev_mid/prev_end are zero (empty) and bucket states
+    // reflect initial setup (bucket 0 dirty, others empty).
+    memcpy(xhdr, xhdr_template, XHDR_LEN);
+    xhdr[XHDR_TX1_NAME] = bucket_name[tx_first];
+    xhdr[XHDR_TX2_NAME] = bucket_name[tx_second];
+    write_bucket_slot(&xhdr[XHDR_A_SLOT], bucket_state[0]);
+    write_bucket_slot(&xhdr[XHDR_B_SLOT], bucket_state[1]);
+    write_bucket_slot(&xhdr[XHDR_C_SLOT], bucket_state[2]);
+    write_bucket_slot(&xhdr[XHDR_MID_A], prev_mid[0]);
+    write_bucket_slot(&xhdr[XHDR_MID_B], prev_mid[1]);
+    write_bucket_slot(&xhdr[XHDR_MID_C], prev_mid[2]);
+    write_bucket_slot(&xhdr[XHDR_END_A], prev_end[0]);
+    write_bucket_slot(&xhdr[XHDR_END_B], prev_end[1]);
+    write_bucket_slot(&xhdr[XHDR_END_C], prev_end[2]);
+
     uint32_t t_frame_start = mp_hal_ticks_us();
 
     while (streaming) {
@@ -283,27 +284,10 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
             break;
         }
 
-        // --- Build and send X-Buckets diagnostic headers ---
-        // Start from template, then fill in dynamic slots
-        memcpy(xhdr, xhdr_template, XHDR_LEN);
-
-        // Line 1: TX pair names + current bucket state snapshot
-        xhdr[XHDR_TX1_NAME] = bucket_name[tx_first];
-        xhdr[XHDR_TX2_NAME] = bucket_name[tx_second];
-        write_bucket_slot(&xhdr[XHDR_A_SLOT], bucket_state[0]);
-        write_bucket_slot(&xhdr[XHDR_B_SLOT], bucket_state[1]);
-        write_bucket_slot(&xhdr[XHDR_C_SLOT], bucket_state[2]);
-
-        // Line 2: previous frame mid-point snapshot (after 1st half sent)
-        write_bucket_slot(&xhdr[XHDR_MID_A], prev_mid[0]);
-        write_bucket_slot(&xhdr[XHDR_MID_B], prev_mid[1]);
-        write_bucket_slot(&xhdr[XHDR_MID_C], prev_mid[2]);
-
-        // Line 3: previous frame end-point snapshot (after 2nd half sent)
-        write_bucket_slot(&xhdr[XHDR_END_A], prev_end[0]);
-        write_bucket_slot(&xhdr[XHDR_END_B], prev_end[1]);
-        write_bucket_slot(&xhdr[XHDR_END_C], prev_end[2]);
-
+        // --- Send pre-built X-Buckets diagnostic headers ---
+        // xhdr was built at pair-selection time (end of previous iteration,
+        // or before the loop for the first frame), so Line 1 is coherent
+        // with the ordering decision.
         ret = mp_stream_write_exactly(
             socket_obj, xhdr, XHDR_LEN, &errcode);
         if (ret == MP_STREAM_ERROR) {
@@ -383,19 +367,21 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
         uint8_t cand_a = (just_finished + 1) % 3;
         uint8_t cand_b = (just_finished + 2) % 3;
 
-        // Observe both candidate bucket states (single atomic read each)
-        uint32_t state_a = bucket_state[cand_a];
-        uint32_t state_b = bucket_state[cand_b];
+        // Critical section: snapshot all 3 states, make ordering decision,
+        // set tx_wants. IRQ disabled to prevent ISR from changing states
+        // between reads and to keep the ordering decision consistent.
+        // ~25 instructions, ~170ns at 150 MHz.
+        uint32_t snap[3];
+        int saved_irq = save_and_disable_interrupts();
+
+        snap[0] = bucket_state[0];
+        snap[1] = bucket_state[1];
+        snap[2] = bucket_state[2];
 
         // Order rule (spec): "whichever bucket holds (or is receiving) the
         // Upper half goes first; the other goes second."
-        // bucket_has_upper() returns true for both complete and in-progress
-        // Upper halves, covering all three spec cases:
-        //   Case 1: Both complete same frame → one Upper, one Lower
-        //   Case 2: Upper complete + Lower in-progress → Upper first
-        //   Case 3: Upper in-progress + stale other → Upper first
-        bool cand_a_upper = bucket_has_upper(cand_a);
-        bool cand_b_upper = bucket_has_upper(cand_b);
+        bool cand_a_upper = bucket_is_valid(snap[cand_a]) && bucket_half_is_upper(snap[cand_a]);
+        bool cand_b_upper = bucket_is_valid(snap[cand_b]) && bucket_half_is_upper(snap[cand_b]);
 
         if (cand_a_upper && !cand_b_upper) {
             tx_first = cand_a;
@@ -406,8 +392,8 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
         } else {
             // Ambiguous: both or neither claim Upper.
             // Pick the bucket with the higher (more recent) frame number first.
-            uint32_t frame_a = bucket_get_frame(state_a);
-            uint32_t frame_b = bucket_get_frame(state_b);
+            uint32_t frame_a = bucket_get_frame(snap[cand_a]);
+            uint32_t frame_b = bucket_get_frame(snap[cand_b]);
             if (frame_b > frame_a) {
                 tx_first = cand_b;
                 tx_second = cand_a;
@@ -418,9 +404,27 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj) {
         }
 
         // Declare TX intent for the new pair.
-        // The ISR will see these and skip protected buckets.
         tx_wants[tx_first] = true;
         tx_wants[tx_second] = true;
+
+        restore_interrupts(saved_irq);
+
+        // --- Pre-build xhdr for the next iteration ---
+        // Line 1 uses snap[] captured in the critical section above,
+        // so the reported states are coherent with the ordering decision.
+        // Lines 2-3 use prev_mid/prev_end from the sends just completed.
+        memcpy(xhdr, xhdr_template, XHDR_LEN);
+        xhdr[XHDR_TX1_NAME] = bucket_name[tx_first];
+        xhdr[XHDR_TX2_NAME] = bucket_name[tx_second];
+        write_bucket_slot(&xhdr[XHDR_A_SLOT], snap[0]);
+        write_bucket_slot(&xhdr[XHDR_B_SLOT], snap[1]);
+        write_bucket_slot(&xhdr[XHDR_C_SLOT], snap[2]);
+        write_bucket_slot(&xhdr[XHDR_MID_A], prev_mid[0]);
+        write_bucket_slot(&xhdr[XHDR_MID_B], prev_mid[1]);
+        write_bucket_slot(&xhdr[XHDR_MID_C], prev_mid[2]);
+        write_bucket_slot(&xhdr[XHDR_END_A], prev_end[0]);
+        write_bucket_slot(&xhdr[XHDR_END_B], prev_end[1]);
+        write_bucket_slot(&xhdr[XHDR_END_C], prev_end[2]);
     }
 
     // Cleanup: release all protection on exit
