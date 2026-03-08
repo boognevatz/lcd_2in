@@ -91,69 +91,32 @@ static const char bucket_name[] = "ABC";
 
 // --- X-header: dynamic per-frame headers (temperature + bucket diagnostics) ---
 //
-// Sent as a single buffer after the static boundary prefix.
-// Contains X-Temperature, X-Buckets (3 lines), and blank line terminator.
-//
-// Layout (196 bytes total):
-//   Line 0 (21 bytes): X-Temperature: XX.X\r\n
-//     15 = temperature value (4 chars: XX.X, zero-padded)
-//   Line 1 (55 bytes): X-Buckets: <tx1>,<tx2>,<A>,<B>,<C>\r\n
-//     32 = tx_first name  (1 char)
-//     34 = tx_second name (1 char)
-//     36 = bucket A slot  (12 chars)
-//     49 = bucket B slot  (12 chars)
-//     62 = bucket C slot  (12 chars)
-//   Line 2 (59 bytes): X-Buckets-prev-mid:<A>,<B>,<C>\r\n
-//     95 = prev-mid A (12 chars)
-//    108 = prev-mid B (12 chars)
-//    121 = prev-mid C (12 chars)
-//   Line 3 (59 bytes): X-Buckets-prev-end:<A>,<B>,<C>\r\n
-//    154 = prev-end A (12 chars)
-//    167 = prev-end B (12 chars)
-//    180 = prev-end C (12 chars)
-//   Line 4 (2 bytes): \r\n (blank line, header terminator)
-//
-// Each bucket slot is 12 chars fixed:
-//   Complete: " F000000000U"  (space + F + 9-digit frame + U/L)
-//   Dirty:   "~F000000000U"  (tilde + F + 9-digit frame + U/L)
-//   Empty:   "           -"  (11 spaces + dash)
-//
-// Line 1 uses the same snap[] as the ordering decision,
-// so the reported states exactly match what TX observed when choosing order.
+// Sent as individual buffers after the static boundary prefix.
+// Each header string is independently managed to simplify adding new ones.
 
-#define X_HEADER_LEN        196
 #define X_HEADER_SLOT_LEN    12
-#define X_HEADER_TEMP        15
-#define X_HEADER_TX1_NAME    32
-#define X_HEADER_TX2_NAME    34
-#define X_HEADER_A_SLOT      36
-#define X_HEADER_B_SLOT      49
-#define X_HEADER_C_SLOT      62
-#define X_HEADER_MID_A       95
-#define X_HEADER_MID_B      108
-#define X_HEADER_MID_C      121
-#define X_HEADER_END_A      154
-#define X_HEADER_END_B      167
-#define X_HEADER_END_C      180
 
-static const char x_header_template[] =
-    "X-Temperature: 36.5\r\n"
-    "X-Buckets: A,A,"
-    "           -,"
-    "           -,"
-    "           -"
-    "\r\n"
-    "X-Buckets-prev-mid:"
-    "           -,"
-    "           -,"
-    "           -"
-    "\r\n"
-    "X-Buckets-prev-end:"
-    "           -,"
-    "           -,"
-    "           -"
-    "\r\n"
-    "\r\n";
+static char x_header_temperature[] = "X-Temperature: 00.0\r\n";
+#define X_HEADER_TEMP_VAL_OFFSET 15
+
+static char x_header_buckets_prev_mid[] = "X-Buckets-prev-mid:           -,           -,           -\r\n";
+#define X_HEADER_MID_A_OFFSET 19
+#define X_HEADER_MID_B_OFFSET 32
+#define X_HEADER_MID_C_OFFSET 45
+
+static char x_header_buckets_prev_end[] = "X-Buckets-prev-end:           -,           -,           -\r\n";
+#define X_HEADER_END_A_OFFSET 19
+#define X_HEADER_END_B_OFFSET 32
+#define X_HEADER_END_C_OFFSET 45
+
+static char x_header_buckets[] = "X-Buckets: A,A,           -,           -,           -\r\n";
+#define X_HEADER_TX1_OFFSET 11
+#define X_HEADER_TX2_OFFSET 13
+#define X_HEADER_BUCKET_A_OFFSET 15
+#define X_HEADER_BUCKET_B_OFFSET 28
+#define X_HEADER_BUCKET_C_OFFSET 41
+
+static const char x_header_terminator[] = "\r\n";
 
 
 /********************************************************************************
@@ -217,17 +180,16 @@ static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_temperature_obj, camera_set_temperat
 
 // --- Static stream state (persists across batched stream_loop_c calls) ---
 
-static bool     s_first_frame;
-static uint8_t  s_tx_first;
-static uint8_t  s_tx_second;
-static uint32_t s_prev_mid[3];
-static uint32_t s_prev_end[3];
-static uint32_t s_frame_count;
-static uint32_t s_accum_send_us;
-static uint32_t s_accum_total_us;
-static uint32_t s_accum_count;
-static uint32_t s_t_frame_start;
-static char     s_x_header[X_HEADER_LEN];
+static bool     first_frame;
+static uint8_t  tx_first;
+static uint8_t  tx_second;
+static uint32_t prev_mid[3];
+static uint32_t prev_end[3];
+static uint32_t frame_count;
+static uint32_t accum_send_us;
+static uint32_t accum_total_us;
+static uint32_t accum_count;
+static uint32_t t_frame_start;
 
 #define REPORT_INTERVAL 50
 
@@ -238,38 +200,43 @@ function:   Initialize stream state. Call once before the batched stream loop.
             and pre-builds the first x_header.
 ********************************************************************************/
 static mp_obj_t camera_stream_start(void) {
-    s_first_frame = true;
-    s_frame_count = 0;
-    s_tx_first = 0;
-    s_tx_second = 1;
+    first_frame = true;
+    frame_count = 0;
+    tx_first = 0;
+    tx_second = 1;
 
     for (int i = 0; i < 3; i++) {
-        s_prev_mid[i] = 0;
-        s_prev_end[i] = 0;
+        prev_mid[i] = 0;
+        prev_end[i] = 0;
     }
 
-    s_accum_send_us = 0;
-    s_accum_total_us = 0;
-    s_accum_count = 0;
+    accum_send_us = 0;
+    accum_total_us = 0;
+    accum_count = 0;
 
     // Declare TX intent for startup pair
     tx_wants[0] = false;
     tx_wants[1] = false;
     tx_wants[2] = false;
-    tx_wants[s_tx_first] = true;
-    tx_wants[s_tx_second] = true;
+    tx_wants[tx_first] = true;
+    tx_wants[tx_second] = true;
 
-    // Pre-build x_header for the first frame
-    memcpy(s_x_header, x_header_template, X_HEADER_LEN);
-    write_temperature(&s_x_header[X_HEADER_TEMP], mcu_temp_x10);
-    s_x_header[X_HEADER_TX1_NAME] = bucket_name[s_tx_first];
-    s_x_header[X_HEADER_TX2_NAME] = bucket_name[s_tx_second];
-    write_bucket_slot(&s_x_header[X_HEADER_A_SLOT], bucket_state[0]);
-    write_bucket_slot(&s_x_header[X_HEADER_B_SLOT], bucket_state[1]);
-    write_bucket_slot(&s_x_header[X_HEADER_C_SLOT], bucket_state[2]);
-    // prev-mid and prev-end stay as template defaults (empty dashes)
+    // Pre-build x_headers for the first frame
+    write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
+    x_header_buckets[X_HEADER_TX1_OFFSET] = bucket_name[tx_first];
+    x_header_buckets[X_HEADER_TX2_OFFSET] = bucket_name[tx_second];
+    write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_A_OFFSET], bucket_state[0]);
+    write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_B_OFFSET], bucket_state[1]);
+    write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_C_OFFSET], bucket_state[2]);
+    // prev-mid and prev-end: explicitly zero out with empty dashes
+    write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_A_OFFSET], 0);
+    write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_B_OFFSET], 0);
+    write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_C_OFFSET], 0);
+    write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_A_OFFSET], 0);
+    write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_B_OFFSET], 0);
+    write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_C_OFFSET], 0);
 
-    s_t_frame_start = mp_hal_ticks_us();
+    t_frame_start = mp_hal_ticks_us();
 
     return mp_const_none;
 }
@@ -296,7 +263,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
     int errcode;
 
     // Patch temperature into pre-built x_header from Python's latest reading
-    write_temperature(&s_x_header[X_HEADER_TEMP], mcu_temp_x10);
+    write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
 
     while (streaming && batch_sent < batch_size) {
         mp_handle_pending(true);
@@ -306,7 +273,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         // --- Send boundary prefix (static) ---
         const char *prefix;
         size_t prefix_len;
-        if (s_first_frame) {
+        if (first_frame) {
             prefix = boundary_prefix_first;
             prefix_len = sizeof(boundary_prefix_first) - 1;
         } else {
@@ -321,79 +288,87 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             break;
         }
 
-        // --- Send pre-built x_header ---
-        ret = mp_stream_write_exactly(
-            socket_obj, s_x_header, X_HEADER_LEN, &errcode);
-        if (ret == MP_STREAM_ERROR) {
-            streaming = false;
-            break;
-        }
+        // --- Send pre-built X-headers individually ---
+        ret = mp_stream_write_exactly(socket_obj, x_header_temperature, sizeof(x_header_temperature) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_buckets_prev_mid, sizeof(x_header_buckets_prev_mid) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_buckets_prev_end, sizeof(x_header_buckets_prev_end) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_buckets, sizeof(x_header_buckets) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
         // --- Send first half-frame (76,800 bytes) ---
         ret = mp_stream_write_exactly(
-            socket_obj, bucket[s_tx_first], HALF_FRAME_BYTES, &errcode);
+            socket_obj, bucket[tx_first], HALF_FRAME_BYTES, &errcode);
         if (ret == MP_STREAM_ERROR || ret == 0) {
             streaming = false;
             break;
         }
 
         // Release first bucket -- camera can now overwrite it
-        tx_wants[s_tx_first] = false;
+        tx_wants[tx_first] = false;
 
         // Snapshot mid-point: bucket states after 1st half sent
-        s_prev_mid[0] = bucket_state[0];
-        s_prev_mid[1] = bucket_state[1];
-        s_prev_mid[2] = bucket_state[2];
+        prev_mid[0] = bucket_state[0];
+        prev_mid[1] = bucket_state[1];
+        prev_mid[2] = bucket_state[2];
 
         // --- Send second half-frame (76,800 bytes) ---
         ret = mp_stream_write_exactly(
-            socket_obj, bucket[s_tx_second], HALF_FRAME_BYTES, &errcode);
+            socket_obj, bucket[tx_second], HALF_FRAME_BYTES, &errcode);
         if (ret == MP_STREAM_ERROR || ret == 0) {
             streaming = false;
             break;
         }
 
         // Release second bucket
-        tx_wants[s_tx_second] = false;
+        tx_wants[tx_second] = false;
 
         // Snapshot end-point: bucket states after 2nd half sent
-        s_prev_end[0] = bucket_state[0];
-        s_prev_end[1] = bucket_state[1];
-        s_prev_end[2] = bucket_state[2];
+        prev_end[0] = bucket_state[0];
+        prev_end[1] = bucket_state[1];
+        prev_end[2] = bucket_state[2];
 
-        s_first_frame = false;
-        s_frame_count++;
+        first_frame = false;
+        frame_count++;
         batch_sent++;
 
         // --- Timing ---
         uint32_t t_now = mp_hal_ticks_us();
         uint32_t send_us = t_now - t_send_start;
-        uint32_t total_us = t_now - s_t_frame_start;
+        uint32_t total_us = t_now - t_frame_start;
 
-        s_accum_send_us += send_us;
-        s_accum_total_us += total_us;
-        s_accum_count++;
+        accum_send_us += send_us;
+        accum_total_us += total_us;
+        accum_count++;
 
-        if (s_accum_count >= REPORT_INTERVAL) {
-            uint32_t avg_send = s_accum_send_us / s_accum_count;
-            uint32_t avg_total = s_accum_total_us / s_accum_count;
-            uint32_t fps_x10 = (s_accum_count * 10000000UL) / s_accum_total_us;
+        if (accum_count >= REPORT_INTERVAL) {
+            uint32_t avg_send = accum_send_us / accum_count;
+            uint32_t avg_total = accum_total_us / accum_count;
+            uint32_t fps_x10 = (accum_count * 10000000UL) / accum_total_us;
             mp_printf(&mp_plat_print,
                 "STREAM[%lu]: avg send=%lu total=%lu us  fps=%lu.%lu\n",
-                (unsigned long)s_frame_count,
+                (unsigned long)frame_count,
                 (unsigned long)avg_send,
                 (unsigned long)avg_total,
                 (unsigned long)(fps_x10 / 10),
                 (unsigned long)(fps_x10 % 10));
-            s_accum_send_us = 0;
-            s_accum_total_us = 0;
-            s_accum_count = 0;
+            accum_send_us = 0;
+            accum_total_us = 0;
+            accum_count = 0;
         }
 
-        s_t_frame_start = t_now;
+        t_frame_start = t_now;
 
         // --- Select next pair ---
-        uint8_t just_finished = s_tx_second;
+        uint8_t just_finished = tx_second;
         uint8_t cand_a = (just_finished + 1) % 3;
         uint8_t cand_b = (just_finished + 2) % 3;
 
@@ -408,41 +383,40 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         bool b_upper = bucket_is_valid(snap[cand_b]) && bucket_half_is_upper(snap[cand_b]);
 
         if (a_upper && !b_upper) {
-            s_tx_first = cand_a;
-            s_tx_second = cand_b;
+            tx_first = cand_a;
+            tx_second = cand_b;
         } else if (b_upper && !a_upper) {
-            s_tx_first = cand_b;
-            s_tx_second = cand_a;
+            tx_first = cand_b;
+            tx_second = cand_a;
         } else {
             // Tiebreaker: higher frame number first.
             uint32_t fa = bucket_get_frame(snap[cand_a]);
             uint32_t fb = bucket_get_frame(snap[cand_b]);
             if (fb > fa) {
-                s_tx_first = cand_b;
-                s_tx_second = cand_a;
+                tx_first = cand_b;
+                tx_second = cand_a;
             } else {
-                s_tx_first = cand_a;
-                s_tx_second = cand_b;
+                tx_first = cand_a;
+                tx_second = cand_b;
             }
         }
 
-        tx_wants[s_tx_first] = true;
-        tx_wants[s_tx_second] = true;
+        tx_wants[tx_first] = true;
+        tx_wants[tx_second] = true;
 
-        // Pre-build x_header for next frame (uses snap[] from ordering decision)
-        memcpy(s_x_header, x_header_template, X_HEADER_LEN);
-        write_temperature(&s_x_header[X_HEADER_TEMP], mcu_temp_x10);
-        s_x_header[X_HEADER_TX1_NAME] = bucket_name[s_tx_first];
-        s_x_header[X_HEADER_TX2_NAME] = bucket_name[s_tx_second];
-        write_bucket_slot(&s_x_header[X_HEADER_A_SLOT], snap[0]);
-        write_bucket_slot(&s_x_header[X_HEADER_B_SLOT], snap[1]);
-        write_bucket_slot(&s_x_header[X_HEADER_C_SLOT], snap[2]);
-        write_bucket_slot(&s_x_header[X_HEADER_MID_A], s_prev_mid[0]);
-        write_bucket_slot(&s_x_header[X_HEADER_MID_B], s_prev_mid[1]);
-        write_bucket_slot(&s_x_header[X_HEADER_MID_C], s_prev_mid[2]);
-        write_bucket_slot(&s_x_header[X_HEADER_END_A], s_prev_end[0]);
-        write_bucket_slot(&s_x_header[X_HEADER_END_B], s_prev_end[1]);
-        write_bucket_slot(&s_x_header[X_HEADER_END_C], s_prev_end[2]);
+        // Pre-build x_headers for next frame (uses snap[] from ordering decision)
+        write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
+        x_header_buckets[X_HEADER_TX1_OFFSET] = bucket_name[tx_first];
+        x_header_buckets[X_HEADER_TX2_OFFSET] = bucket_name[tx_second];
+        write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_A_OFFSET], snap[0]);
+        write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_B_OFFSET], snap[1]);
+        write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_C_OFFSET], snap[2]);
+        write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_A_OFFSET], prev_mid[0]);
+        write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_B_OFFSET], prev_mid[1]);
+        write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_C_OFFSET], prev_mid[2]);
+        write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_A_OFFSET], prev_end[0]);
+        write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_B_OFFSET], prev_end[1]);
+        write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_C_OFFSET], prev_end[2]);
     }
 
     // On disconnect, release all protection
