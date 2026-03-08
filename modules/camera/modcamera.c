@@ -99,6 +99,18 @@ static const char bucket_name[] = "ABC";
 static char x_header_temperature[] = "X-Temperature: 00.0\r\n";
 #define X_HEADER_TEMP_VAL_OFFSET 15
 
+static char x_header_ext_temp[] = "X-Ext-Temp: -999,-999,-999,-999,-999,-999\r\n";
+#define X_HEADER_EXT_T1_OFFSET 12
+#define X_HEADER_EXT_T2_OFFSET 17
+#define X_HEADER_EXT_T3_OFFSET 22
+#define X_HEADER_EXT_T4_OFFSET 27
+#define X_HEADER_EXT_T5_OFFSET 32
+#define X_HEADER_EXT_T6_OFFSET 37
+
+static char x_header_barometer[] = "X-Barometer: +000C,0.000bar\r\n";
+#define X_HEADER_BARO_TEMP_OFFSET 13
+#define X_HEADER_BARO_PRESS_OFFSET 19
+
 static char x_header_buckets_prev_mid[] = "X-Buckets-prev-mid:           -,           -,           -\r\n";
 #define X_HEADER_MID_A_OFFSET 19
 #define X_HEADER_MID_B_OFFSET 32
@@ -167,6 +179,56 @@ static void write_temperature(char *slot, int32_t temp_x10)
 
 
 /********************************************************************************
+function:   Write 4-char fixed-width temperature integer into x_header.
+            Input: t = temperature in degrees (e.g., 34, -10, or -999 for missing)
+            Output: "+034", "-010", or "-999" at slot
+********************************************************************************/
+static void write_ext_temp_val(char *slot, int32_t t)
+{
+    if (t < -999) t = -999;
+    if (t > 9999) t = 9999;
+    
+    if (t < 0) {
+        t = -t;
+        slot[0] = '-';
+    } else {
+        slot[0] = '+';
+    }
+    
+    // 3-digit zero-padded absolute value
+    uint32_t abs_t = (uint32_t)t;
+    slot[3] = '0' + (abs_t % 10);
+    abs_t /= 10;
+    slot[2] = '0' + (abs_t % 10);
+    abs_t /= 10;
+    slot[1] = '0' + (abs_t % 10);
+}
+
+
+/********************************************************************************
+function:   Write 5-char fixed-width pressure float into x_header.
+            Input: p = pressure in bar * 1000 (e.g., 1013 for 1.013 bar, 0 for 0.000 bar)
+            Output: "1.013", "0.000" at slot
+********************************************************************************/
+static void write_baro_press_val(char *slot, int32_t p)
+{
+    if (p < 0) p = 0;
+    if (p > 9999) p = 9999;
+    
+    // 4-digit zero-padded value with decimal
+    uint32_t abs_p = (uint32_t)p;
+    slot[4] = '0' + (abs_p % 10);
+    abs_p /= 10;
+    slot[3] = '0' + (abs_p % 10);
+    abs_p /= 10;
+    slot[2] = '0' + (abs_p % 10);
+    abs_p /= 10;
+    slot[1] = '.';
+    slot[0] = '0' + (abs_p % 10);
+}
+
+
+/********************************************************************************
 function:   Set MCU temperature from Python.
             camera.set_temperature(365) means 36.5C.
             Called between stream batches, read by C loop when building headers.
@@ -176,6 +238,42 @@ static mp_obj_t camera_set_temperature(mp_obj_t val) {
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_temperature_obj, camera_set_temperature);
+
+
+/********************************************************************************
+function:   Set 6 external temperatures from Python.
+            camera.set_ext_temperatures(t1, t2, t3, t4, t5, t6)
+            Values: integers (-999 to 9999), -999 means missing
+********************************************************************************/
+static mp_obj_t camera_set_ext_temperatures(size_t n_args, const mp_obj_t *args) {
+    write_ext_temp_val(&x_header_ext_temp[X_HEADER_EXT_T1_OFFSET], mp_obj_get_int(args[0]));
+    write_ext_temp_val(&x_header_ext_temp[X_HEADER_EXT_T2_OFFSET], mp_obj_get_int(args[1]));
+    write_ext_temp_val(&x_header_ext_temp[X_HEADER_EXT_T3_OFFSET], mp_obj_get_int(args[2]));
+    write_ext_temp_val(&x_header_ext_temp[X_HEADER_EXT_T4_OFFSET], mp_obj_get_int(args[3]));
+    write_ext_temp_val(&x_header_ext_temp[X_HEADER_EXT_T5_OFFSET], mp_obj_get_int(args[4]));
+    write_ext_temp_val(&x_header_ext_temp[X_HEADER_EXT_T6_OFFSET], mp_obj_get_int(args[5]));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(camera_set_ext_temperatures_obj, 6, 6, camera_set_ext_temperatures);
+
+
+/********************************************************************************
+function:   Set barometer data from Python.
+            camera.set_barometer(temp, pressure)
+            temp: integer (-999 to 9999), -999 means missing
+            pressure: integer (bar * 1000), e.g., 1013 for 1.013 bar
+********************************************************************************/
+static mp_obj_t camera_set_barometer(mp_obj_t temp, mp_obj_t press) {
+    write_ext_temp_val(&x_header_barometer[X_HEADER_BARO_TEMP_OFFSET], mp_obj_get_int(temp));
+    int32_t p = mp_obj_get_int(press);
+    if (mp_obj_get_int(temp) == -999) {
+        memcpy(&x_header_barometer[X_HEADER_BARO_PRESS_OFFSET], "-.---", 5);
+    } else {
+        write_baro_press_val(&x_header_barometer[X_HEADER_BARO_PRESS_OFFSET], p);
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(camera_set_barometer_obj, camera_set_barometer);
 
 
 // --- Static stream state (persists across batched stream_loop_c calls) ---
@@ -290,6 +388,12 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 
         // --- Send pre-built X-headers individually ---
         ret = mp_stream_write_exactly(socket_obj, x_header_temperature, sizeof(x_header_temperature) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_ext_temp, sizeof(x_header_ext_temp) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_barometer, sizeof(x_header_barometer) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
         ret = mp_stream_write_exactly(socket_obj, x_header_buckets_prev_mid, sizeof(x_header_buckets_prev_mid) - 1, &errcode);
@@ -440,6 +544,8 @@ static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_stream_start), MP_ROM_PTR(&camera_stream_start_obj) },
     { MP_ROM_QSTR(MP_QSTR_stream_loop_c), MP_ROM_PTR(&camera_stream_loop_c_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_temperature), MP_ROM_PTR(&camera_set_temperature_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_ext_temperatures), MP_ROM_PTR(&camera_set_ext_temperatures_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_barometer), MP_ROM_PTR(&camera_set_barometer_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_data_order), MP_ROM_PTR(&camera_set_data_order_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_data_pins), MP_ROM_PTR(&camera_set_data_pins_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_control_pins), MP_ROM_PTR(&camera_set_control_pins_obj) },
