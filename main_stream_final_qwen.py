@@ -618,42 +618,49 @@ while True:
             debug_print("Starting C-based streaming loop")
             camera.stream_start()
             total_frames = 0
+            sensor_task_idx = 0
             while True:
                 sent = camera.stream_loop_c(cl, BATCH_SIZE)
                 total_frames += sent
                 if sent < BATCH_SIZE:
                     break
-                # Read MCU temperature between batches (~50us, invisible)
-                raw = temp_sensor.read_u16()
-                voltage = raw * VREF / 65535.0
-                temp_c = 27.0 - ((voltage - 0.706) / 0.001721)
-                camera.set_temperature(int(temp_c * 10))
-                # External temperatures
-                if tempsensor.adc_ready:
-                    ext = tempsensor.read_all_temperatures()
-                    def fmt(t): return t if t is not None else -999
-                    camera.set_ext_temperatures(
-                        fmt(ext.get("headTemp1")),
-                        fmt(ext.get("headTemp2")),
-                        fmt(ext.get("headTemp3")),
-                        fmt(ext.get("headTemp4")),
-                        fmt(ext.get("headTemp5")),
-                        fmt(ext.get("headTemp6"))
-                    )
-                else:
-                    camera.set_ext_temperatures(-999, -999, -999, -999, -999, -999)
                 
-                # Read Barometer
-                if barometer.barometer_ready:
-                    try:
-                        baro_t, baro_p = barometer.read_barometer()
-                        b_t = int(baro_t) if baro_t is not None else -999
-                        b_p = int(baro_p * 1000) if baro_p is not None else 0
-                        camera.set_barometer(b_t, b_p)
-                    except Exception:
+                # Round-robin reading of sensors (1 per batch)
+                if sensor_task_idx == 0:
+                    # Read MCU temperature between batches (~50us, invisible)
+                    raw = temp_sensor.read_u16()
+                    voltage = raw * VREF / 65535.0
+                    temp_c = 27.0 - ((voltage - 0.706) / 0.001721)
+                    camera.set_temperature(int(temp_c * 10))
+                elif sensor_task_idx == 1:
+                    # External temperatures
+                    if tempsensor.adc_ready:
+                        ext = tempsensor.read_all_temperatures()
+                        def fmt(t): return t if t is not None else -999
+                        camera.set_ext_temperatures(
+                            fmt(ext.get("headTemp1")),
+                            fmt(ext.get("headTemp2")),
+                            fmt(ext.get("headTemp3")),
+                            fmt(ext.get("headTemp4")),
+                            fmt(ext.get("headTemp5")),
+                            fmt(ext.get("headTemp6"))
+                        )
+                    else:
+                        camera.set_ext_temperatures(-999, -999, -999, -999, -999, -999)
+                elif sensor_task_idx == 2:
+                    # Read Barometer
+                    if barometer.barometer_ready:
+                        try:
+                            baro_t, baro_p = barometer.read_barometer()
+                            b_t = int(baro_t) if baro_t is not None else -999
+                            b_p = int(baro_p * 1000) if baro_p is not None else 0
+                            camera.set_barometer(b_t, b_p)
+                        except Exception:
+                            camera.set_barometer(-999, 0)
+                    else:
                         camera.set_barometer(-999, 0)
-                else:
-                    camera.set_barometer(-999, 0)
+                
+                sensor_task_idx = (sensor_task_idx + 1) % 3
                     
             debug_print(f"Stream ended after {total_frames} frames")
             try:
