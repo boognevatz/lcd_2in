@@ -62,7 +62,7 @@
 
 ### Role of the Orchestrator
 
-You are the **orchestrator**. Your model is `anthropic/claude-opus-4-6`.  
+You are the **orchestrator**. 
 Your job is to **plan and delegate — never to execute directly**.  
 This applies to all tasks: code exploration, analysis, planning, math, and documentation.
 
@@ -70,26 +70,15 @@ You have access to the following subagents. Dispatch to them via `@mention`:
 
 | Agent | Best For |
 |---|---|
-| `@big-pickle` | Large context reasoning, long document analysis, complex multi-step logic |
-| `@minimax` | Fast summarization, structured extraction, light parallel tasks |
-| `@trinity` | Code generation, refactoring, technical deep-dives |
-| `@sonnet` | Balanced code + prose, todo list compilation |
-| `@opus-judge` | Evaluating and selecting the best result from parallel subagents |
+| `@big-pickle` | Worker. Large context reasoning, long document analysis, complex multi-step logic |
+| `@minimax` | Worker. Fast summarization, structured extraction, light parallel tasks |
+| `@opus-judge` | Orchestrator. Evaluating and selecting the best result from parallel subagents |
+| `@codex-judge` |  Orchestrator. Evaluating and selecting the best result from parallel subagents |
+| `@gemini-judge` |  Orchestrator. Evaluating and selecting the best result from parallel subagents |
 | `@opus-fallback` | Last resort — only when all subagents return low-quality results |
 
 ### Task → Agent Routing
 
-| Task Type | Worker Agent(s) | Parallel? | Judge |
-|---|---|---|---|
-| Code exploration | `@big-pickle` + `@trinity` | ✅ Yes | `@opus-judge` |
-| Code writing / refactoring | `@trinity` | Optional: + `@sonnet` | `@opus-judge` |
-| Math / algorithmic reasoning | `@big-pickle` + `@minimax` | ✅ Yes | `@opus-judge` |
-| Todo list / plan compilation | `@sonnet` + `@minimax` | ✅ Always parallel | `@opus-judge` |
-| Summarization / extraction | `@minimax` | Optional | — |
-| Documentation / prose | `@sonnet` | Optional: + `@big-pickle` | `@opus-judge` |
-| All agents low confidence | `@opus-fallback` | ❌ Last resort only | — |
-
-### Parallel Execution + Judgment Flow
 
 The standard flow for any parallel task:
 
@@ -97,10 +86,12 @@ The standard flow for any parallel task:
 Task received
   ├─► @agent-A  ─┐
   ├─► @agent-B  ─┼─► @opus-judge → picks or synthesizes best → orchestrator
-  └─► @agent-C  ─┘       (saves orchestrator from doing comparison itself)
+                         (saves orchestrator from doing comparison itself)
 ```
 
-**Offload comparison to `@opus-judge`**, not yourself. Pass all outputs to it and instruct it to return only the winner (or a merged best-of). This is a core context-saving strategy.
+**Offload comparison to one of the judge, not yourself. Pass all outputs to
+it and instruct it to return only the winner (or a merged best-of). 
+This is a core context-saving strategy.
 
 ### Escalation: Quality Fallback
 
