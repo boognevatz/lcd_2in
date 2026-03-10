@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RGB565 Stream Viewer</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+            font-weight: 300;
+            letter-spacing: 2px;
+            color: #00d9ff;
+            text-shadow: 0 0 20px rgba(0, 217, 255, 0.3);
+        }
+
+        .file-inputs {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            background: linear-gradient(145deg, #1e3a5f, #0d2137);
+            border: 1px solid #00d9ff;
+            color: #00d9ff;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            letter-spacing: 1px;
+            user-select: none;
+        }
+
+        .btn:hover:not(:disabled) {
+            background: linear-gradient(145deg, #00d9ff, #0099cc);
+            color: #0d2137;
+            box-shadow: 0 0 15px rgba(0, 217, 255, 0.5);
+        }
+
+        .btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .btn-nav {
+            padding: 10px 18px;
+            font-size: 18px;
+            font-weight: bold;
+            min-width: 50px;
+            text-align: center;
+        }
+
+        .canvas-container {
+            display: flex;
+            justify-content: center;
+            margin: 20px 0;
+        }
+
+        .canvas-frame {
+            display: inline-block;
+            padding: 4px;
+            border-radius: 10px;
+            background: linear-gradient(to bottom,
+                #ffdd00 0%,
+                #ff8800 50%,
+                #dd0000 50%,
+                #2244ff 100%
+            );
+            box-shadow: 0 0 30px rgba(255, 136, 0, 0.3), 0 0 30px rgba(34, 68, 255, 0.3);
+        }
+
+        canvas {
+            display: block;
+            border-radius: 7px;
+            image-rendering: pixelated;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .nav-buttons {
+            display: flex;
+            gap: 5px;
+        }
+
+        .frame-input-group {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            margin: 0 15px;
+        }
+
+        .frame-input-group input {
+            width: 80px;
+            padding: 8px;
+            border: 1px solid #00d9ff;
+            border-radius: 5px;
+            background: #0d2137;
+            color: #00d9ff;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .frame-input-group input:focus {
+            outline: none;
+            box-shadow: 0 0 10px rgba(0, 217, 255, 0.5);
+        }
+
+        .status-bar {
+            text-align: center;
+            padding: 15px;
+            background: rgba(13, 33, 55, 0.8);
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #1e3a5f;
+        }
+
+        .status-bar .frame-info {
+            font-size: 18px;
+            color: #00d9ff;
+            margin-bottom: 5px;
+        }
+
+        .status-bar .file-info {
+            font-size: 12px;
+            color: #888;
+        }
+
+        .progress-container {
+            margin: 20px 0;
+            display: none;
+        }
+
+        .progress-container.active {
+            display: block;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #0d2137;
+            border-radius: 15px;
+            overflow: hidden;
+            border: 1px solid #00d9ff;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00d9ff, #00ff88);
+            width: 0%;
+            transition: width 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #0d2137;
+            font-weight: bold;
+            font-size: 13px;
+        }
+
+        .progress-text {
+            text-align: center;
+            margin-top: 10px;
+            color: #00d9ff;
+        }
+
+        .headers-panel {
+            background: rgba(13, 33, 55, 0.8);
+            border-radius: 8px;
+            border: 1px solid #1e3a5f;
+            margin-bottom: 15px;
+        }
+
+        .headers-panel summary {
+            color: #00d9ff;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            cursor: pointer;
+            padding: 12px 15px;
+            user-select: none;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .headers-panel summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .headers-panel summary::before {
+            content: '\25B6';
+            font-size: 10px;
+            transition: transform 0.2s ease;
+        }
+
+        .headers-panel[open] summary::before {
+            transform: rotate(90deg);
+        }
+
+        .headers-panel summary:hover {
+            background: rgba(0, 217, 255, 0.1);
+        }
+
+        .headers-panel pre {
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            color: #88ccff;
+            white-space: pre-wrap;
+            word-break: break-all;
+            padding: 0 15px 15px 15px;
+            margin: 0;
+            line-height: 1.6;
+        }
+
+        .error-message {
+            background: rgba(255, 50, 50, 0.2);
+            border: 1px solid #ff4444;
+            color: #ff6666;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            display: none;
+        }
+
+        .error-message.active {
+            display: block;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(13, 33, 55, 0.8);
+            border-radius: 8px;
+            border: 1px solid #1e3a5f;
+            font-size: 14px;
+            color: #aaa;
+        }
+
+        .footer .highlight {
+            color: #00d9ff;
+            font-weight: bold;
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #0d2137;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #00d9ff;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #00ff88;
+        }
+
+        @media (max-width: 700px) {
+            canvas {
+                width: 240px;
+                height: 320px;
+            }
+
+            .controls {
+                flex-direction: column;
+            }
+
+            .file-inputs {
+                flex-direction: column;
+                align-items: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>RGB565 Stream Viewer</h1>
+
+        <div class="file-inputs">
+            <div>
+                <label class="btn">
+                    Select Raw File (.raw)
+                    <input type="file" id="rawFileInput" accept=".raw" style="display: none;">
+                </label>
+            </div>
+            <div>
+                <label class="btn">
+                    Select Headers File (.txt, optional)
+                    <input type="file" id="headersFileInput" accept=".txt" style="display: none;">
+                </label>
+            </div>
+        </div>
+
+        <div class="error-message" id="errorMessage"></div>
+
+        <div class="progress-container" id="progressContainer">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill">0%</div>
+            </div>
+            <div class="progress-text" id="progressText">Indexing frames...</div>
+        </div>
+
+        <div class="status-bar" id="statusBar">
+            <div class="frame-info" id="frameInfo">No file loaded</div>
+            <div class="file-info" id="fileInfo"></div>
+        </div>
+
+        <div class="controls" id="controls" style="display: none;">
+            <div class="nav-buttons">
+                <button class="btn btn-nav" id="btnPrev10" title="Back 10 frames">&lt;&lt;</button>
+                <button class="btn btn-nav" id="btnPrev" title="Back 1 frame">&lt;</button>
+            </div>
+
+            <div class="frame-input-group">
+                <span>Frame</span>
+                <input type="number" id="frameNumberInput" min="0" value="0">
+                <button class="btn" id="btnGo">Go</button>
+            </div>
+
+            <div class="nav-buttons">
+                <button class="btn btn-nav" id="btnNext" title="Forward 1 frame">&gt;</button>
+                <button class="btn btn-nav" id="btnNext10" title="Forward 10 frames">&gt;&gt;</button>
+            </div>
+        </div>
+
+        <div class="canvas-container">
+            <div class="canvas-frame">
+                <canvas id="frameCanvas" width="240" height="320" style="width: 480px; height: 640px;"></canvas>
+            </div>
+        </div>
+
+        <details class="headers-panel" id="headersPanel" style="display: none;">
+            <summary>Frame Headers</summary>
+            <pre id="headersContent"></pre>
+        </details>
+
+        <div class="footer" id="footer">
+            Total frames: <span class="highlight" id="totalFramesFooter">--</span>
+            &nbsp; | &nbsp;
+            Currently displaying: <span class="highlight" id="currentFrameFooter">--</span>
+        </div>
+    </div>
+
+    <script>
+        // Constants
+        const FRAME_MARKER = [0x2d, 0x2d, 0x66, 0x72, 0x61, 0x6d, 0x65, 0x0d, 0x0a]; // --frame\r\n
+        const FRAME_DATA_SIZE = 153600; // 240 * 320 * 2
+        const WIDTH = 240;
+        const HEIGHT = 320;
+
+        // State
+        let rawFile = null;
+        let frameOffsets = [];
+        let currentFrame = 0;
+        let isLoading = false;
+
+        // DOM Elements
+        const rawFileInput = document.getElementById('rawFileInput');
+        const headersFileInput = document.getElementById('headersFileInput');
+        const canvas = document.getElementById('frameCanvas');
+        const ctx = canvas.getContext('2d');
+        const frameInfo = document.getElementById('frameInfo');
+        const fileInfo = document.getElementById('fileInfo');
+        const frameNumberInput = document.getElementById('frameNumberInput');
+        const headersPanel = document.getElementById('headersPanel');
+        const headersContent = document.getElementById('headersContent');
+        const controls = document.getElementById('controls');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const errorMessage = document.getElementById('errorMessage');
+        const totalFramesFooter = document.getElementById('totalFramesFooter');
+        const currentFrameFooter = document.getElementById('currentFrameFooter');
+
+        // Buttons
+        const btnPrev10 = document.getElementById('btnPrev10');
+        const btnPrev = document.getElementById('btnPrev');
+        const btnNext = document.getElementById('btnNext');
+        const btnNext10 = document.getElementById('btnNext10');
+        const btnGo = document.getElementById('btnGo');
+
+        // Pre-allocate the ImageData and reuse it
+        const imageData = ctx.createImageData(WIDTH, HEIGHT);
+        const textDecoder = new TextDecoder('ascii');
+
+        // Draw initial placeholder text on canvas
+        function drawPlaceholder() {
+            ctx.fillStyle = '#0d2137';
+            ctx.fillRect(0, 0, WIDTH, HEIGHT);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            ctx.font = 'bold 36px sans-serif';
+            ctx.fillStyle = '#ffaa00';
+            ctx.fillText('UPPER', WIDTH / 2, HEIGHT / 4);
+
+            ctx.fillStyle = '#6644ff';
+            ctx.fillText('LOWER', WIDTH / 2, HEIGHT * 3 / 4);
+        }
+        drawPlaceholder();
+
+        // File input handlers
+        rawFileInput.addEventListener('change', async (e) => {
+            if (e.target.files.length > 0) {
+                rawFile = e.target.files[0];
+                await indexFrames();
+            }
+        });
+
+        headersFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                console.log('Headers file loaded:', e.target.files[0].name);
+            }
+        });
+
+        // Search for the FRAME_MARKER pattern in a Uint8Array
+        // Returns an array of byte offsets within the chunk where the marker starts
+        function findMarkersInChunk(uint8, startSearch, endSearch) {
+            const results = [];
+            const m0 = FRAME_MARKER[0]; // 0x2d '-'
+            const mLen = FRAME_MARKER.length;
+
+            for (let i = startSearch; i <= endSearch - mLen; i++) {
+                if (uint8[i] !== m0) continue;
+                let match = true;
+                for (let j = 1; j < mLen; j++) {
+                    if (uint8[i + j] !== FRAME_MARKER[j]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    results.push(i);
+                    i += mLen - 1; // skip past this marker
+                }
+            }
+            return results;
+        }
+
+        // Index all frames by scanning for --frame\r\n markers in the raw file
+        async function indexFrames() {
+            if (!rawFile) return;
+
+            showError('');
+            frameOffsets = [];
+            currentFrame = 0;
+
+            progressContainer.classList.add('active');
+            controls.style.display = 'none';
+            headersPanel.style.display = 'none';
+
+            const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB chunks
+            const fileSize = rawFile.size;
+            const OVERLAP = FRAME_MARKER.length - 1; // overlap to catch markers split across chunks
+            let offset = 0;
+
+            try {
+                while (offset < fileSize) {
+                    const end = Math.min(offset + CHUNK_SIZE, fileSize);
+                    const blob = rawFile.slice(offset, end);
+                    const buffer = await blob.arrayBuffer();
+                    const uint8 = new Uint8Array(buffer);
+
+                    // Search entire chunk for markers
+                    const localOffsets = findMarkersInChunk(uint8, 0, uint8.length);
+
+                    for (const lo of localOffsets) {
+                        const absoluteOffset = offset + lo;
+                        // Avoid duplicates from overlap region
+                        if (frameOffsets.length === 0 || absoluteOffset > frameOffsets[frameOffsets.length - 1]) {
+                            frameOffsets.push(absoluteOffset);
+                        }
+                    }
+
+                    // Update progress
+                    const progress = Math.round((end / fileSize) * 100);
+                    progressFill.style.width = progress + '%';
+                    progressFill.textContent = progress + '%';
+                    progressText.textContent = 'Indexing frames... Found ' + frameOffsets.length + ' frames';
+
+                    // Move forward, but overlap by OVERLAP bytes to catch split markers
+                    offset = end - OVERLAP;
+                    if (end >= fileSize) break;
+
+                    // Yield to UI
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+
+                const totalFrames = frameOffsets.length;
+
+                if (totalFrames === 0) {
+                    showError('No frames found in file. Invalid format.');
+                    progressContainer.classList.remove('active');
+                    return;
+                }
+
+                // Update UI
+                progressContainer.classList.remove('active');
+                controls.style.display = 'flex';
+                headersPanel.style.display = 'block';
+                frameNumberInput.max = totalFrames - 1;
+                fileInfo.textContent = 'File: ' + rawFile.name + ' (' + formatFileSize(rawFile.size) + ')';
+                totalFramesFooter.textContent = totalFrames;
+
+                // Display first frame
+                await displayFrame(0);
+
+            } catch (err) {
+                showError('Error indexing file: ' + err.message);
+                progressContainer.classList.remove('active');
+            }
+        }
+
+        // Display a specific frame
+        async function displayFrame(frameIndex) {
+            const totalFrames = frameOffsets.length;
+            if (frameIndex < 0 || frameIndex >= totalFrames || isLoading) return;
+
+            isLoading = true;
+            currentFrame = frameIndex;
+            const frameOffset = frameOffsets[frameIndex];
+
+            try {
+                // Read enough bytes for headers + frame data + some margin
+                // Headers are typically ~340 bytes, data is 153600 bytes
+                const readSize = Math.min(155000, rawFile.size - frameOffset);
+                const blob = rawFile.slice(frameOffset, frameOffset + readSize);
+                const buffer = await blob.arrayBuffer();
+                const uint8 = new Uint8Array(buffer);
+
+                // Find header end: \r\n\r\n
+                const headerEnd = findDoubleNewline(uint8);
+
+                if (headerEnd === -1) {
+                    showError('Could not find header end in frame ' + frameIndex);
+                    isLoading = false;
+                    return;
+                }
+
+                // Extract and decode header text
+                const headerText = textDecoder.decode(uint8.subarray(0, headerEnd));
+
+                // Binary data starts right after \r\n\r\n (4 bytes)
+                const dataStart = headerEnd + 4;
+                const dataEnd = dataStart + FRAME_DATA_SIZE;
+
+                if (dataEnd > uint8.length) {
+                    showError('Incomplete frame data at frame ' + frameIndex);
+                    isLoading = false;
+                    return;
+                }
+
+                // Decode RGB565 and draw
+                decodeRGB565(uint8, dataStart);
+
+                // Update headers display — show only X-* metadata lines
+                const metaLines = headerText.split('\r\n')
+                    .filter(line => line.startsWith('X-'))
+                    .join('\n');
+                headersContent.textContent = metaLines;
+
+                // Update status
+                frameInfo.textContent = 'Frame ' + currentFrame + ' / ' + (totalFrames - 1);
+                frameNumberInput.value = currentFrame;
+                currentFrameFooter.textContent = currentFrame;
+                showError('');
+
+            } catch (err) {
+                showError('Error reading frame: ' + err.message);
+            }
+
+            isLoading = false;
+        }
+
+        // Find the position of \r\n\r\n in a Uint8Array
+        function findDoubleNewline(uint8) {
+            const len = uint8.length - 3;
+            for (let i = 0; i < len; i++) {
+                if (uint8[i] === 0x0d && uint8[i + 1] === 0x0a &&
+                    uint8[i + 2] === 0x0d && uint8[i + 3] === 0x0a) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        // Decode RGB565 little-endian directly into the pre-allocated ImageData
+        function decodeRGB565(src, srcOffset) {
+            const dst = imageData.data;
+            let si = srcOffset;
+            let di = 0;
+            const end = srcOffset + FRAME_DATA_SIZE;
+
+            while (si < end) {
+                const lo = src[si];
+                const hi = src[si + 1];
+                const px = lo | (hi << 8);
+
+                dst[di]     = ((px >> 11) & 0x1F) * 255 / 31 | 0;
+                dst[di + 1] = ((px >> 5)  & 0x3F) * 255 / 63 | 0;
+                dst[di + 2] = (px         & 0x1F) * 255 / 31 | 0;
+                dst[di + 3] = 255;
+
+                si += 2;
+                di += 4;
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        // Navigation
+        function go(delta) {
+            const totalFrames = frameOffsets.length;
+            const target = Math.max(0, Math.min(totalFrames - 1, currentFrame + delta));
+            if (target !== currentFrame) displayFrame(target);
+        }
+
+        function jumpTo(n) {
+            const totalFrames = frameOffsets.length;
+            const target = Math.max(0, Math.min(totalFrames - 1, n));
+            displayFrame(target);
+        }
+
+        btnPrev10.addEventListener('click', () => go(-10));
+        btnPrev.addEventListener('click', () => go(-1));
+        btnNext.addEventListener('click', () => go(1));
+        btnNext10.addEventListener('click', () => go(10));
+
+        btnGo.addEventListener('click', () => {
+            const n = parseInt(frameNumberInput.value, 10);
+            if (!isNaN(n)) jumpTo(n);
+        });
+
+        frameNumberInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                const n = parseInt(frameNumberInput.value, 10);
+                if (!isNaN(n)) jumpTo(n);
+            }
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (frameOffsets.length === 0) return;
+            // Don't hijack when typing in the input
+            if (document.activeElement === frameNumberInput) return;
+
+            switch (e.key) {
+                case 'ArrowLeft':
+                    go(e.shiftKey ? -10 : -1);
+                    e.preventDefault();
+                    break;
+                case 'ArrowRight':
+                    go(e.shiftKey ? 10 : 1);
+                    e.preventDefault();
+                    break;
+                case 'Home':
+                    jumpTo(0);
+                    e.preventDefault();
+                    break;
+                case 'End':
+                    jumpTo(frameOffsets.length - 1);
+                    e.preventDefault();
+                    break;
+            }
+        });
+
+        // Utility
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+            if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+            return (bytes / 1073741824).toFixed(2) + ' GB';
+        }
+
+        function showError(msg) {
+            if (msg) {
+                errorMessage.textContent = msg;
+                errorMessage.classList.add('active');
+            } else {
+                errorMessage.classList.remove('active');
+            }
+        }
+    </script>
+</body>
+</html>
