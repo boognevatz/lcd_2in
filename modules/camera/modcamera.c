@@ -408,6 +408,13 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
+        // If the upper half bucket is not yet complete (still being
+        // written by camera DMA, or no valid pair at all), wait a bit
+        // so the camera can finish before TX starts reading.
+        // if (!bucket_is_complete(bucket_state[tx_first])) {
+        //     sleep_ms(10);
+        // }
+
         // --- Send first half-frame (76,800 bytes) ---
         ret = mp_stream_write_exactly(
             socket_obj, bucket[tx_first], HALF_FRAME_BYTES, &errcode);
