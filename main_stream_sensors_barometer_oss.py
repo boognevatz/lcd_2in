@@ -136,7 +136,7 @@ try:
     else:
         debug_print("WARNING: ADS7830 ADC not found, external temperatures will be unavailable")
     # Initialize barometer (placeholder address 0x5D, commonly used for BMP280/BME280)
-    BAROMETER_POSSIBLE_ADDRS = [0x5D, 0x76, 0x77]
+    BAROMETER_POSSIBLE_ADDRS = [0x6C, 0x6D, 0x5D, 0x76, 0x77]
     barometer_addr = None
     for addr in BAROMETER_POSSIBLE_ADDRS:
         if addr in devices:
@@ -147,8 +147,8 @@ try:
         barometer.i2c = i2c
         barometer.BAROMETER_ADDR = barometer_addr
         # Placeholder calibration values – these should be set according to your sensor's datasheet
-        barometer.BAROMETER_ATMOSPHERIC_RAW = 101325  # Pa raw reference (example)
-        barometer.BAROMETER_ATMOSPHERIC_BAR = 1.01325  # bar reference (example)
+        barometer.BAROMETER_ATMOSPHERIC_RAW = 5600000
+        barometer.BAROMETER_ATMOSPHERIC_BAR = 1.01325
         barometer.init_barometer()
         debug_print(f"Barometer found at 0x{barometer_addr:02x}")
     else:
@@ -378,7 +378,7 @@ while True:
             baro_header = b""
             if barometer.barometer_ready:
                 try:
-                    temp_c, pressure_bar = barometer.read_barometer()
+                    temp_c, pressure_bar, _p_raw = barometer.read_barometer()
                     if temp_c is not None and pressure_bar is not None:
                         baro_header = f"X-barometer: {temp_c}C,{pressure_bar}bar".encode()
                 except Exception:
@@ -418,7 +418,11 @@ while True:
                 # External temperatures
                 if tempsensor.adc_ready:
                     ext = tempsensor.read_all_temperatures()
-                    def fmt(t): return t if t is not None else -999
+                    def fmt(entry):
+                        if entry is None:
+                            return -999
+                        t = entry.get("temp_c")
+                        return t if t is not None else -999
                     camera.set_ext_temperatures(
                         fmt(ext.get("headTemp1")),
                         fmt(ext.get("headTemp2")),
@@ -433,7 +437,7 @@ while True:
                 # Read Barometer
                 if barometer.barometer_ready:
                     try:
-                        baro_t, baro_p = barometer.read_barometer()
+                        baro_t, baro_p, _baro_raw = barometer.read_barometer()
                         b_t = int(baro_t) if baro_t is not None else -999
                         b_p = int(baro_p * 1000) if baro_p is not None else 0
                         camera.set_barometer(b_t, b_p)

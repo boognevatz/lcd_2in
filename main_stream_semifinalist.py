@@ -138,8 +138,8 @@ try:
         debug_print("ADS7830 ADC initialized for temperature sensors")
     else:
         debug_print("WARNING: ADS7830 ADC not found, external temperatures will be unavailable")
-    # Initialize barometer (placeholder address 0x5D, commonly used for BMP280/BME280)
-    BAROMETER_POSSIBLE_ADDRS = [0x5D, 0x76, 0x77]
+    # Initialize barometer (WF5803F at 0x6C)
+    BAROMETER_POSSIBLE_ADDRS = [0x6C, 0x6D, 0x5D, 0x76, 0x77]
     barometer_addr = None
     for addr in BAROMETER_POSSIBLE_ADDRS:
         if addr in devices:
@@ -150,8 +150,8 @@ try:
         barometer.i2c = i2c
         barometer.BAROMETER_ADDR = barometer_addr
         # Placeholder calibration values – these should be set according to your sensor's datasheet
-        barometer.BAROMETER_ATMOSPHERIC_RAW = 101325  # Pa raw reference (example)
-        barometer.BAROMETER_ATMOSPHERIC_BAR = 1.01325  # bar reference (example)
+        barometer.BAROMETER_ATMOSPHERIC_RAW = 5600000
+        barometer.BAROMETER_ATMOSPHERIC_BAR = 1.01325
         barometer.init_barometer()
         debug_print(f"Barometer found at 0x{barometer_addr:02x}")
     else:

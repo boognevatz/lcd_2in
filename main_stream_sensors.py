@@ -665,8 +665,9 @@ while True:
                 if adc_ready:
                     for i in range(1, 7):
                         key = f"headTemp{i}"
-                        if key in ext_temps and ext_temps[key] is not None:
-                            temp_debug += f" | Ext{i}: {ext_temps[key]}°C"
+                        entry = ext_temps.get(key)
+                        if entry is not None and entry.get("temp_c") is not None:
+                            temp_debug += f" | Ext{i}: {entry['temp_c']}°C"
                 debug_print(f"Temperatures: {temp_debug}")
                 
                 # Send MCU temperature to camera module (existing functionality)

@@ -631,7 +631,11 @@ while True:
                 # Read external temperatures and pass to C
                 if tempsensor.adc_ready:
                     ext = tempsensor.read_all_temperatures()
-                    def fmt(t): return t if t is not None else -999
+                    def fmt(entry):
+                        if entry is None:
+                            return -999
+                        t = entry.get("temp_c")
+                        return t if t is not None else -999
                     camera.set_ext_temperatures(
                         fmt(ext.get("headTemp1")),
                         fmt(ext.get("headTemp2")),

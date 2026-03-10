@@ -372,7 +372,7 @@ def handle_gettemperature(path):
             # sensor_id 1-6 maps to channels 0-5
             voltage = tempsensor.read_adc_channel(sensor_id - 1)
             temp_c = tempsensor.voltage_to_temperature(voltage)
-            body = json.dumps({f"headTemp{sensor_id}": temp_c})
+            body = json.dumps({f"headTemp{sensor_id}": {"raw_v": voltage, "temp_c": temp_c}})
             return f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {len(body)}\r\n\r\n{body}".encode()
     except ValueError:
         body = json.dumps({"error": "Invalid sensor ID"})
@@ -482,7 +482,7 @@ def handle_streamc(cl, s, create_server_socket_fn):
     baro_header = b""
     if barometer.barometer_ready:
         try:
-            temp_c, pressure_bar = barometer.read_barometer()
+            temp_c, pressure_bar, _p_raw = barometer.read_barometer()
             if temp_c is not None and pressure_bar is not None:
                 baro_header = f"X-barometer: {temp_c}C,{pressure_bar}bar".encode()
         except Exception:
@@ -535,7 +535,11 @@ def handle_streamc(cl, s, create_server_socket_fn):
             # External temperatures
             if tempsensor.adc_ready:
                 ext = tempsensor.read_all_temperatures()
-                def fmt(t): return t if t is not None else -999
+                def fmt(entry):
+                    if entry is None:
+                        return -999
+                    t = entry.get("temp_c")
+                    return t if t is not None else -999
                 camera.set_ext_temperatures(
                     fmt(ext.get("headTemp1")),
                     fmt(ext.get("headTemp2")),
@@ -550,7 +554,7 @@ def handle_streamc(cl, s, create_server_socket_fn):
             # Read Barometer
             if barometer.barometer_ready:
                 try:
-                    baro_t, baro_p = barometer.read_barometer()
+                    baro_t, baro_p, _baro_raw = barometer.read_barometer()
                     b_t = int(baro_t) if baro_t is not None else -999
                     b_p = int(baro_p * 1000) if baro_p is not None else 0
                     camera.set_barometer(b_t, b_p)
@@ -575,6 +579,17 @@ def handle_streamc(cl, s, create_server_socket_fn):
 
 
 # ============== DISPATCHER ==============
+
+def handle_getbarometer():
+    """Handle /getbarometer endpoint - Get barometer temperature, pressure, and raw value"""
+    if barometer.barometer_ready:
+        baro_t, baro_p, baro_raw = barometer.read_barometer()
+        body = json.dumps({"barometer_temp": baro_t, "pressure_bar": baro_p, "pressure_raw": baro_raw})
+    else:
+        body = json.dumps({"error": "Barometer not ready"})
+    response = f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {len(body)}\r\n\r\n{body}".encode()
+    return response
+
 
 def handle_request(path, cl, s, create_server_socket_fn, set_head_led_brightness_fn):
     """Main request dispatcher - routes to appropriate handler
@@ -608,5 +623,7 @@ def handle_request(path, cl, s, create_server_socket_fn, set_head_led_brightness
         return handle_gettemperature_all(), s, False
     elif path.startswith('/gettemperature/'):
         return handle_gettemperature(path), s, False
+    elif path == '/getbarometer':
+        return handle_getbarometer(), s, False
     else:
         return handle_404(), s, False

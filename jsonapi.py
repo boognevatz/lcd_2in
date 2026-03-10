@@ -125,7 +125,7 @@ def handle_json_request(cl):
             mcu_temp = get_mcu_temperature_func()
 
             # Read barometer
-            cooling_temp, cooling_press = read_barometer_func()
+            cooling_temp, cooling_press, cooling_p_raw = read_barometer_func()
 
             # Read LED temperatures from ADC
             led_temps = read_all_temps_func()
@@ -139,7 +139,7 @@ def handle_json_request(cl):
             else:
                 json_parts.append(f'"mcuTemp": null')
 
-            # Add cooling temperature and pressure
+            # Add cooling temperature, pressure, and raw pressure
             if cooling_temp is not None:
                 json_parts.append(f'"cooling_temperature": {cooling_temp}')
             else:
@@ -150,12 +150,21 @@ def handle_json_request(cl):
             else:
                 json_parts.append(f'"cooling_pressure": null')
 
+            if cooling_p_raw is not None:
+                json_parts.append(f'"cooling_pressure_raw": {cooling_p_raw}')
+            else:
+                json_parts.append(f'"cooling_pressure_raw": null')
+
             # Add LED temperatures in order (1-6)
             for i in range(1, 7):
                 key = f"headTemp{i}"
-                value = led_temps.get(key)
-                if value is not None:
-                    json_parts.append(f'"{key}": {value}')
+                entry = led_temps.get(key)
+                if entry is not None:
+                    raw_v = entry.get("raw_v")
+                    temp_c = entry.get("temp_c")
+                    rv = f"{raw_v}" if raw_v is not None else "null"
+                    tc = f"{temp_c}" if temp_c is not None else "null"
+                    json_parts.append(f'"{key}": {{"raw_v": {rv}, "temp_c": {tc}}}')
                 else:
                     json_parts.append(f'"{key}": null')
 

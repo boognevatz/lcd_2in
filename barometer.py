@@ -47,31 +47,25 @@ def read_barometer():
     - Temperature: 16-bit at 0x09, 0x0A (MSB first)
 
     Returns:
-        Tuple of (temperature_celsius, pressure_bar) or (None, None) if read fails
+        Tuple of (temperature_celsius, pressure_gauge_bar, pressure_raw)
+        or (None, None, None) if read fails
     """
     if not barometer_ready:
-        return (None, None)
+        return (None, None, None)
 
     try:
         # Start measurement: Write 0x0A to CMD register (0x30)
         # 0x0A = 0x02 (measurement mode) + 0x08 (SCO bit)
-        SCO_BITMASK = 0x08
-        DRDY_BITMASK = 0x01
-
-        i2c.writeto_mem(BAROMETER_ADDR, 0x30, bytes([0x02 | SCO_BITMASK]))
+        i2c.writeto_mem(BAROMETER_ADDR, 0x30, bytes([0x0A]))
 
         # Wait for data ready (DRDY bit in control register 0x02 goes to 0)
-        delay_count = 0
-        while delay_count < 50:
+        for _ in range(50):
             time.sleep_ms(1)
-            ctrl_reg = i2c.readfrom_mem(BAROMETER_ADDR, 0x02, 1)[0]
-            if not (ctrl_reg & DRDY_BITMASK):
+            if not (i2c.readfrom_mem(BAROMETER_ADDR, 0x02, 1)[0] & 0x01):
                 break
-            delay_count += 1
-
-        if delay_count >= 50:
+        else:
             print("Barometer measurement timeout")
-            return (None, None)
+            return (None, None, None)
 
         # Read pressure (24-bit signed, MSB first) from registers 0x06, 0x07, 0x08
         press_byte0 = i2c.readfrom_mem(BAROMETER_ADDR, 0x06, 1)[0]
@@ -83,9 +77,7 @@ def read_barometer():
 
         # Sign extend 24-bit to 32-bit if negative (bit 23 is set)
         if pressure_raw & 0x800000:
-            pressure_raw |= 0xFF000000
-            # Convert to signed integer
-            pressure_raw = pressure_raw - 0x100000000
+            pressure_raw -= 0x1000000
 
         # Read temperature (16-bit, MSB first) from registers 0x09, 0x0A
         temp_byte0 = i2c.readfrom_mem(BAROMETER_ADDR, 0x09, 1)[0]
@@ -115,9 +107,8 @@ def read_barometer():
         if pressure_gauge_bar < 0.0:
             pressure_gauge_bar = 0.0
 
-        # Return as integer for temperature, 3 decimals for pressure
-        return (int(round(temperature_celsius)), round(pressure_gauge_bar, 3))
+        return (round(temperature_celsius, 1), round(pressure_gauge_bar, 3), pressure_raw)
 
     except Exception as e:
         print(f"Error reading barometer: {e}")
-        return (None, None)
+        return (None, None, None)

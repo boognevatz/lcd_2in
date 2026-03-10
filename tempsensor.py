@@ -29,23 +29,23 @@ def warm_up_adc():
         # Perform initial conversion on all 6 temperature channels
         for channel in range(6):
             command = 0x8C | (channel << 4)
-            
+
             # Start conversion
             i2c.writeto(ADS7830_ADDR, bytes([command]))
             time.sleep_ms(2)
-            
+
             # Read and discard first result (may be stale 0xFF)
             data = i2c.readfrom(ADS7830_ADDR, 1)
             first_value = data[0]
-            
+
             # If we got 0xFF, do another conversion to get valid data
             if first_value == 255:
                 i2c.writeto(ADS7830_ADDR, bytes([command]))
                 time.sleep_ms(2)
                 i2c.readfrom(ADS7830_ADDR, 1)
-            
+
             time.sleep_ms(1)
-        
+
         return True
     except Exception as e:
         print(f"ADC warm-up failed: {e}")
@@ -60,29 +60,29 @@ def read_adc_channel(channel, max_retries=3):
         max_retries: Maximum number of retry attempts (default: 3)
 
     Returns:
-        Voltage value in volts, or 0.0 if all retries fail
+        Voltage value in volts, or None if all retries fail
     """
     if not adc_ready:
-        return 0.0
+        return None
+
+    command = 0x8C | (channel << 4)
 
     for attempt in range(max_retries):
         try:
             # Command byte format for ADS7830:
             # Bit 7: SD=1 (single-ended mode)
-            # Bits 6-4: C2-C1-C0 (channel select)
-            # Bits 3-2: PD1-PD0=11 (internal reference ON, ADC ON between conversions)
+            # Bits 6-4: channel select (direct mapping)
+            # Bits 3-2: PD1-PD0=11 (internal reference ON, ADC ON)
             # Bits 1-0: Don't care
-            command = 0x8C | (channel << 4)  # 0x8C = 10001100
 
             # Write command byte to start conversion
             i2c.writeto(ADS7830_ADDR, bytes([command]))
 
-            # Delay for conversion (datasheet: typ 32µs, max 64µs)
+            # Delay for conversion (datasheet: typ 32us, max 64us)
             time.sleep_ms(2)
 
             # Read result (8-bit value)
-            data = i2c.readfrom(ADS7830_ADDR, 1)
-            adc_value = data[0]
+            adc_value = i2c.readfrom(ADS7830_ADDR, 1)[0]
 
             # Check if result is invalid (0xFF indicates stale/uninitialized data)
             if adc_value == 255:
@@ -90,21 +90,21 @@ def read_adc_channel(channel, max_retries=3):
                     time.sleep_ms(5)
                     continue
                 else:
-                    return 0.0
+                    return None
 
-            # Convert to voltage (8-bit ADC, 0-255 maps to 0-2.5V)
+            # Convert to voltage (8-bit ADC, 0-255 maps to 0-ADC_REF_VOLTAGE)
             voltage = (adc_value / 255.0) * ADC_REF_VOLTAGE
 
             return voltage
 
-        except Exception as e:
+        except OSError:
             if attempt < max_retries - 1:
                 time.sleep_ms(5)
                 continue
             else:
-                return 0.0
-    
-    return 0.0
+                return None
+
+    return None
 
 def voltage_to_temperature(voltage):
     """
@@ -178,11 +178,12 @@ def read_all_temperatures():
     Read all 6 temperature channels from ADC and convert to Celsius
 
     Returns:
-        Dictionary with headTemp1 through headTemp6 values in Celsius (integers)
+        Dictionary with headTemp1 through headTemp6, each containing
+        {"raw_v": voltage_float_or_None, "temp_c": int_or_None}
     """
     temps = {}
     for i in range(6):
         voltage = read_adc_channel(i)
         temp_c = voltage_to_temperature(voltage)
-        temps[f"headTemp{i+1}"] = temp_c
+        temps[f"headTemp{i+1}"] = {"raw_v": voltage, "temp_c": temp_c}
     return temps
