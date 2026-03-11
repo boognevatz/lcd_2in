@@ -214,6 +214,7 @@
     font-size: 11px;
     text-align: right;
     word-break: break-all;
+    white-space: pre-line;
   }
 
   /* ---- Footer ---- */
@@ -580,29 +581,40 @@
   // ---- Parse & display metadata ----
   function renderMetadata(headerText, upperTag, lowerTag) {
     const lines = headerText.split(/\r?\n/);
-    let html = '';
+    const map = new Map();
     for (const line of lines) {
       if (line.startsWith('--')) continue;
       const colon = line.indexOf(':');
       if (colon === -1) continue;
       const key = line.substring(0, colon).trim();
       const val = line.substring(colon + 1).trim();
-      // Skip generic headers
-      if (key === 'Content-Type') continue;
-      if (key === 'Content-Length') continue;
+      map.set(key, val);
+    }
 
-      const label = key.replace(/^X-/, '').replace(/-/g, ' ');
+    const temp = map.get('X-Temperature') || 'N/A';
+    const baro = map.get('X-Barometer') || 'N/A';
+    const extTemp = map.get('X-Ext-Temp') || 'N/A';
+    const bucketsPrevEnd = map.get('X-Buckets-prev-end') || 'N/A';
+    const buckets = map.get('X-Buckets') || 'N/A';
+
+    const rows = [
+      ['temperature', temp],
+      ['barometer', baro],
+      ['ext temp', extTemp],
+      ['buckets prev end', bucketsPrevEnd],
+      ['upper tag', formatBucketTag(upperTag)],
+      ['buckets prev end', bucketsPrevEnd],
+      ['lower tag', formatBucketTag(lowerTag)],
+      ['buckets', buckets]
+    ];
+
+    let html = '';
+    for (const [label, value] of rows) {
       html += '<div class="meta-row"><span class="meta-key">' +
               escHtml(label) + '</span><span class="meta-val">' +
-              escHtml(val) + '</span></div>';
+              escHtml(value) + '</span></div>';
     }
-    // Append bucket tags
-    if (upperTag !== undefined) {
-      html += '<div class="meta-row"><span class="meta-key">Upper Tag</span><span class="meta-val">' +
-              escHtml(formatBucketTag(upperTag)) + '</span></div>';
-      html += '<div class="meta-row"><span class="meta-key">Lower Tag</span><span class="meta-val">' +
-              escHtml(formatBucketTag(lowerTag)) + '</span></div>';
-    }
+
     $metaPanel.innerHTML = html || '<div class="meta-row" style="grid-column:1/-1;text-align:center"><span class="meta-key">No metadata</span></div>';
   }
 
@@ -615,9 +627,15 @@
     return data[offset] | (data[offset+1] << 8) | (data[offset+2] << 16) | (data[offset+3] << 24);
   }
 
+  function formatBits(value, width) {
+    const bits = (value >>> 0).toString(2).padStart(width, '0');
+    return bits.replace(/(.{4})/g, '$1 ').trim();
+  }
+
   // Format a 32-bit bucket tag for display
   // bits 31-3 = frame number, bit 2 = upper(1)/lower(0), bit 1 = dirty, bit 0 = valid
   function formatBucketTag(tag) {
+    if (tag === undefined || tag === null) return 'N/A';
     const frame = (tag >>> 3);
     const isUpper = (tag & 0x04) !== 0;
     const isDirty = (tag & 0x02) !== 0;
@@ -626,7 +644,7 @@
         + ' ' + (isUpper ? 'UPPER' : 'LOWER')
         + ' dirty=' + (isDirty ? 'Y' : 'N')
         + ' valid=' + (isValid ? 'Y' : 'N')
-        + ' (0x' + (tag >>> 0).toString(16).padStart(8, '0') + ')';
+        + '\n' + formatBits(tag >>> 0, 32);
   }
 
   // ---- UI updates ----
