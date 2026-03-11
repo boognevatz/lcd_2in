@@ -84,8 +84,18 @@ extern volatile uint32_t cam_counter;
 // Bucket state array: [0]=A, [1]=B, [2]=C
 extern volatile uint32_t bucket_state[3];
 
-// TX intent declaration (written by TX main thread, read by ISR)
-extern volatile bool     tx_wants[3];           // TX has selected this bucket for its pair
+// Per-bucket TX state (three_bucket_system.md terminology)
+// Written by TX main thread, read+upgraded by ISR.
+#define BUCKET_TX_STATE_FREE     0   // "-"      Not in TX pair. Freely overwritable.
+#define BUCKET_TX_STATE_TXP      1   // "TXP"    TX sending, camera done.   PROTECTED.
+#define BUCKET_TX_STATE_PD       2   // "PD"     Queued partner, camera done. PROTECTED.
+#define BUCKET_TX_STATE_TX_REC   3   // "TX REC" TX sending, camera writing. Not protected.
+#define BUCKET_TX_STATE_TX       4   // "TX"     TX sending stale/garbage.   Not protected.
+#define BUCKET_TX_STATE_QUEUED   5   // Queued partner, camera still writing. Not protected.
+                                     // (spec shows this as "REC" in the bucket column;
+                                     //  ISR needs the distinction to transition -> PD)
+
+extern volatile uint8_t  bucket_tx_state[3];
 extern volatile int32_t  mcu_temp_x10;          // MCU temperature x10 (365 = 36.5C)
 
 #define USE_100BASE_FX (false)

@@ -66,8 +66,8 @@ volatile uint32_t bucket_state[3] = {0, 0, 0};
 // frame = cam_counter / 2, is_upper = (cam_counter % 2) == 0
 volatile uint32_t cam_counter = 0;
 
-// TX intent (TX writes, ISR reads)
-volatile bool tx_wants[3] = {false, false, false};
+// TX intent (TX writes, ISR reads+upgrades)
+volatile uint8_t bucket_tx_state[3] = {BUCKET_TX_STATE_FREE, BUCKET_TX_STATE_FREE, BUCKET_TX_STATE_FREE};
 volatile int32_t mcu_temp_x10 = 365;            // default 36.5C until Python updates
 
 // Internal ISR tracking: which bucket each DMA channel targets
@@ -142,7 +142,7 @@ void setup_dma_for_capture()
     // Reset three-bucket system state
     for (int i = 0; i < 3; i++) {
         bucket_state[i] = bucket_make_empty();
-        tx_wants[i] = false;
+        bucket_tx_state[i] = BUCKET_TX_STATE_FREE;
     }
     cam_counter = 0;
     ch_target[0] = 0;       // CH_A starts at bucket 0
@@ -166,13 +166,13 @@ void setup_dma_for_capture()
 
 /********************************************************************************
 function:   Protection check for camera skip logic.
-            A bucket is protected if TX declared interest (tx_wants) AND the
-            bucket contains valid complete data. If camera is still writing
-            to it, it is NOT protected (TX REC state -- camera is ahead).
+            A bucket is protected when it is TXP or PD (spec terminology).
+            TX REC, TX, QUEUED, NONE — all unprotected.
 ********************************************************************************/
 static inline bool is_protected(uint8_t b)
 {
-    return tx_wants[b] && bucket_is_complete(bucket_state[b]);
+    uint8_t s = bucket_tx_state[b];
+    return s == BUCKET_TX_STATE_TXP || s == BUCKET_TX_STATE_PD;
 }
 
 /********************************************************************************
@@ -188,7 +188,7 @@ function:   DMA interrupt handler -- 3-bucket system with skip logic.
 
             Skip rule (from three_bucket_system.md):
             - Round-robin A->B->C->A...
-            - Skip protected buckets (tx_wants AND bucket_is_complete)
+            - Skip protected buckets (BTS_TXP or BTS_PD)
             - If both candidates protected, camera trapped on one bucket
 ********************************************************************************/
 static void handle_half_complete(uint32_t completed_ch)
@@ -217,16 +217,24 @@ static void handle_half_complete(uint32_t completed_ch)
     // --- Advance camera counter ---
     cam_counter++;
 
+    // --- Apply spec protection upgrades upon completion ---
+    // If TX is actively sending this (TX REC), it is now TXP.
+    // If it is the queued partner (QUEUED), it is now PD.
+    if (bucket_tx_state[completed] == BUCKET_TX_STATE_TX_REC) {
+        bucket_tx_state[completed] = BUCKET_TX_STATE_TXP;
+    } else if (bucket_tx_state[completed] == BUCKET_TX_STATE_QUEUED) {
+        bucket_tx_state[completed] = BUCKET_TX_STATE_PD;
+    }
+
     // --- Update other channel's target state (single atomic write) ---
     // The other channel just started writing, so its target is being overwritten.
     uint32_t new_counter = cam_counter;
     uint32_t new_frame = new_counter / 2;
     bool new_half_is_upper = (new_counter % 2) == 0;
     bucket_state[other_target] = bucket_make_dirty(new_frame, new_half_is_upper);
+    *(uint32_t *)bucket[other_target] = bucket_state[other_target];
 
     // --- Stamp dirty tag into the other bucket's first 4 bytes ---
-    // DMA writes at bucket+4, so this is safe from DMA overwrites.
-    *(uint32_t *)bucket[other_target] = bucket_state[other_target];
 
     // --- Decide next write target for this (completing) channel ---
     // This channel will fire AFTER the other channel finishes other_target.

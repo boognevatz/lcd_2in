@@ -313,11 +313,14 @@ static mp_obj_t camera_stream_start(void) {
     accum_count = 0;
 
     // Declare TX intent for startup pair
-    tx_wants[0] = false;
-    tx_wants[1] = false;
-    tx_wants[2] = false;
-    tx_wants[tx_first] = true;
-    tx_wants[tx_second] = true;
+    bucket_tx_state[0] = BUCKET_TX_STATE_FREE;
+    bucket_tx_state[1] = BUCKET_TX_STATE_FREE;
+    bucket_tx_state[2] = BUCKET_TX_STATE_FREE;
+    
+    // At startup, no data exists yet, so both are QUEUED (waiting for camera)
+    // When camera catches up, ISR will upgrade them to TX_REC, then TXP/PD.
+    bucket_tx_state[tx_first] = BUCKET_TX_STATE_QUEUED;
+    bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
 
     // Pre-build x_headers for the first frame
     write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
@@ -408,18 +411,24 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
-        // Release first bucket BEFORE the send -- camera can target it
-        // while TX reads.  Co-write is by design; the important thing is
-        // that the ISR sees at least one unprotected candidate so it does
-        // not get trapped into overwriting the bucket it is already using.
-        tx_wants[tx_first] = false;
-
         // --- Send first half-frame (4-byte tag + 76,800 bytes) ---
         ret = mp_stream_write_exactly(
             socket_obj, bucket[tx_first], TAGGED_HALF_FRAME_BYTES, &errcode);
         if (ret == MP_STREAM_ERROR || ret == 0) {
             streaming = false;
             break;
+        }
+
+        // Release first bucket -- camera can now overwrite it
+        bucket_tx_state[tx_first] = BUCKET_TX_STATE_FREE;
+
+        // Upgrade second bucket: it is no longer the queued partner (QUEUED/PD),
+        // it is now actively being sent. If it was QUEUED (still writing), it
+        // becomes TX_REC. If it was PD (camera done), it becomes TXP.
+        if (bucket_tx_state[tx_second] == BUCKET_TX_STATE_QUEUED) {
+            bucket_tx_state[tx_second] = BUCKET_TX_STATE_TX_REC;
+        } else if (bucket_tx_state[tx_second] == BUCKET_TX_STATE_PD) {
+            bucket_tx_state[tx_second] = BUCKET_TX_STATE_TXP;
         }
 
         // Snapshot mid-point: bucket states after 1st half sent
@@ -436,7 +445,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         }
 
         // Release second bucket
-        tx_wants[tx_second] = false;
+        bucket_tx_state[tx_second] = BUCKET_TX_STATE_FREE;
 
         // Snapshot end-point: bucket states after 2nd half sent
         prev_end[0] = bucket_state[0];
@@ -507,9 +516,25 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
                 tx_second = cand_b;
             }
         }
+        
+        if (bucket_is_dirty(snap[tx_first])) {
+            bucket_tx_state[tx_first] = BUCKET_TX_STATE_TX_REC;
+        } else if (bucket_is_complete(snap[tx_first])) {
+            bucket_tx_state[tx_first] = BUCKET_TX_STATE_TXP;
+        } else {
+            bucket_tx_state[tx_first] = BUCKET_TX_STATE_TX;
+        }
 
-        tx_wants[tx_first] = true;
-        tx_wants[tx_second] = true;
+        if (bucket_is_dirty(snap[tx_second])) {
+            bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
+        } else if (bucket_is_complete(snap[tx_second])) {
+            bucket_tx_state[tx_second] = BUCKET_TX_STATE_PD;
+        } else {
+            bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED; // fallback
+        }
+        
+        // Release the departing bucket that was just finished
+        bucket_tx_state[just_finished] = BUCKET_TX_STATE_FREE;
 
         // Pre-build x_headers for next frame (uses snap[] from ordering decision)
         write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
@@ -528,9 +553,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 
     // On disconnect, release all protection
     if (!streaming) {
-        tx_wants[0] = false;
-        tx_wants[1] = false;
-        tx_wants[2] = false;
+        bucket_tx_state[0] = BUCKET_TX_STATE_FREE;
+        bucket_tx_state[1] = BUCKET_TX_STATE_FREE;
+        bucket_tx_state[2] = BUCKET_TX_STATE_FREE;
     }
 
     return mp_obj_new_int(batch_sent);
