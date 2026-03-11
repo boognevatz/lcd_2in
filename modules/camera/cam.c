@@ -47,10 +47,10 @@ static PIO pio_cam = pio0;
 // statemachine's pointer
 static uint32_t sm_cam; // CAMERA's state machines
 
-// 3 half-frame buckets (76,800 bytes each = 230,400 total)
-static uint8_t bucket_mem_0[HALF_FRAME_BYTES] __attribute__((aligned(4)));
-static uint8_t bucket_mem_1[HALF_FRAME_BYTES] __attribute__((aligned(4)));
-static uint8_t bucket_mem_2[HALF_FRAME_BYTES] __attribute__((aligned(4)));
+// 3 half-frame buckets (76,804 bytes each: 4-byte tag + 76,800 pixel data)
+static uint8_t bucket_mem_0[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
+static uint8_t bucket_mem_1[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
+static uint8_t bucket_mem_2[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
 uint8_t *bucket[3] = { bucket_mem_0, bucket_mem_1, bucket_mem_2 };
 
 // DMA channels for half-frame chaining
@@ -124,7 +124,7 @@ void setup_dma_for_capture()
     channel_config_set_transfer_data_size(&c_a, DMA_SIZE_16);
     channel_config_set_chain_to(&c_a, DMA_CH_B);
     dma_channel_configure(DMA_CH_A, &c_a,
-                          bucket[0],              // write to bucket[0]
+                          bucket[0] + BUCKET_TAG_SIZE, // write past 4-byte tag
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
                           HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers
                           false);                 // don't start yet
@@ -134,7 +134,7 @@ void setup_dma_for_capture()
     channel_config_set_transfer_data_size(&c_b, DMA_SIZE_16);
     channel_config_set_chain_to(&c_b, DMA_CH_A);
     dma_channel_configure(DMA_CH_B, &c_b,
-                          bucket[1],              // write to bucket[1]
+                          bucket[1] + BUCKET_TAG_SIZE, // write past 4-byte tag
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
                           HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers
                           false);                 // don't start yet
@@ -151,6 +151,7 @@ void setup_dma_for_capture()
     // Mark bucket 0 as dirty (being written)
     // cam_counter=0 → frame=0, half=(0%2)=0 → UPPER, so is_upper=true
     bucket_state[0] = bucket_make_dirty(0, true);
+    *(uint32_t *)bucket[0] = bucket_state[0];
 
     // Enable IRQ on both channels
     dma_channel_set_irq0_enabled(DMA_CH_A, true);
@@ -209,6 +210,10 @@ static void handle_half_complete(uint32_t completed_ch)
     // --- Update completed bucket state (single atomic write) ---
     bucket_state[completed] = bucket_make_complete(old_frame, old_half_is_upper);
 
+    // --- Stamp debug tag into the first 4 bytes of the bucket ---
+    // This lets the client verify which frame/half the bucket actually contains.
+    *(uint32_t *)bucket[completed] = bucket_state[completed];
+
     // --- Advance camera counter ---
     cam_counter++;
 
@@ -218,6 +223,10 @@ static void handle_half_complete(uint32_t completed_ch)
     uint32_t new_frame = new_counter / 2;
     bool new_half_is_upper = (new_counter % 2) == 0;
     bucket_state[other_target] = bucket_make_dirty(new_frame, new_half_is_upper);
+
+    // --- Stamp dirty tag into the other bucket's first 4 bytes ---
+    // DMA writes at bucket+4, so this is safe from DMA overwrites.
+    *(uint32_t *)bucket[other_target] = bucket_state[other_target];
 
     // --- Decide next write target for this (completing) channel ---
     // This channel will fire AFTER the other channel finishes other_target.
@@ -245,7 +254,7 @@ static void handle_half_complete(uint32_t completed_ch)
 
     // --- Configure this channel for its next write ---
     ch_target[ch_idx] = chosen;
-    dma_channel_set_write_addr(completed_ch, bucket[chosen], false);
+    dma_channel_set_write_addr(completed_ch, bucket[chosen] + BUCKET_TAG_SIZE, false);
 }
 
 void cam_handler(void)

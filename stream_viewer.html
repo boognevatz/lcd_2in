@@ -305,7 +305,7 @@
   </div>
 
   <div id="options-row">
-    <label><input type="checkbox" id="opt-swap-bytes" checked> Swap byte order</label>
+    <label><input type="checkbox" id="opt-swap-bytes"> Swap byte order</label>
     <label><input type="checkbox" id="opt-swap-rb"> Swap R/B channels</label>
   </div>
 
@@ -345,7 +345,9 @@
   const ctx          = $canvas.getContext('2d');
   ctx.imageSmoothingEnabled = false;
   const W = 240, H = 320;
-  const PIXEL_BYTES = W * H * 2; // 153600
+  const PIXEL_BYTES = W * H * 2 + 8; // 153608 (2x4-byte bucket tags + pixel data)
+  const BUCKET_TAG_SIZE = 4;
+  const HALF_PIXEL_BYTES = W * (H / 2) * 2; // 76800
 
   // ---- State ----
   let file = null;
@@ -434,17 +436,18 @@
 
   // ---- RGB565 decode ----
   function analyzeEndianness(pixelData) {
-    const totalPixels = W * H;
-    const samples = Math.min(2000, totalPixels);
-    let step = Math.max(1, Math.floor(totalPixels / samples));
+    // Sample from upper half only (skip 4-byte bucket tag at start)
+    const halfPixels = W * (H / 2);
+    const samples = Math.min(2000, halfPixels);
+    let step = Math.max(1, Math.floor(halfPixels / samples));
 
     function score(useSwap) {
       let sum = 0;
       let sumSq = 0;
       let nonZero = 0;
       let taken = 0;
-      for (let i = 0; i < totalPixels; i += step) {
-        const b = i * 2;
+      for (let i = 0; i < halfPixels; i += step) {
+        const b = BUCKET_TAG_SIZE + i * 2;
         if (b + 1 >= pixelData.length) break;
         let v;
         if (useSwap) {
@@ -482,30 +485,51 @@
       return;
     }
     const out = imageData.data;
-    const totalPixels = W * H;
+    const halfPixels = W * (H / 2);
 
-    for (let i = 0; i < totalPixels; i++) {
-      const b = i * 2;
-      if (b + 1 >= pixelData.length) break;
-
+    // Upper half: skip 4-byte tag, read 76800 bytes of pixel data
+    let si = BUCKET_TAG_SIZE;
+    let di = 0;
+    for (let i = 0; i < halfPixels; i++) {
+      if (si + 1 >= pixelData.length) break;
       let v;
       if (swapBytes) {
-        v = (pixelData[b] << 8) | pixelData[b + 1]; // big-endian
+        v = (pixelData[si] << 8) | pixelData[si + 1];
       } else {
-        v = (pixelData[b + 1] << 8) | pixelData[b]; // little-endian (default)
+        v = (pixelData[si + 1] << 8) | pixelData[si];
       }
-
       let r5 = (v >> 11) & 0x1F;
       let g6 = (v >> 5)  & 0x3F;
       let b5 = v & 0x1F;
-
       if (swapRB) { const tmp = r5; r5 = b5; b5 = tmp; }
+      out[di]     = (r5 << 3) | (r5 >> 2);
+      out[di + 1] = (g6 << 2) | (g6 >> 4);
+      out[di + 2] = (b5 << 3) | (b5 >> 2);
+      out[di + 3] = 255;
+      si += 2;
+      di += 4;
+    }
 
-      const x = i * 4;
-      out[x]     = (r5 << 3) | (r5 >> 2);
-      out[x + 1] = (g6 << 2) | (g6 >> 4);
-      out[x + 2] = (b5 << 3) | (b5 >> 2);
-      out[x + 3] = 255;
+    // Lower half: skip another 4-byte tag, read 76800 bytes of pixel data
+    si += BUCKET_TAG_SIZE;
+    for (let i = 0; i < halfPixels; i++) {
+      if (si + 1 >= pixelData.length) break;
+      let v;
+      if (swapBytes) {
+        v = (pixelData[si] << 8) | pixelData[si + 1];
+      } else {
+        v = (pixelData[si + 1] << 8) | pixelData[si];
+      }
+      let r5 = (v >> 11) & 0x1F;
+      let g6 = (v >> 5)  & 0x3F;
+      let b5 = v & 0x1F;
+      if (swapRB) { const tmp = r5; r5 = b5; b5 = tmp; }
+      out[di]     = (r5 << 3) | (r5 >> 2);
+      out[di + 1] = (g6 << 2) | (g6 >> 4);
+      out[di + 2] = (b5 << 3) | (b5 >> 2);
+      out[di + 3] = 255;
+      si += 2;
+      di += 4;
     }
 
     ctx.putImageData(imageData, 0, 0);
@@ -534,10 +558,16 @@
         if (analysis.big.nonZero === 0 && analysis.little.nonZero === 0) {
           showError('Frame data appears empty or non-RGB565. Check file format.');
         }
-        $optSwap.checked = preferSwap;
+        $optSwap.checked = false;
         autoSwapSet = true;
       }
       decodeFrame(pixelData, $optSwap.checked, $optRB.checked);
+
+      // Extract and display bucket tags
+      const upperTag = readBucketTag(pixelData, 0);
+      const lowerTag = readBucketTag(pixelData, BUCKET_TAG_SIZE + HALF_PIXEL_BYTES);
+      renderMetadata(fr.headers, upperTag, lowerTag);
+
       updateUI();
     } catch (err) {
       console.error('showFrame error:', err);
@@ -548,7 +578,7 @@
   }
 
   // ---- Parse & display metadata ----
-  function renderMetadata(headerText) {
+  function renderMetadata(headerText, upperTag, lowerTag) {
     const lines = headerText.split(/\r?\n/);
     let html = '';
     for (const line of lines) {
@@ -566,11 +596,37 @@
               escHtml(label) + '</span><span class="meta-val">' +
               escHtml(val) + '</span></div>';
     }
+    // Append bucket tags
+    if (upperTag !== undefined) {
+      html += '<div class="meta-row"><span class="meta-key">Upper Tag</span><span class="meta-val">' +
+              escHtml(formatBucketTag(upperTag)) + '</span></div>';
+      html += '<div class="meta-row"><span class="meta-key">Lower Tag</span><span class="meta-val">' +
+              escHtml(formatBucketTag(lowerTag)) + '</span></div>';
+    }
     $metaPanel.innerHTML = html || '<div class="meta-row" style="grid-column:1/-1;text-align:center"><span class="meta-key">No metadata</span></div>';
   }
 
   function escHtml(s) {
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // Read a 4-byte little-endian bucket tag from a Uint8Array
+  function readBucketTag(data, offset) {
+    return data[offset] | (data[offset+1] << 8) | (data[offset+2] << 16) | (data[offset+3] << 24);
+  }
+
+  // Format a 32-bit bucket tag for display
+  // bits 31-3 = frame number, bit 2 = upper(1)/lower(0), bit 1 = dirty, bit 0 = valid
+  function formatBucketTag(tag) {
+    const frame = (tag >>> 3);
+    const isUpper = (tag & 0x04) !== 0;
+    const isDirty = (tag & 0x02) !== 0;
+    const isValid = (tag & 0x01) !== 0;
+    return 'frame=' + frame
+        + ' ' + (isUpper ? 'UPPER' : 'LOWER')
+        + ' dirty=' + (isDirty ? 'Y' : 'N')
+        + ' valid=' + (isValid ? 'Y' : 'N')
+        + ' (0x' + (tag >>> 0).toString(16).padStart(8, '0') + ')';
   }
 
   // ---- UI updates ----
@@ -585,8 +641,8 @@
                         '</span> &mdash; ' + escHtml(file.name) +
                         ' (' + formatBytes(file.size) + ')';
 
-    // Metadata
-    renderMetadata(frames[n].headers);
+    // Metadata (bucket tags are set by showFrame, not here)
+    if (!rendering) renderMetadata(frames[n].headers);
 
     // Button states
     document.getElementById('btn-first').disabled = (n === 0);

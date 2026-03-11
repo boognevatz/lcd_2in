@@ -80,11 +80,11 @@ static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_xclk_pin_obj, camera_set_xclk_pin);
 static const char boundary_prefix_first[] =
     "--frame\r\n"
     "Content-Type: application/octet-stream\r\n"
-    "Content-Length: 00153600\r\n";
+    "Content-Length: 00153608\r\n";
 static const char boundary_prefix_subsequent[] =
     "\r\n--frame\r\n"
     "Content-Type: application/octet-stream\r\n"
-    "Content-Length: 00153600\r\n";
+    "Content-Length: 00153608\r\n";
 
 // Bucket name lookup: index 0->'A', 1->'B', 2->'C'
 static const char bucket_name[] = "ABC";
@@ -408,16 +408,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
-        // If the upper half bucket is not yet complete (still being
-        // written by camera DMA, or no valid pair at all), wait a bit
-        // so the camera can finish before TX starts reading.
-        // if (!bucket_is_complete(bucket_state[tx_first])) {
-        //     sleep_ms(10);
-        // }
-
-        // --- Send first half-frame (76,800 bytes) ---
+        // --- Send first half-frame (4-byte tag + 76,800 bytes) ---
         ret = mp_stream_write_exactly(
-            socket_obj, bucket[tx_first], HALF_FRAME_BYTES, &errcode);
+            socket_obj, bucket[tx_first], TAGGED_HALF_FRAME_BYTES, &errcode);
         if (ret == MP_STREAM_ERROR || ret == 0) {
             streaming = false;
             break;
@@ -431,9 +424,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         prev_mid[1] = bucket_state[1];
         prev_mid[2] = bucket_state[2];
 
-        // --- Send second half-frame (76,800 bytes) ---
+        // --- Send second half-frame (4-byte tag + 76,800 bytes) ---
         ret = mp_stream_write_exactly(
-            socket_obj, bucket[tx_second], HALF_FRAME_BYTES, &errcode);
+            socket_obj, bucket[tx_second], TAGGED_HALF_FRAME_BYTES, &errcode);
         if (ret == MP_STREAM_ERROR || ret == 0) {
             streaming = false;
             break;

@@ -52,7 +52,7 @@ def init_camera(config):
 # HTML page for / (stream viewer)
 # ---------------------------------------------------------------------------
 STREAM_PAGE = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>*{margin:0}canvas{display:block}</style></head><body><canvas id="c" width="240" height="320"></canvas><script>
-const c=document.getElementById('c').getContext('2d'),W=240,H=320,FS=153600;
+const c=document.getElementById('c').getContext('2d'),W=240,H=320,FS=153608,T=4,HP=76800;
 let mode=null;
 async function s(){
 const r=await fetch('/stream'),rd=r.body.getReader();
@@ -63,10 +63,11 @@ while(true){let bi=-1;for(let i=0;i<=sb.length-bn.length;i++){let m=true;for(let
 if(bi===-1)break;let ds=-1;for(let i=bi;i<sb.length-3;i++){if(sb[i]===13&&sb[i+1]===10&&sb[i+2]===13&&sb[i+3]===10){ds=i+4;break;}}
 if(ds===-1||sb.length-ds<FS)break;d(sb.slice(ds,ds+FS));sb=sb.slice(ds+FS);}}}
 function d(buf){const img=c.createImageData(W,H);
-if(mode===null&&buf.length>=8)mode=(buf[2]===0&&buf[3]===0&&buf[6]===0&&buf[7]===0)?'p':'k';
+const pb=new Uint8Array(HP*2);pb.set(buf.subarray(T,T+HP));pb.set(buf.subarray(T+HP+T),HP);
+if(mode===null&&pb.length>=8)mode=(pb[2]===0&&pb[3]===0&&pb[6]===0&&pb[7]===0)?'p':'k';
 const tp=W*H;
-if(mode==='p'){for(let i=0;i<tp;i+=2){const b=i*2;if(b+1>=buf.length)break;const v=(buf[b+1]<<8)|buf[b];const r=(v>>11)&0x1F,g=(v>>5)&0x3F,bl=v&0x1F;const R=(r<<3)|(r>>2),G=(g<<2)|(g>>4),B=(bl<<3)|(bl>>2);let x=i*4;img.data[x]=R;img.data[x+1]=G;img.data[x+2]=B;img.data[x+3]=255;img.data[x+4]=R;img.data[x+5]=G;img.data[x+6]=B;img.data[x+7]=255;}}
-else{for(let i=0;i<tp;i+=2){const b=i*2;if(b+3>=buf.length)break;let v=(buf[b+3]<<8)|buf[b+2],r=(v>>11)&0x1F,g=(v>>5)&0x3F,bl=v&0x1F,x=i*4;img.data[x]=(r<<3)|(r>>2);img.data[x+1]=(g<<2)|(g>>4);img.data[x+2]=(bl<<3)|(bl>>2);img.data[x+3]=255;v=(buf[b+1]<<8)|buf[b];r=(v>>11)&0x1F;g=(v>>5)&0x3F;bl=v&0x1F;x=(i+1)*4;img.data[x]=(r<<3)|(r>>2);img.data[x+1]=(g<<2)|(g>>4);img.data[x+2]=(bl<<3)|(bl>>2);img.data[x+3]=255;}}
+if(mode==='p'){for(let i=0;i<tp;i+=2){const b=i*2;if(b+1>=pb.length)break;const v=(pb[b+1]<<8)|pb[b];const r=(v>>11)&0x1F,g=(v>>5)&0x3F,bl=v&0x1F;const R=(r<<3)|(r>>2),G=(g<<2)|(g>>4),B=(bl<<3)|(bl>>2);let x=i*4;img.data[x]=R;img.data[x+1]=G;img.data[x+2]=B;img.data[x+3]=255;img.data[x+4]=R;img.data[x+5]=G;img.data[x+6]=B;img.data[x+7]=255;}}
+else{for(let i=0;i<tp;i+=2){const b=i*2;if(b+3>=pb.length)break;let v=(pb[b+3]<<8)|pb[b+2],r=(v>>11)&0x1F,g=(v>>5)&0x3F,bl=v&0x1F,x=i*4;img.data[x]=(r<<3)|(r>>2);img.data[x+1]=(g<<2)|(g>>4);img.data[x+2]=(bl<<3)|(bl>>2);img.data[x+3]=255;v=(pb[b+1]<<8)|pb[b];r=(v>>11)&0x1F;g=(v>>5)&0x3F;bl=v&0x1F;x=(i+1)*4;img.data[x]=(r<<3)|(r>>2);img.data[x+1]=(g<<2)|(g>>4);img.data[x+2]=(bl<<3)|(bl>>2);img.data[x+3]=255;}}
 c.putImageData(img,0,0);}s();
 </script></body></html>"""
 

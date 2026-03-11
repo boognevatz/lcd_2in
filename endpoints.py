@@ -88,7 +88,9 @@ Connection: close
         const ctx = canvas.getContext('2d');
         const width = 240;
         const height = 320;
-        const frameSize = width * height * 2; // RGB565 = 2 bytes per pixel
+        const TAG_SIZE = 4;  // 4-byte bucket tag per half-frame
+        const halfPixelBytes = width * (height / 2) * 2; // 76800
+        const frameSize = width * height * 2 + TAG_SIZE * 2; // 153608
 
         let frameCount = 0;
         let fpsCounter = 0;
@@ -103,20 +105,39 @@ Connection: close
         function displayImage(arrayBuffer) {
             const data = new Uint8Array(arrayBuffer);
             const imageData = ctx.createImageData(width, height);
-            const totalPixels = width * height;
+            const halfPixels = width * (height / 2);
 
-            for (let i = 0; i < totalPixels; i++) {
-                const b = i * 2;
-                if (b + 1 >= data.length) break;
-                const v = (data[b + 1] << 8) | data[b];
+            // Upper half: skip 4-byte tag, read 76800 bytes
+            let si = TAG_SIZE;
+            let di = 0;
+            for (let i = 0; i < halfPixels; i++) {
+                if (si + 1 >= data.length) break;
+                const v = (data[si + 1] << 8) | data[si];
                 const r5 = (v >> 11) & 0x1F;
                 const g6 = (v >> 5) & 0x3F;
                 const b5 = v & 0x1F;
-                const x = i * 4;
-                imageData.data[x]     = (r5 << 3) | (r5 >> 2);
-                imageData.data[x + 1] = (g6 << 2) | (g6 >> 4);
-                imageData.data[x + 2] = (b5 << 3) | (b5 >> 2);
-                imageData.data[x + 3] = 255;
+                imageData.data[di]     = (r5 << 3) | (r5 >> 2);
+                imageData.data[di + 1] = (g6 << 2) | (g6 >> 4);
+                imageData.data[di + 2] = (b5 << 3) | (b5 >> 2);
+                imageData.data[di + 3] = 255;
+                si += 2;
+                di += 4;
+            }
+
+            // Lower half: skip another 4-byte tag, read 76800 bytes
+            si += TAG_SIZE;
+            for (let i = 0; i < halfPixels; i++) {
+                if (si + 1 >= data.length) break;
+                const v = (data[si + 1] << 8) | data[si];
+                const r5 = (v >> 11) & 0x1F;
+                const g6 = (v >> 5) & 0x3F;
+                const b5 = v & 0x1F;
+                imageData.data[di]     = (r5 << 3) | (r5 >> 2);
+                imageData.data[di + 1] = (g6 << 2) | (g6 >> 4);
+                imageData.data[di + 2] = (b5 << 3) | (b5 >> 2);
+                imageData.data[di + 3] = 255;
+                si += 2;
+                di += 4;
             }
 
             ctx.putImageData(imageData, 0, 0);
