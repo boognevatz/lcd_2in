@@ -408,6 +408,12 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
+        // Release first bucket BEFORE the send -- camera can target it
+        // while TX reads.  Co-write is by design; the important thing is
+        // that the ISR sees at least one unprotected candidate so it does
+        // not get trapped into overwriting the bucket it is already using.
+        tx_wants[tx_first] = false;
+
         // --- Send first half-frame (4-byte tag + 76,800 bytes) ---
         ret = mp_stream_write_exactly(
             socket_obj, bucket[tx_first], TAGGED_HALF_FRAME_BYTES, &errcode);
@@ -415,9 +421,6 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             streaming = false;
             break;
         }
-
-        // Release first bucket -- camera can now overwrite it
-        tx_wants[tx_first] = false;
 
         // Snapshot mid-point: bucket states after 1st half sent
         prev_mid[0] = bucket_state[0];
