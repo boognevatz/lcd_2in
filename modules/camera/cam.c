@@ -47,7 +47,7 @@ static PIO pio_cam = pio0;
 // statemachine's pointer
 static uint32_t sm_cam; // CAMERA's state machines
 
-// 3 half-frame buckets (76,808 bytes each: 8-byte tag + 76,800 pixel data)
+// 3 half-frame buckets (76,812 bytes each: 12-byte tag + 76,800 pixel data)
 static uint8_t bucket_mem_0[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
 static uint8_t bucket_mem_1[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
 static uint8_t bucket_mem_2[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
@@ -126,7 +126,7 @@ void setup_dma_for_capture()
     channel_config_set_transfer_data_size(&c_a, DMA_SIZE_16);
     channel_config_set_chain_to(&c_a, DMA_CH_B);
     dma_channel_configure(DMA_CH_A, &c_a,
-                          bucket[0] + BUCKET_TAG_SIZE, // write past 8-byte tag
+                          bucket[0] + BUCKET_TAG_SIZE, // write past 12-byte tag
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
                           HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers
                           false);                 // don't start yet
@@ -136,7 +136,7 @@ void setup_dma_for_capture()
     channel_config_set_transfer_data_size(&c_b, DMA_SIZE_16);
     channel_config_set_chain_to(&c_b, DMA_CH_A);
     dma_channel_configure(DMA_CH_B, &c_b,
-                          bucket[1] + BUCKET_TAG_SIZE, // write past 8-byte tag
+                          bucket[1] + BUCKET_TAG_SIZE, // write past 12-byte tag
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
                           HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers
                           false);                 // don't start yet
@@ -219,9 +219,9 @@ static void handle_half_complete(uint32_t completed_ch)
     // --- Update completed bucket state (single atomic write) ---
     bucket_state[completed] = bucket_make_complete(old_frame, old_half_is_upper);
 
-    // --- Stamp debug tag into the first 4 bytes of the bucket ---
+    // --- Stamp bucket tag into the tag word ---
     // This lets the client verify which frame/half the bucket actually contains.
-    *(uint32_t *)bucket[completed] = bucket_state[completed];
+    ((uint32_t *)bucket[completed])[1] = bucket_state[completed];
 
     // --- Advance camera counter ---
     cam_counter++;

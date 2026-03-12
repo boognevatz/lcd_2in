@@ -379,8 +379,8 @@
     <script>
         // Constants
         const FRAME_MARKER = [0x2d, 0x2d, 0x66, 0x72, 0x61, 0x6d, 0x65, 0x0d, 0x0a]; // --frame\r\n
-        const FRAME_DATA_SIZE = 153616; // 240 * 320 * 2 + 2x8-byte tags
-        const BUCKET_TAG_SIZE = 8;     // 8-byte tag (time_us + bucket tag) per half-frame
+        const FRAME_DATA_SIZE = 153624; // 240 * 320 * 2 + 2x12-byte tags
+        const BUCKET_TAG_SIZE = 12;     // 12-byte tag (time_us + bucket tag + tx states) per half-frame
         const HALF_PIXEL_BYTES = 76800; // 240 * 160 * 2
         const WIDTH = 240;
         const HEIGHT = 320;
@@ -559,7 +559,7 @@
 
             try {
                 // Read enough bytes for headers + frame data + some margin
-                // Headers are typically ~340 bytes, data is 153616 bytes
+                // Headers are typically ~340 bytes, data is 153624 bytes
                 const readSize = Math.min(155000, rawFile.size - frameOffset);
                 const blob = rawFile.slice(frameOffset, frameOffset + readSize);
                 const buffer = await blob.arrayBuffer();
@@ -591,7 +591,7 @@
                 const upperTag = readTag(uint8, dataStart);
                 const lowerTag = readTag(uint8, dataStart + BUCKET_TAG_SIZE + HALF_PIXEL_BYTES);
 
-                // Decode RGB565, skipping 8-byte tags at start of each half
+                // Decode RGB565, skipping 12-byte tags at start of each half
                 decodeRGB565(uint8, dataStart);
 
                 // Update headers display — show only X-* metadata lines + bucket tags
@@ -629,7 +629,7 @@
         }
 
         // Decode RGB565 little-endian directly into the pre-allocated ImageData
-        // Layout per frame: [8-byte tag][76800 upper pixels][8-byte tag][76800 lower pixels]
+        // Layout per frame: [12-byte tag][76800 upper pixels][12-byte tag][76800 lower pixels]
         function decodeRGB565(src, srcOffset) {
             const dst = imageData.data;
             let si = srcOffset + BUCKET_TAG_SIZE; // skip upper tag
@@ -677,12 +677,31 @@
             return src[offset] | (src[offset+1] << 8) | (src[offset+2] << 16) | (src[offset+3] << 24);
         }
 
-        // Read an 8-byte tag (time_us + bucket tag) from src at offset
+        // Read a 12-byte tag (time_us + bucket tag + tx states) from src at offset
         function readTag(src, offset) {
             return {
                 time: readU32(src, offset),
-                tag: readU32(src, offset + 4)
+                tag: readU32(src, offset + 4),
+                tx: readU32(src, offset + 8)
             };
+        }
+
+        function formatTxState(value) {
+            switch (value) {
+                case 1: return 'TXP';
+                case 2: return 'PD';
+                case 3: return 'TX_REC';
+                case 4: return 'TX';
+                case 5: return 'QUEUED';
+                default: return 'FREE';
+            }
+        }
+
+        function formatTxStates(value) {
+            const a = formatTxState(value & 0xff);
+            const b = formatTxState((value >> 8) & 0xff);
+            const c = formatTxState((value >> 16) & 0xff);
+            return 'A=' + a + ' B=' + b + ' C=' + c;
         }
 
         function formatGrouped(value) {
@@ -699,6 +718,7 @@
             const isDirty = (tag & 0x02) !== 0;
             const isValid = (tag & 0x01) !== 0;
             return '' + formatGrouped(tagInfo.time >>> 0)
+                + '\n' + formatTxStates(tagInfo.tx >>> 0)
                 + '\nframe=' + frame
                 + ' half=' + (isUpper ? 'UPPER' : 'LOWER')
                 + ' dirty=' + (isDirty ? 'Y' : 'N')

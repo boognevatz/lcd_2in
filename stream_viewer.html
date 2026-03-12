@@ -358,8 +358,8 @@
   const ctx          = $canvas.getContext('2d');
   ctx.imageSmoothingEnabled = false;
   const W = 240, H = 320;
-  const BUCKET_TAG_SIZE = 8;
-  const PIXEL_BYTES = W * H * 2 + (BUCKET_TAG_SIZE * 2); // 153616 (2x8-byte tags + pixel data)
+  const BUCKET_TAG_SIZE = 12;
+  const PIXEL_BYTES = W * H * 2 + (BUCKET_TAG_SIZE * 2); // 153624 (2x12-byte tags + pixel data)
   const HALF_PIXEL_BYTES = W * (H / 2) * 2; // 76800
 
   // ---- State ----
@@ -500,7 +500,7 @@
     const out = imageData.data;
     const halfPixels = W * (H / 2);
 
-    // Upper half: skip 8-byte tag, read 76800 bytes of pixel data
+    // Upper half: skip 12-byte tag, read 76800 bytes of pixel data
     let si = BUCKET_TAG_SIZE;
     let di = 0;
     for (let i = 0; i < halfPixels; i++) {
@@ -523,7 +523,7 @@
       di += 4;
     }
 
-    // Lower half: skip another 8-byte tag, read 76800 bytes of pixel data
+    // Lower half: skip another 12-byte tag, read 76800 bytes of pixel data
     si += BUCKET_TAG_SIZE;
     for (let i = 0; i < halfPixels; i++) {
       if (si + 1 >= pixelData.length) break;
@@ -611,6 +611,7 @@
     const bucketsPrevEnd = map.get('X-Buckets-prev-end') || 'N/A';
     const bucketsPrevEndTime = formatHeaderTime(map.get('X-Buckets-prev-end-time') || 'N/A');
     const buckets = map.get('X-Buckets') || 'N/A';
+    const bucketsTx = map.get('X-Buckets-tx') || 'N/A';
     const bucketsTime = formatHeaderTime(map.get('X-Buckets-time') || 'N/A');
     const bucketsPrevMidValue = bucketsPrevMidTime + '\n' + bucketsPrevMid;
     const bucketsPrevEndValue = bucketsPrevEndTime + '\n' + bucketsPrevEnd;
@@ -623,6 +624,7 @@
       ['buckets prev mid', bucketsPrevMidValue],
       ['buckets prev end', bucketsPrevEndValue],
       ['buckets', bucketsValue],
+      ['buckets tx', bucketsTx],
       ['upper tag', formatBucketTag(upperTag)],
       ['lower tag', formatBucketTag(lowerTag)]
     ];
@@ -645,11 +647,12 @@
     return data[offset] | (data[offset+1] << 8) | (data[offset+2] << 16) | (data[offset+3] << 24);
   }
 
-  // Read an 8-byte tag (time_us + bucket tag)
+  // Read a 12-byte tag (time_us + bucket tag + tx states)
   function readBucketTag(data, offset) {
     return {
       time: readU32(data, offset),
-      tag: readU32(data, offset + 4)
+      tag: readU32(data, offset + 4),
+      tx: readU32(data, offset + 8)
     };
   }
 
@@ -672,6 +675,24 @@
     return formatGrouped(n);
   }
 
+  function formatTxState(value) {
+    switch (value) {
+      case 1: return 'TXP';
+      case 2: return 'PD';
+      case 3: return 'TX_REC';
+      case 4: return 'TX';
+      case 5: return 'QUEUED';
+      default: return 'FREE';
+    }
+  }
+
+  function formatTxStates(value) {
+    const a = formatTxState(value & 0xff);
+    const b = formatTxState((value >> 8) & 0xff);
+    const c = formatTxState((value >> 16) & 0xff);
+    return 'A=' + a + ' B=' + b + ' C=' + c;
+  }
+
   // Format a 32-bit bucket tag for display
   // bits 31-3 = frame number, bit 2 = upper(1)/lower(0), bit 1 = dirty, bit 0 = valid
   function formatBucketTag(tagInfo) {
@@ -682,6 +703,7 @@
     const isDirty = (tag & 0x02) !== 0;
     const isValid = (tag & 0x01) !== 0;
     return '' + formatGrouped(tagInfo.time >>> 0)
+        + '\n' + formatTxStates(tagInfo.tx >>> 0)
         + '\n' + 'frame=' + frame
         + ' ' + (isUpper ? 'UPPER' : 'LOWER')
         + ' dirty=' + (isDirty ? 'Y' : 'N')

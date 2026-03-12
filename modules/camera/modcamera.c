@@ -81,11 +81,11 @@ static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_xclk_pin_obj, camera_set_xclk_pin);
 static const char boundary_prefix_first[] =
     "--frame\r\n"
     "Content-Type: application/octet-stream\r\n"
-    "Content-Length: 00153616\r\n";
+    "Content-Length: 00153624\r\n";
 static const char boundary_prefix_subsequent[] =
     "\r\n--frame\r\n"
     "Content-Type: application/octet-stream\r\n"
-    "Content-Length: 00153616\r\n";
+    "Content-Length: 00153624\r\n";
 
 // Bucket name lookup: index 0->'A', 1->'B', 2->'C'
 static const char bucket_name[] = "ABC";
@@ -134,6 +134,12 @@ static char x_header_buckets[] = "X-Buckets: A,A,           -,           -,     
 #define X_HEADER_BUCKET_C_OFFSET 41
 static char x_header_buckets_time[] = "X-Buckets-time: 0000000000000\r\n";
 #define X_HEADER_BUCKETS_TIME_OFFSET 16
+
+#define X_HEADER_TX_SLOT_LEN 7
+static char x_header_buckets_tx[] = "X-Buckets-tx:   FREE ,   FREE ,   FREE \r\n";
+#define X_HEADER_TX_A_OFFSET 15
+#define X_HEADER_TX_B_OFFSET 23
+#define X_HEADER_TX_C_OFFSET 31
 
 static const char x_header_terminator[] = "\r\n";
 
@@ -194,6 +200,41 @@ static void write_u32_grouped(char *slot, uint32_t value)
     }
 
     memcpy(slot, out, sizeof(out));
+}
+
+static void write_tx_state_slot(char *slot, uint8_t state)
+{
+    const char *label = "FREE";
+    switch (state) {
+        case BUCKET_TX_STATE_TXP:
+            label = "TXP";
+            break;
+        case BUCKET_TX_STATE_PD:
+            label = "PD";
+            break;
+        case BUCKET_TX_STATE_TX_REC:
+            label = "TX_REC";
+            break;
+        case BUCKET_TX_STATE_TX:
+            label = "TX";
+            break;
+        case BUCKET_TX_STATE_QUEUED:
+            label = "QUEUED";
+            break;
+        default:
+            label = "FREE";
+            break;
+    }
+    size_t len = strlen(label);
+    memset(slot, ' ', X_HEADER_TX_SLOT_LEN);
+    memcpy(slot, label, len < X_HEADER_TX_SLOT_LEN ? len : X_HEADER_TX_SLOT_LEN);
+}
+
+static inline uint32_t pack_tx_states(void)
+{
+    return (uint32_t)(bucket_tx_state[0] & 0xff) |
+           ((uint32_t)(bucket_tx_state[1] & 0xff) << 8) |
+           ((uint32_t)(bucket_tx_state[2] & 0xff) << 16);
 }
 
 
@@ -389,6 +430,9 @@ static mp_obj_t camera_stream_start(void) {
     write_u32_grouped(&x_header_buckets_prev_mid_time[X_HEADER_MID_TIME_OFFSET], prev_mid_time_us);
     write_u32_grouped(&x_header_buckets_prev_end_time[X_HEADER_END_TIME_OFFSET], prev_end_time_us);
     write_u32_grouped(&x_header_buckets_time[X_HEADER_BUCKETS_TIME_OFFSET], buckets_time_us);
+    write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], bucket_tx_state[0]);
+    write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], bucket_tx_state[1]);
+    write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_C_OFFSET], bucket_tx_state[2]);
 
     t_frame_start = mp_hal_ticks_us();
 
@@ -482,15 +526,20 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_buckets_time, sizeof(x_header_buckets_time) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
+        ret = mp_stream_write_exactly(socket_obj, x_header_buckets_tx, sizeof(x_header_buckets_tx) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
         ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
-        // --- Send first half-frame (8-byte tag + 76,800 bytes) ---
+        // --- Send first half-frame (12-byte tag + 76,800 bytes) ---
         uint32_t upper_time_us = mp_hal_ticks_us();
         uint32_t upper_tag = bucket_state[tx_first];
         uint32_t *upper_words = (uint32_t *)bucket[tx_first];
+        uint32_t upper_tx_states = pack_tx_states();
         upper_words[0] = upper_time_us;
         upper_words[1] = upper_tag;
+        upper_words[2] = upper_tx_states;
         ret = mp_stream_write_exactly(
             socket_obj, bucket[tx_first], TAGGED_HALF_FRAME_BYTES, &errcode);
         if (ret == MP_STREAM_ERROR || ret == 0) {
@@ -517,12 +566,14 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         prev_mid[2] = bucket_state[2];
         prev_mid_time_us = mp_hal_ticks_us();
 
-        // --- Send second half-frame (8-byte tag + 76,800 bytes) ---
+        // --- Send second half-frame (12-byte tag + 76,800 bytes) ---
         uint32_t lower_time_us = mp_hal_ticks_us();
         uint32_t lower_tag = bucket_state[tx_second];
         uint32_t *lower_words = (uint32_t *)bucket[tx_second];
+        uint32_t lower_tx_states = pack_tx_states();
         lower_words[0] = lower_time_us;
         lower_words[1] = lower_tag;
+        lower_words[2] = lower_tx_states;
         ret = mp_stream_write_exactly(
             socket_obj, bucket[tx_second], TAGGED_HALF_FRAME_BYTES, &errcode);
         if (ret == MP_STREAM_ERROR || ret == 0) {
@@ -654,6 +705,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         write_u32_grouped(&x_header_buckets_prev_mid_time[X_HEADER_MID_TIME_OFFSET], prev_mid_time_us);
         write_u32_grouped(&x_header_buckets_prev_end_time[X_HEADER_END_TIME_OFFSET], prev_end_time_us);
         write_u32_grouped(&x_header_buckets_time[X_HEADER_BUCKETS_TIME_OFFSET], buckets_time_us);
+        write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], bucket_tx_state[0]);
+        write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], bucket_tx_state[1]);
+        write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_C_OFFSET], bucket_tx_state[2]);
     }
 
     // On disconnect, release all protection
