@@ -57,7 +57,9 @@ extern uint8_t *bucket[3];              // 3 half-frame buckets
 #define BUCKET_HALF_MASK    0x00000004U
 #define BUCKET_FRAME_SHIFT  3
 
-static inline uint32_t bucket_get_frame(volatile uint32_t s)       { return s >> BUCKET_FRAME_SHIFT; }
+static inline uint32_t bucket_get_halfframe(volatile uint32_t s)   {
+    return (s >> BUCKET_FRAME_SHIFT) * 2 + ((s & BUCKET_HALF_MASK) ? 0 : 1);
+}
 static inline bool     bucket_is_valid(volatile uint32_t s)       { return (s & BUCKET_VALID_MASK) != 0; }
 static inline bool     bucket_is_dirty(volatile uint32_t s)       { return (s & BUCKET_DIRTY_MASK) != 0; }
 static inline bool     bucket_half_is_upper(volatile uint32_t s)  { return (s & BUCKET_HALF_MASK) != 0; }

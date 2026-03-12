@@ -156,7 +156,7 @@ static void write_bucket_slot(char *slot, uint32_t state)
     slot[0] = bucket_is_dirty(state) ? '~' : ' ';
     slot[1] = 'F';
     // 9-digit zero-padded frame number (positions 2-10)
-    uint32_t frame = bucket_get_frame(state);
+    uint32_t frame = bucket_get_halfframe(state) / 2;
     for (int i = 10; i >= 2; i--) {
         slot[i] = '0' + (frame % 10);
         frame /= 10;
@@ -324,6 +324,8 @@ static uint32_t prev_end[3];
 static uint32_t prev_mid_time_us;
 static uint32_t prev_end_time_us;
 static uint32_t buckets_time_us;
+static uint32_t last_sent_half_frame;
+static int8_t   wait_upper_bucket;
 static uint32_t frame_count;
 static uint32_t accum_send_us;
 static uint32_t accum_total_us;
@@ -355,6 +357,8 @@ static mp_obj_t camera_stream_start(void) {
     accum_send_us = 0;
     accum_total_us = 0;
     accum_count = 0;
+    last_sent_half_frame = 0;
+    wait_upper_bucket = -1;
 
     // Declare TX intent for startup pair
     bucket_tx_state[0] = BUCKET_TX_STATE_FREE;
@@ -417,6 +421,18 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 
     while (streaming && batch_sent < batch_size) {
         mp_handle_pending(true);
+
+        if (wait_upper_bucket >= 0) {
+            while (true) {
+                uint32_t s = bucket_state[wait_upper_bucket];
+                if (bucket_is_dirty(s) && bucket_half_is_upper(s) &&
+                    bucket_get_halfframe(s) > last_sent_half_frame) {
+                    break;
+                }
+                mp_handle_pending(true);
+            }
+            wait_upper_bucket = -1;
+        }
 
         uint32_t t_send_start = mp_hal_ticks_us();
 
@@ -481,6 +497,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             streaming = false;
             break;
         }
+        last_sent_half_frame = bucket_get_halfframe(upper_tag);
 
         // Release first bucket -- camera can now overwrite it
         bucket_tx_state[tx_first] = BUCKET_TX_STATE_FREE;
@@ -512,6 +529,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             streaming = false;
             break;
         }
+        last_sent_half_frame = bucket_get_halfframe(lower_tag);
 
         // Release second bucket
         bucket_tx_state[tx_second] = BUCKET_TX_STATE_FREE;
@@ -577,8 +595,8 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             tx_second = cand_a;
         } else {
             // Tiebreaker: higher frame number first.
-            uint32_t fa = bucket_get_frame(snap[cand_a]);
-            uint32_t fb = bucket_get_frame(snap[cand_b]);
+            uint32_t fa = bucket_get_halfframe(snap[cand_a]);
+            uint32_t fb = bucket_get_halfframe(snap[cand_b]);
             if (fb > fa) {
                 tx_first = cand_b;
                 tx_second = cand_a;
@@ -590,6 +608,16 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 
         cam_hint_next = tx_first;
         cam_hint_next_next = tx_second;
+
+        uint32_t hfa = bucket_get_halfframe(snap[cand_a]);
+        uint32_t hfb = bucket_get_halfframe(snap[cand_b]);
+        bool a_dirty_lower = bucket_is_dirty(snap[cand_a]) && !bucket_half_is_upper(snap[cand_a]);
+        bool b_dirty_lower = bucket_is_dirty(snap[cand_b]) && !bucket_half_is_upper(snap[cand_b]);
+        if (a_dirty_lower && hfb <= last_sent_half_frame) {
+            wait_upper_bucket = cand_b;
+        } else if (b_dirty_lower && hfa <= last_sent_half_frame) {
+            wait_upper_bucket = cand_a;
+        }
         
         if (bucket_is_dirty(snap[tx_first])) {
             bucket_tx_state[tx_first] = BUCKET_TX_STATE_TX_REC;
