@@ -40,8 +40,8 @@
 #define FRAME_BYTES       (CAM_FUL_SIZE * 2)                    // 153,600
 #define HALF_FRAME_BYTES  (FRAME_BYTES / 2)                     // 76,800
 #define HALF_FRAME_XFERS  (HALF_FRAME_BYTES / sizeof(uint16_t)) // 38,400
-#define BUCKET_TAG_SIZE       4                                  // 4-byte debug tag at start of each bucket
-#define TAGGED_HALF_FRAME_BYTES (BUCKET_TAG_SIZE + HALF_FRAME_BYTES) // 76,804
+#define BUCKET_TAG_SIZE       8                                  // 8-byte tag (time_us + bucket state)
+#define TAGGED_HALF_FRAME_BYTES (BUCKET_TAG_SIZE + HALF_FRAME_BYTES) // 76,808
 
 extern uint8_t *bucket[3];              // 3 half-frame buckets
 
@@ -96,6 +96,8 @@ extern volatile uint32_t bucket_state[3];
                                      //  ISR needs the distinction to transition -> PD)
 
 extern volatile uint8_t  bucket_tx_state[3];
+extern volatile int8_t   cam_hint_next;
+extern volatile int8_t   cam_hint_next_next;
 extern volatile int32_t  mcu_temp_x10;          // MCU temperature x10 (365 = 36.5C)
 
 #define USE_100BASE_FX (false)

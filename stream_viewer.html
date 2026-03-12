@@ -358,8 +358,8 @@
   const ctx          = $canvas.getContext('2d');
   ctx.imageSmoothingEnabled = false;
   const W = 240, H = 320;
-  const PIXEL_BYTES = W * H * 2 + 8; // 153608 (2x4-byte bucket tags + pixel data)
-  const BUCKET_TAG_SIZE = 4;
+  const BUCKET_TAG_SIZE = 8;
+  const PIXEL_BYTES = W * H * 2 + (BUCKET_TAG_SIZE * 2); // 153616 (2x8-byte tags + pixel data)
   const HALF_PIXEL_BYTES = W * (H / 2) * 2; // 76800
 
   // ---- State ----
@@ -500,7 +500,7 @@
     const out = imageData.data;
     const halfPixels = W * (H / 2);
 
-    // Upper half: skip 4-byte tag, read 76800 bytes of pixel data
+    // Upper half: skip 8-byte tag, read 76800 bytes of pixel data
     let si = BUCKET_TAG_SIZE;
     let di = 0;
     for (let i = 0; i < halfPixels; i++) {
@@ -523,7 +523,7 @@
       di += 4;
     }
 
-    // Lower half: skip another 4-byte tag, read 76800 bytes of pixel data
+    // Lower half: skip another 8-byte tag, read 76800 bytes of pixel data
     si += BUCKET_TAG_SIZE;
     for (let i = 0; i < halfPixels; i++) {
       if (si + 1 >= pixelData.length) break;
@@ -607,16 +607,22 @@
     const extTemp = map.get('X-Ext-Temp') || 'N/A';
     const baro = map.get('X-Barometer') || 'N/A';
     const bucketsPrevMid = map.get('X-Buckets-prev-mid') || 'N/A';
+    const bucketsPrevMidTime = formatHeaderTime(map.get('X-Buckets-prev-mid-time') || 'N/A');
     const bucketsPrevEnd = map.get('X-Buckets-prev-end') || 'N/A';
+    const bucketsPrevEndTime = formatHeaderTime(map.get('X-Buckets-prev-end-time') || 'N/A');
     const buckets = map.get('X-Buckets') || 'N/A';
+    const bucketsTime = formatHeaderTime(map.get('X-Buckets-time') || 'N/A');
+    const bucketsPrevMidValue = bucketsPrevMidTime + '\n' + bucketsPrevMid;
+    const bucketsPrevEndValue = bucketsPrevEndTime + '\n' + bucketsPrevEnd;
+    const bucketsValue = bucketsTime + '\n' + buckets;
 
     const rows = [
       ['temperature', temp],
       ['ext temp', extTemp],
       ['barometer', baro],
-      ['buckets prev mid', bucketsPrevMid],
-      ['buckets prev end', bucketsPrevEnd],
-      ['buckets', buckets],
+      ['buckets prev mid', bucketsPrevMidValue],
+      ['buckets prev end', bucketsPrevEndValue],
+      ['buckets', bucketsValue],
       ['upper tag', formatBucketTag(upperTag)],
       ['lower tag', formatBucketTag(lowerTag)]
     ];
@@ -635,9 +641,16 @@
     return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
-  // Read a 4-byte little-endian bucket tag from a Uint8Array
-  function readBucketTag(data, offset) {
+  function readU32(data, offset) {
     return data[offset] | (data[offset+1] << 8) | (data[offset+2] << 16) | (data[offset+3] << 24);
+  }
+
+  // Read an 8-byte tag (time_us + bucket tag)
+  function readBucketTag(data, offset) {
+    return {
+      time: readU32(data, offset),
+      tag: readU32(data, offset + 4)
+    };
   }
 
   function formatBits(value, width) {
@@ -645,15 +658,31 @@
     return bits.replace(/(.{4})/g, '$1 ').trim();
   }
 
+  function formatGrouped(value) {
+    const s = (value >>> 0).toString(10);
+    return s.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  }
+
+  function formatHeaderTime(value) {
+    if (!value) return value;
+    const digits = value.replace(/\D/g, '');
+    if (!digits) return value;
+    const n = parseInt(digits, 10);
+    if (Number.isNaN(n)) return value;
+    return formatGrouped(n);
+  }
+
   // Format a 32-bit bucket tag for display
   // bits 31-3 = frame number, bit 2 = upper(1)/lower(0), bit 1 = dirty, bit 0 = valid
-  function formatBucketTag(tag) {
-    if (tag === undefined || tag === null) return 'N/A';
+  function formatBucketTag(tagInfo) {
+    if (!tagInfo) return 'N/A';
+    const tag = tagInfo.tag >>> 0;
     const frame = (tag >>> 3);
     const isUpper = (tag & 0x04) !== 0;
     const isDirty = (tag & 0x02) !== 0;
     const isValid = (tag & 0x01) !== 0;
-    return 'frame=' + frame
+    return '' + formatGrouped(tagInfo.time >>> 0)
+        + '\n' + 'frame=' + frame
         + ' ' + (isUpper ? 'UPPER' : 'LOWER')
         + ' dirty=' + (isDirty ? 'Y' : 'N')
         + ' valid=' + (isValid ? 'Y' : 'N')

@@ -47,7 +47,7 @@ static PIO pio_cam = pio0;
 // statemachine's pointer
 static uint32_t sm_cam; // CAMERA's state machines
 
-// 3 half-frame buckets (76,804 bytes each: 4-byte tag + 76,800 pixel data)
+// 3 half-frame buckets (76,808 bytes each: 8-byte tag + 76,800 pixel data)
 static uint8_t bucket_mem_0[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
 static uint8_t bucket_mem_1[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
 static uint8_t bucket_mem_2[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
@@ -68,6 +68,8 @@ volatile uint32_t cam_counter = 0;
 
 // TX intent (TX writes, ISR reads+upgrades)
 volatile uint8_t bucket_tx_state[3] = {BUCKET_TX_STATE_FREE, BUCKET_TX_STATE_FREE, BUCKET_TX_STATE_FREE};
+volatile int8_t cam_hint_next = -1;
+volatile int8_t cam_hint_next_next = -1;
 volatile int32_t mcu_temp_x10 = 365;            // default 36.5C until Python updates
 
 // Internal ISR tracking: which bucket each DMA channel targets
@@ -124,7 +126,7 @@ void setup_dma_for_capture()
     channel_config_set_transfer_data_size(&c_a, DMA_SIZE_16);
     channel_config_set_chain_to(&c_a, DMA_CH_B);
     dma_channel_configure(DMA_CH_A, &c_a,
-                          bucket[0] + BUCKET_TAG_SIZE, // write past 4-byte tag
+                          bucket[0] + BUCKET_TAG_SIZE, // write past 8-byte tag
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
                           HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers
                           false);                 // don't start yet
@@ -134,7 +136,7 @@ void setup_dma_for_capture()
     channel_config_set_transfer_data_size(&c_b, DMA_SIZE_16);
     channel_config_set_chain_to(&c_b, DMA_CH_A);
     dma_channel_configure(DMA_CH_B, &c_b,
-                          bucket[1] + BUCKET_TAG_SIZE, // write past 4-byte tag
+                          bucket[1] + BUCKET_TAG_SIZE, // write past 8-byte tag
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
                           HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers
                           false);                 // don't start yet
@@ -144,6 +146,8 @@ void setup_dma_for_capture()
         bucket_state[i] = bucket_make_empty();
         bucket_tx_state[i] = BUCKET_TX_STATE_FREE;
     }
+    cam_hint_next = -1;
+    cam_hint_next_next = -1;
     cam_counter = 0;
     ch_target[0] = 0;       // CH_A starts at bucket 0
     ch_target[1] = 1;       // CH_B starts at bucket 1
@@ -151,7 +155,7 @@ void setup_dma_for_capture()
     // Mark bucket 0 as dirty (being written)
     // cam_counter=0 → frame=0, half=(0%2)=0 → UPPER, so is_upper=true
     bucket_state[0] = bucket_make_dirty(0, true);
-    *(uint32_t *)bucket[0] = bucket_state[0];
+    ((uint32_t *)bucket[0])[1] = bucket_state[0];
 
     // Enable IRQ on both channels
     dma_channel_set_irq0_enabled(DMA_CH_A, true);
@@ -173,6 +177,11 @@ static inline bool is_protected(uint8_t b)
 {
     uint8_t s = bucket_tx_state[b];
     return s == BUCKET_TX_STATE_TXP || s == BUCKET_TX_STATE_PD;
+}
+
+static inline bool is_usable_target(uint8_t b)
+{
+    return !is_protected(b);
 }
 
 /********************************************************************************
@@ -232,9 +241,9 @@ static void handle_half_complete(uint32_t completed_ch)
     uint32_t new_frame = new_counter / 2;
     bool new_half_is_upper = (new_counter % 2) == 0;
     bucket_state[other_target] = bucket_make_dirty(new_frame, new_half_is_upper);
-    *(uint32_t *)bucket[other_target] = bucket_state[other_target];
+    ((uint32_t *)bucket[other_target])[1] = bucket_state[other_target];
 
-    // --- Stamp dirty tag into the other bucket's first 4 bytes ---
+    // --- Stamp bucket tag into the other bucket's tag word ---
 
     // --- Decide next write target for this (completing) channel ---
     // This channel will fire AFTER the other channel finishes other_target.
@@ -246,10 +255,20 @@ static void handle_half_complete(uint32_t completed_ch)
     uint8_t cand_b = (other_target + 2) % 3;  // Alternative
 
     uint8_t chosen;
-    if (!is_protected(cand_a)) {
+    int8_t h1 = cam_hint_next;
+    int8_t h2 = cam_hint_next_next;
+    if (h1 >= 0 && is_usable_target((uint8_t)h1)) {
+        chosen = (uint8_t)h1;
+        cam_hint_next = h2;
+        cam_hint_next_next = -1;
+    } else if (h2 >= 0 && is_usable_target((uint8_t)h2)) {
+        chosen = (uint8_t)h2;
+        cam_hint_next = -1;
+        cam_hint_next_next = -1;
+    } else if (is_usable_target(cand_a)) {
         // Natural next is available
         chosen = cand_a;
-    } else if (!is_protected(cand_b)) {
+    } else if (is_usable_target(cand_b)) {
         // Skip one, use alternative
         chosen = cand_b;
     } else {

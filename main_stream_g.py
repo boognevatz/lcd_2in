@@ -52,7 +52,7 @@ def init_camera(config):
 # HTML page for / (stream viewer)
 # ---------------------------------------------------------------------------
 STREAM_PAGE = """<!DOCTYPE html><html><head><meta charset="UTF-8"><style>*{margin:0}canvas{display:block}</style></head><body><canvas id="c" width="240" height="320"></canvas><script>
-const c=document.getElementById('c').getContext('2d'),W=240,H=320,FS=153608,T=4,HP=76800;
+const c=document.getElementById('c').getContext('2d'),W=240,H=320,FS=153616,T=8,HP=76800;
 let mode=null;
 async function s(){
 const r=await fetch('/stream'),rd=r.body.getReader();

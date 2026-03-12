@@ -379,8 +379,8 @@
     <script>
         // Constants
         const FRAME_MARKER = [0x2d, 0x2d, 0x66, 0x72, 0x61, 0x6d, 0x65, 0x0d, 0x0a]; // --frame\r\n
-        const FRAME_DATA_SIZE = 153608; // 240 * 320 * 2 + 2x4-byte bucket tags
-        const BUCKET_TAG_SIZE = 4;     // 4-byte debug tag per half-frame
+        const FRAME_DATA_SIZE = 153616; // 240 * 320 * 2 + 2x8-byte tags
+        const BUCKET_TAG_SIZE = 8;     // 8-byte tag (time_us + bucket tag) per half-frame
         const HALF_PIXEL_BYTES = 76800; // 240 * 160 * 2
         const WIDTH = 240;
         const HEIGHT = 320;
@@ -559,7 +559,7 @@
 
             try {
                 // Read enough bytes for headers + frame data + some margin
-                // Headers are typically ~340 bytes, data is 153608 bytes
+                // Headers are typically ~340 bytes, data is 153616 bytes
                 const readSize = Math.min(155000, rawFile.size - frameOffset);
                 const blob = rawFile.slice(frameOffset, frameOffset + readSize);
                 const buffer = await blob.arrayBuffer();
@@ -591,7 +591,7 @@
                 const upperTag = readTag(uint8, dataStart);
                 const lowerTag = readTag(uint8, dataStart + BUCKET_TAG_SIZE + HALF_PIXEL_BYTES);
 
-                // Decode RGB565, skipping 4-byte tags at start of each half
+                // Decode RGB565, skipping 8-byte tags at start of each half
                 decodeRGB565(uint8, dataStart);
 
                 // Update headers display — show only X-* metadata lines + bucket tags
@@ -629,7 +629,7 @@
         }
 
         // Decode RGB565 little-endian directly into the pre-allocated ImageData
-        // Layout per frame: [4-byte tag][76800 upper pixels][4-byte tag][76800 lower pixels]
+        // Layout per frame: [8-byte tag][76800 upper pixels][8-byte tag][76800 lower pixels]
         function decodeRGB565(src, srcOffset) {
             const dst = imageData.data;
             let si = srcOffset + BUCKET_TAG_SIZE; // skip upper tag
@@ -673,19 +673,33 @@
             ctx.putImageData(imageData, 0, 0);
         }
 
-        // Read a 4-byte little-endian bucket tag from src at offset
-        function readTag(src, offset) {
+        function readU32(src, offset) {
             return src[offset] | (src[offset+1] << 8) | (src[offset+2] << 16) | (src[offset+3] << 24);
+        }
+
+        // Read an 8-byte tag (time_us + bucket tag) from src at offset
+        function readTag(src, offset) {
+            return {
+                time: readU32(src, offset),
+                tag: readU32(src, offset + 4)
+            };
+        }
+
+        function formatGrouped(value) {
+            const s = (value >>> 0).toString(10);
+            return s.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
         }
 
         // Format a 32-bit bucket tag for display
         // Layout: bits 31-3 = frame number, bit 2 = upper(1)/lower(0), bit 1 = dirty, bit 0 = valid
-        function formatTag(tag) {
+        function formatTag(tagInfo) {
+            const tag = tagInfo.tag >>> 0;
             const frame = (tag >>> 3);
             const isUpper = (tag & 0x04) !== 0;
             const isDirty = (tag & 0x02) !== 0;
             const isValid = (tag & 0x01) !== 0;
-            return 'frame=' + frame
+            return '' + formatGrouped(tagInfo.time >>> 0)
+                + '\nframe=' + frame
                 + ' half=' + (isUpper ? 'UPPER' : 'LOWER')
                 + ' dirty=' + (isDirty ? 'Y' : 'N')
                 + ' valid=' + (isValid ? 'Y' : 'N')

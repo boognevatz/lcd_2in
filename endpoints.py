@@ -88,9 +88,9 @@ Connection: close
         const ctx = canvas.getContext('2d');
         const width = 240;
         const height = 320;
-        const TAG_SIZE = 4;  // 4-byte bucket tag per half-frame
+        const TAG_SIZE = 8;  // 8-byte tag per half-frame (time_us + bucket tag)
         const halfPixelBytes = width * (height / 2) * 2; // 76800
-        const frameSize = width * height * 2 + TAG_SIZE * 2; // 153608
+        const frameSize = width * height * 2 + TAG_SIZE * 2; // 153616
 
         let frameCount = 0;
         let fpsCounter = 0;
@@ -107,7 +107,7 @@ Connection: close
             const imageData = ctx.createImageData(width, height);
             const halfPixels = width * (height / 2);
 
-            // Upper half: skip 4-byte tag, read 76800 bytes
+            // Upper half: skip 8-byte tag, read 76800 bytes
             let si = TAG_SIZE;
             let di = 0;
             for (let i = 0; i < halfPixels; i++) {
@@ -124,7 +124,7 @@ Connection: close
                 di += 4;
             }
 
-            // Lower half: skip another 4-byte tag, read 76800 bytes
+            // Lower half: skip another 8-byte tag, read 76800 bytes
             si += TAG_SIZE;
             for (let i = 0; i < halfPixels; i++) {
                 if (si + 1 >= data.length) break;
