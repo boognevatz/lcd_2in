@@ -358,8 +358,10 @@
   const ctx          = $canvas.getContext('2d');
   ctx.imageSmoothingEnabled = false;
   const W = 240, H = 320;
-  const BUCKET_TAG_SIZE = 12;
-  const PIXEL_BYTES = W * H * 2 + (BUCKET_TAG_SIZE * 2); // 153624 (2x12-byte tags + pixel data)
+  const DEFAULT_TAG_SIZE = 12;
+  const BASE_PIXEL_BYTES = W * H * 2;
+  const PIXEL_BYTES = BASE_PIXEL_BYTES + (DEFAULT_TAG_SIZE * 2); // 153624 (2x12-byte tags + pixel data)
+  const MIN_PIXEL_BYTES = BASE_PIXEL_BYTES + 8; // 2x4-byte tags
   const HALF_PIXEL_BYTES = W * (H / 2) * 2; // 76800
 
   // ---- State ----
@@ -385,6 +387,14 @@
   // ---- Index builder ----
   // Scans the multipart file to find each frame's data offset.
   // Each frame: [optional \r\n]--frame\r\n<headers>\r\n\r\n<contentLength bytes>
+  function guessTagSize(contentLength) {
+    const extra = contentLength - BASE_PIXEL_BYTES;
+    if (extra % 2 !== 0) return DEFAULT_TAG_SIZE;
+    const tag = extra / 2;
+    if (tag === 12 || tag === 8 || tag === 4) return tag;
+    return DEFAULT_TAG_SIZE;
+  }
+
   async function buildIndex(f) {
     const result = [];
     let offset = 0;
@@ -424,13 +434,14 @@
       // Parse Content-Length (fallback to known constant)
       const clMatch = headerText.match(/Content-Length:\s*(\d+)/);
       const contentLength = clMatch ? parseInt(clMatch[1], 10) : PIXEL_BYTES;
+      const tagSize = guessTagSize(contentLength);
 
       const dataOffset = offset + sep + sepLen;
 
       // Validate we won't read past the file
       if (dataOffset + contentLength > fileSize + 1) break;
 
-      result.push({ dataOffset, contentLength, headers: headerText });
+      result.push({ dataOffset, contentLength, headers: headerText, tagSize });
 
       // Advance past pixel data
       offset = dataOffset + contentLength;
@@ -448,8 +459,8 @@
   }
 
   // ---- RGB565 decode ----
-  function analyzeEndianness(pixelData) {
-    // Sample from upper half only (skip 4-byte bucket tag at start)
+  function analyzeEndianness(pixelData, tagSize) {
+    // Sample from upper half only (skip tag at start)
     const halfPixels = W * (H / 2);
     const samples = Math.min(2000, halfPixels);
     let step = Math.max(1, Math.floor(halfPixels / samples));
@@ -460,7 +471,7 @@
       let nonZero = 0;
       let taken = 0;
       for (let i = 0; i < halfPixels; i += step) {
-        const b = BUCKET_TAG_SIZE + i * 2;
+        const b = tagSize + i * 2;
         if (b + 1 >= pixelData.length) break;
         let v;
         if (useSwap) {
@@ -490,9 +501,9 @@
     const little = score(false);
     return { big, little };
   }
-  function decodeFrame(pixelData, swapBytes, swapRB) {
+  function decodeFrame(pixelData, swapBytes, swapRB, tagSize) {
     const imageData = ctx.createImageData(W, H);
-    if (!pixelData || pixelData.length < PIXEL_BYTES) {
+    if (!pixelData || pixelData.length < (BASE_PIXEL_BYTES + tagSize * 2)) {
       console.error('decodeFrame: invalid pixelData length', pixelData ? pixelData.length : pixelData);
       ctx.clearRect(0, 0, W, H);
       return;
@@ -500,8 +511,8 @@
     const out = imageData.data;
     const halfPixels = W * (H / 2);
 
-    // Upper half: skip 12-byte tag, read 76800 bytes of pixel data
-    let si = BUCKET_TAG_SIZE;
+    // Upper half: skip tag, read 76800 bytes of pixel data
+    let si = tagSize;
     let di = 0;
     for (let i = 0; i < halfPixels; i++) {
       if (si + 1 >= pixelData.length) break;
@@ -524,7 +535,7 @@
     }
 
     // Lower half: skip another 12-byte tag, read 76800 bytes of pixel data
-    si += BUCKET_TAG_SIZE;
+    si += tagSize;
     for (let i = 0; i < halfPixels; i++) {
       if (si + 1 >= pixelData.length) break;
       let v;
@@ -565,8 +576,9 @@
         return;
       }
       const pixelData = await readSlice(file, fr.dataOffset, fr.dataOffset + fr.contentLength);
+      const tagSize = fr.tagSize || DEFAULT_TAG_SIZE;
       if (!autoSwapSet) {
-        const analysis = analyzeEndianness(pixelData);
+        const analysis = analyzeEndianness(pixelData, tagSize);
         const preferSwap = analysis.big.variance >= analysis.little.variance;
         if (analysis.big.nonZero === 0 && analysis.little.nonZero === 0) {
           showError('Frame data appears empty or non-RGB565. Check file format.');
@@ -574,11 +586,11 @@
         $optSwap.checked = false;
         autoSwapSet = true;
       }
-      decodeFrame(pixelData, $optSwap.checked, $optRB.checked);
+      decodeFrame(pixelData, $optSwap.checked, $optRB.checked, tagSize);
 
       // Extract and display bucket tags
       const upperTag = readBucketTag(pixelData, 0);
-      const lowerTag = readBucketTag(pixelData, BUCKET_TAG_SIZE + HALF_PIXEL_BYTES);
+      const lowerTag = readBucketTag(pixelData, tagSize + HALF_PIXEL_BYTES);
       renderMetadata(fr.headers, upperTag, lowerTag);
 
       updateUI();
@@ -675,6 +687,7 @@
     return formatGrouped(n);
   }
 
+
   function formatTxState(value) {
     switch (value) {
       case 1: return 'TXP';
@@ -735,6 +748,7 @@
     document.getElementById('btn-last').disabled  = (n >= frames.length - 1);
   }
 
+
   function formatBytes(b) {
     if (b < 1024) return b + ' B';
     if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
@@ -759,10 +773,10 @@
     currentFrame = 0;
 
     // Basic size check
-    if (f.size < PIXEL_BYTES) {
+    if (f.size < MIN_PIXEL_BYTES) {
       showError('File is too small (' + formatBytes(f.size) +
                 ') to contain even one RGB565 frame (need at least ' +
-                formatBytes(PIXEL_BYTES) + '). Did you select the headers-only .txt file instead of the .raw stream file?');
+                formatBytes(MIN_PIXEL_BYTES) + '). Did you select the headers-only .txt file instead of the .raw stream file?');
       return;
     }
 
@@ -788,7 +802,16 @@
 
     if (frames.length === 0) {
       // Fallback: raw stream (no headers) -> contiguous frames
-      const rawCount = Math.floor(f.size / PIXEL_BYTES);
+      let rawTagSize = null;
+      for (const tag of [12, 8, 4]) {
+        const size = BASE_PIXEL_BYTES + tag * 2;
+        if (f.size % size === 0) {
+          rawTagSize = tag;
+          break;
+        }
+      }
+      const rawSize = BASE_PIXEL_BYTES + (rawTagSize || DEFAULT_TAG_SIZE) * 2;
+      const rawCount = Math.floor(f.size / rawSize);
       if (rawCount === 0) {
         $progress.style.display = 'none';
         $dropZone.style.display = '';
@@ -796,9 +819,10 @@
         return;
       }
       frames = Array.from({ length: rawCount }, (_, i) => ({
-        dataOffset: i * PIXEL_BYTES,
-        contentLength: PIXEL_BYTES,
-        headers: 'Raw stream (no headers)'
+        dataOffset: i * rawSize,
+        contentLength: rawSize,
+        headers: 'Raw stream (no headers)',
+        tagSize: rawTagSize || DEFAULT_TAG_SIZE
       }));
       $progText.textContent = rawCount + ' raw frames detected';
     }
