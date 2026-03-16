@@ -375,14 +375,14 @@ static uint32_t t_frame_start;
 
 #define REPORT_INTERVAL 50
 
-// 80% transfer mark: at this byte offset within a half-frame send we
+// 50% transfer mark: at this byte offset within a half-frame send we
 // release the *current* bucket's protection and, if the two OTHER buckets
 // form the pattern "upper half done + lower half in progress", protect
 // the upper-half bucket so the camera cannot accidentally overwrite it.
-#define EIGHTY_PERCENT_BYTES ((TAGGED_HALF_FRAME_BYTES * 4) / 5)  // ~61,450
+#define FIFTY_PERCENT_BYTES (TAGGED_HALF_FRAME_BYTES / 2)  // ~38,406
 
 // ******************************************************************************
-// function:   Apply the 80%-mark protection swap.
+// function:   Apply the 50%-mark protection swap.
 //
 //             sending_bucket : the bucket currently being TX'd (to release).
 //             The two "other" buckets are (sending_bucket+1)%3 and
@@ -393,7 +393,7 @@ static uint32_t t_frame_start;
 //                      if  one is complete+upper  AND  the other is dirty+lower
 //                      → mark the completed-upper one as PD (protected).
 // ******************************************************************************
-static void apply_80pct_protection(uint8_t sending_bucket)
+static void apply_50pct_protection(uint8_t sending_bucket)
 {
     // Step 1: un-protect the bucket we are currently sending.
     bucket_tx_state[sending_bucket] = BUCKET_TX_STATE_FREE;
@@ -611,7 +611,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         prev_mid_time_us = mp_hal_ticks_us();
 
         // --- Send second half-frame (12-byte tag + 76,800 bytes) ---
-        // Split at 80%: send first 80%, apply protection swap, send rest.
+        // Split at 50%: send first 50%, apply protection swap, send rest.
         uint32_t lower_time_us = mp_hal_ticks_us();
         uint32_t lower_tag = bucket_state[tx_second];
         uint32_t *lower_words = (uint32_t *)bucket[tx_second];
@@ -620,22 +620,22 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         lower_words[1] = lower_tag;
         lower_words[2] = lower_tx_states;
 
-        // Phase 1: send first 80% of the half-frame
+        // Phase 1: send first 50% of the half-frame
         ret = mp_stream_write_exactly(
-            socket_obj, bucket[tx_second], EIGHTY_PERCENT_BYTES, &errcode);
+            socket_obj, bucket[tx_second], FIFTY_PERCENT_BYTES, &errcode);
         if (ret == MP_STREAM_ERROR || ret == 0) {
             streaming = false;
             break;
         }
 
-        // --- 80% mark: release current bucket, conditionally protect upper ---
-        apply_80pct_protection(tx_second);
+        // --- 50% mark: release current bucket, conditionally protect upper ---
+        apply_50pct_protection(tx_second);
 
-        // Phase 2: send remaining 20%
+        // Phase 2: send remaining 50%
         ret = mp_stream_write_exactly(
             socket_obj,
-            bucket[tx_second] + EIGHTY_PERCENT_BYTES,
-            TAGGED_HALF_FRAME_BYTES - EIGHTY_PERCENT_BYTES,
+            bucket[tx_second] + FIFTY_PERCENT_BYTES,
+            TAGGED_HALF_FRAME_BYTES - FIFTY_PERCENT_BYTES,
             &errcode);
         if (ret == MP_STREAM_ERROR || ret == 0) {
             streaming = false;
