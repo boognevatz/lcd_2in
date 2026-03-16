@@ -64,6 +64,7 @@ Connection: close
         <div class="metric">FPS: <span id="fps">0.00</span></div>
         <div class="metric">Frame: <span id="frame-count">0</span></div>
         <div class="metric">Status: <span id="status">Starting...</span></div>
+        <div class="metric">Dropped halves: <span id="dropped-halves">0</span></div>
     </div>
     <div id="controls">
         <button id="btn-stream" onclick="toggleStream()">Stop Stream</button>
@@ -95,6 +96,7 @@ Connection: close
         let frameCount = 0;
         let fpsCounter = 0;
         let lastFpsTime = Date.now();
+        let droppedHalfFrames = 0;
 
         // Single-socket guard: only one active request at a time
         let requestInProgress = false;
@@ -104,6 +106,34 @@ Connection: close
 
         function displayImage(arrayBuffer) {
             const data = new Uint8Array(arrayBuffer);
+
+            // --- Extract frame numbers from 12-byte tags ---
+            // Tag layout: [time_us(4B), bucket_state(4B), tx_states(4B)]
+            // bucket_state: bits 31-3 = frame number, bit 2 = half, bit 1 = dirty, bit 0 = valid
+            // Upper tag at offset 0, lower tag at offset TAG_SIZE + halfPixelBytes
+            const upperStateOffset = 4; // bytes 4-7 of upper tag
+            const lowerTagStart = TAG_SIZE + halfPixelBytes;
+            const lowerStateOffset = lowerTagStart + 4; // bytes 4-7 of lower tag
+
+            const upperState = data[upperStateOffset]
+                | (data[upperStateOffset + 1] << 8)
+                | (data[upperStateOffset + 2] << 16)
+                | (data[upperStateOffset + 3] << 24);
+            const lowerState = data[lowerStateOffset]
+                | (data[lowerStateOffset + 1] << 8)
+                | (data[lowerStateOffset + 2] << 16)
+                | (data[lowerStateOffset + 3] << 24);
+
+            const upperFrameNum = upperState >>> 3;
+            const lowerFrameNum = lowerState >>> 3;
+
+            if (upperFrameNum !== lowerFrameNum) {
+                // Mismatched halves — drop this frame, count both halves
+                droppedHalfFrames += 2;
+                document.getElementById('dropped-halves').textContent = droppedHalfFrames;
+                return;
+            }
+
             const imageData = ctx.createImageData(width, height);
             const halfPixels = width * (height / 2);
 
