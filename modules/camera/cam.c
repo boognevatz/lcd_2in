@@ -179,11 +179,6 @@ static inline bool is_protected(uint8_t b)
     return s == BUCKET_TX_STATE_TXP || s == BUCKET_TX_STATE_PD;
 }
 
-static inline bool is_usable_target(uint8_t b)
-{
-    return !is_protected(b);
-}
-
 /********************************************************************************
 function:   DMA interrupt handler -- 3-bucket system with skip logic.
 
@@ -257,18 +252,18 @@ static void handle_half_complete(uint32_t completed_ch)
     uint8_t chosen;
     int8_t h1 = cam_hint_next;
     int8_t h2 = cam_hint_next_next;
-    if (h1 >= 0 && is_usable_target((uint8_t)h1)) {
+    if (h1 >= 0 && !is_protected((uint8_t)h1)) {
         chosen = (uint8_t)h1;
         cam_hint_next = h2;
         cam_hint_next_next = -1;
-    } else if (h2 >= 0 && is_usable_target((uint8_t)h2)) {
+    } else if (h2 >= 0 && !is_protected((uint8_t)h2)) {
         chosen = (uint8_t)h2;
         cam_hint_next = -1;
         cam_hint_next_next = -1;
-    } else if (is_usable_target(cand_a)) {
+    } else if (!is_protected(cand_a)) {
         // Natural next is available
         chosen = cand_a;
-    } else if (is_usable_target(cand_b)) {
+    } else if (!is_protected(cand_b)) {
         // Skip one, use alternative
         chosen = cand_b;
     } else {
