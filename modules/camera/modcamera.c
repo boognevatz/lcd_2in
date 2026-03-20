@@ -405,7 +405,7 @@ static uint32_t t_frame_start;
 //                      if  one is complete+upper  AND  the other is dirty+lower
 //                      → mark the completed-upper one as PD (protected).
 // ******************************************************************************
-static void apply_50pct_protection(uint8_t sending_bucket)
+static void apply_50_percent_protection(uint8_t sending_bucket)
 {
     // Step 1: un-protect the bucket we are currently sending.
     bucket_tx_state[sending_bucket] = BUCKET_TX_STATE_FREE;
@@ -651,7 +651,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         }
 
         // --- 50% mark: release current bucket, conditionally protect upper ---
-        apply_50pct_protection(tx_second);
+        apply_50_percent_protection(tx_second);
 
         // Phase 2: send remaining 50%
         ret = mp_stream_write_exactly(
