@@ -135,11 +135,15 @@ static char x_header_buckets[] = "X-Buckets: A,A,           -,           -,     
 static char x_header_buckets_time[] = "X-Buckets-time: 0000000000000\r\n";
 #define X_HEADER_BUCKETS_TIME_OFFSET 16
 
-#define X_HEADER_TX_SLOT_LEN 7
-static char x_header_buckets_tx[] = "X-Buckets-tx:   FREE ,   FREE ,   FREE \r\n";
-#define X_HEADER_TX_A_OFFSET 15
-#define X_HEADER_TX_B_OFFSET 23
-#define X_HEADER_TX_C_OFFSET 31
+#define X_HEADER_TX_SLOT_LEN 6
+static char x_header_buckets_tx[] = "X-Buckets-tx: FREE  , FREE  , FREE  \r\n";
+#define X_HEADER_TX_A_OFFSET 14
+#define X_HEADER_TX_B_OFFSET 22
+#define X_HEADER_TX_C_OFFSET 30
+
+static char x_header_camera_next[] = "X-Buckets-camera-next: -, -\r\n";
+#define X_HEADER_CAMERA_NEXT_1_OFFSET 23
+#define X_HEADER_CAMERA_NEXT_2_OFFSET 26
 
 static const char x_header_terminator[] = "\r\n";
 
@@ -228,6 +232,14 @@ static void write_tx_state_slot(char *slot, uint8_t state)
     size_t len = strlen(label);
     memset(slot, ' ', X_HEADER_TX_SLOT_LEN);
     memcpy(slot, label, len < X_HEADER_TX_SLOT_LEN ? len : X_HEADER_TX_SLOT_LEN);
+}
+
+static void write_camera_next_header(void)
+{
+    int8_t h1 = cam_hint_next;
+    int8_t h2 = cam_hint_next_next;
+    x_header_camera_next[X_HEADER_CAMERA_NEXT_1_OFFSET] = (h1 >= 0 && h1 < 3) ? bucket_name[h1] : '-';
+    x_header_camera_next[X_HEADER_CAMERA_NEXT_2_OFFSET] = (h2 >= 0 && h2 < 3) ? bucket_name[h2] : '-';
 }
 
 static inline uint32_t pack_tx_states(void)
@@ -410,10 +422,16 @@ static void apply_50pct_protection(uint8_t sending_bucket)
     bool s2_upper_done  = bucket_is_complete(s2) && bucket_half_is_upper(s2);
     bool s2_lower_dirty = bucket_is_dirty(s2)    && !bucket_half_is_upper(s2);
 
-    if (s1_upper_done && s2_lower_dirty) {
+    // Only protect if both halves belong to the same frame.
+    // Without this check we can spuriously PD-protect a stale upper from
+    // an old frame, blocking the ISR from writing to that bucket.
+    uint32_t f1 = s1 >> BUCKET_FRAME_SHIFT;
+    uint32_t f2 = s2 >> BUCKET_FRAME_SHIFT;
+
+    if (s1_upper_done && s2_lower_dirty && f1 == f2) {
         // o1 has the completed upper half — protect it
         bucket_tx_state[o1] = BUCKET_TX_STATE_PD;
-    } else if (s2_upper_done && s1_lower_dirty) {
+    } else if (s2_upper_done && s1_lower_dirty && f1 == f2) {
         // o2 has the completed upper half — protect it
         bucket_tx_state[o2] = BUCKET_TX_STATE_PD;
     }
@@ -477,6 +495,7 @@ static mp_obj_t camera_stream_start(void) {
     write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], bucket_tx_state[0]);
     write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], bucket_tx_state[1]);
     write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_C_OFFSET], bucket_tx_state[2]);
+    write_camera_next_header();
 
     t_frame_start = mp_hal_ticks_us();
 
@@ -571,6 +590,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
         ret = mp_stream_write_exactly(socket_obj, x_header_buckets_tx, sizeof(x_header_buckets_tx) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_camera_next, sizeof(x_header_camera_next) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
         ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
@@ -766,6 +788,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], bucket_tx_state[0]);
         write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], bucket_tx_state[1]);
         write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_C_OFFSET], bucket_tx_state[2]);
+        write_camera_next_header();
     }
 
     // On disconnect, release all protection

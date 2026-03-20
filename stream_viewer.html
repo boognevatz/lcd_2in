@@ -624,6 +624,7 @@
     const bucketsPrevEndTime = formatHeaderTime(map.get('X-Buckets-prev-end-time') || 'N/A');
     const buckets = map.get('X-Buckets') || 'N/A';
     const bucketsTx = map.get('X-Buckets-tx') || 'N/A';
+    const bucketsCameraNext = map.get('X-Buckets-camera-next') || 'N/A';
     const bucketsTime = formatHeaderTime(map.get('X-Buckets-time') || 'N/A');
     const bucketsPrevMidValue = bucketsPrevMidTime + '\n' + bucketsPrevMid;
     const bucketsPrevEndValue = bucketsPrevEndTime + '\n' + bucketsPrevEnd;
@@ -637,6 +638,7 @@
       ['buckets prev end', bucketsPrevEndValue],
       ['buckets', bucketsValue],
       ['buckets tx', bucketsTx],
+      ['camera next', bucketsCameraNext],
       ['upper tag', formatBucketTag(upperTag)],
       ['lower tag', formatBucketTag(lowerTag)]
     ];
