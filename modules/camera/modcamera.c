@@ -760,10 +760,18 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 
         if (bucket_is_dirty(snap[tx_second])) {
             bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
-        } else if (bucket_is_complete(snap[tx_second])) {
+        } else if (bucket_is_complete(snap[tx_second]) &&
+                   bucket_tx_state[tx_first] == BUCKET_TX_STATE_TXP &&
+                   (snap[tx_first] >> BUCKET_FRAME_SHIFT) ==
+                   (snap[tx_second] >> BUCKET_FRAME_SHIFT)) {
+            // Only protect tx_second when tx_first is already complete
+            // AND both belong to the same frame. If tx_first is still
+            // being written (TX_REC), or tx_second holds stale data from
+            // an older frame, leave it QUEUED — the ISR's QUEUED→PD
+            // upgrade handles protection at the right time.
             bucket_tx_state[tx_second] = BUCKET_TX_STATE_PD;
         } else {
-            bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED; // fallback
+            bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
         }
         
         // Release the departing bucket that was just finished
