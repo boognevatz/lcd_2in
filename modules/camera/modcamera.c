@@ -626,6 +626,18 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             bucket_tx_state[tx_second] = BUCKET_TX_STATE_TXP;
         }
 
+        // Set early hints at mid-frame. tx_second will become just_finished,
+        // so the next TX pair must come from the other two buckets. We don't
+        // know the order yet (that requires the end-of-frame snapshot), but
+        // steering the camera toward the right buckets now prevents stale
+        // hints from misdirecting ISR decisions during the lower-half send.
+        {
+            uint8_t mid_cand_a = (tx_second + 1) % 3;
+            uint8_t mid_cand_b = (tx_second + 2) % 3;
+            cam_hint_next = mid_cand_a;
+            cam_hint_next_next = mid_cand_b;
+        }
+
         // Snapshot mid-point: bucket states after 1st half sent
         prev_mid[0] = bucket_state[0];
         prev_mid[1] = bucket_state[1];

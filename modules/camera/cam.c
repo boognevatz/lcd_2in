@@ -258,7 +258,9 @@ static void handle_half_complete(uint32_t completed_ch)
         cam_hint_next_next = -1;
     } else if (h2 >= 0 && (uint8_t)h2 != other_target && !is_protected((uint8_t)h2)) {
         chosen = (uint8_t)h2;
-        cam_hint_next = -1;
+        cam_hint_next = h1;     // preserve h1 — it was only skipped (other_target
+                                // collision or temporarily protected), may be
+                                // valid on the next ISR call
         cam_hint_next_next = -1;
     } else if (!is_protected(cand_a)) {
         // Natural next is available
