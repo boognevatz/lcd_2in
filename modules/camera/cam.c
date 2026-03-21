@@ -252,11 +252,11 @@ static void handle_half_complete(uint32_t completed_ch)
     uint8_t chosen;
     int8_t h1 = cam_hint_next;
     int8_t h2 = cam_hint_next_next;
-    if (h1 >= 0 && !is_protected((uint8_t)h1)) {
+    if (h1 >= 0 && (uint8_t)h1 != other_target && !is_protected((uint8_t)h1)) {
         chosen = (uint8_t)h1;
         cam_hint_next = h2;
         cam_hint_next_next = -1;
-    } else if (h2 >= 0 && !is_protected((uint8_t)h2)) {
+    } else if (h2 >= 0 && (uint8_t)h2 != other_target && !is_protected((uint8_t)h2)) {
         chosen = (uint8_t)h2;
         cam_hint_next = -1;
         cam_hint_next_next = -1;
