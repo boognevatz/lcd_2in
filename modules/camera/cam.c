@@ -261,28 +261,34 @@ static void handle_half_complete(uint32_t completed_ch)
     int8_t h1 = cam_hint_next;
     int8_t h2 = cam_hint_next_next;
     int8_t h3 = cam_hint_next_next_next;
-    if (h1 >= 0 && (uint8_t)h1 != other_target && !is_protected((uint8_t)h1)) {
+    if (h1 >= 0 && (uint8_t)h1 != other_target && (uint8_t)h1 != completed && !is_protected((uint8_t)h1)) {
         chosen = (uint8_t)h1;
         cam_hint_next = h2;
         cam_hint_next_next = h3;
         cam_hint_next_next_next = -1;
-    } else if (h2 >= 0 && (uint8_t)h2 != other_target && !is_protected((uint8_t)h2)) {
+    } else if (h2 >= 0 && (uint8_t)h2 != other_target && (uint8_t)h2 != completed && !is_protected((uint8_t)h2)) {
         chosen = (uint8_t)h2;
         cam_hint_next = h1;     // preserve h1 — it was only skipped (other_target
                                 // collision or temporarily protected), may be
                                 // valid on the next ISR call
         cam_hint_next_next = h3;
         cam_hint_next_next_next = -1;
-    } else if (h3 >= 0 && (uint8_t)h3 != other_target && !is_protected((uint8_t)h3)) {
+    } else if (h3 >= 0 && (uint8_t)h3 != other_target && (uint8_t)h3 != completed && !is_protected((uint8_t)h3)) {
         chosen = (uint8_t)h3;
         cam_hint_next = h1;     // preserve h1, h2 — same reason
         cam_hint_next_next = h2;
         cam_hint_next_next_next = -1;
+    } else if (cand_a != completed && !is_protected(cand_a)) {
+        // Natural next is available and not the just-completed bucket
+        chosen = cand_a;
+    } else if (cand_b != completed && !is_protected(cand_b)) {
+        // Alternative is available and not the just-completed bucket
+        chosen = cand_b;
     } else if (!is_protected(cand_a)) {
-        // Natural next is available
+        // cand_a == completed but not protected — allow reuse as last resort
         chosen = cand_a;
     } else if (!is_protected(cand_b)) {
-        // Skip one, use alternative
+        // cand_b == completed but not protected — allow reuse as last resort
         chosen = cand_b;
     } else {
         // Both protected -- camera is trapped on one bucket.
