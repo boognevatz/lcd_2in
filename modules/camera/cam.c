@@ -261,23 +261,25 @@ static void handle_half_complete(uint32_t completed_ch)
     int8_t h1 = cam_hint_next;
     int8_t h2 = cam_hint_next_next;
     int8_t h3 = cam_hint_next_next_next;
+
+    // Strict pop queue: every evaluated hint is consumed (discarded),
+    // whether it was usable or not.  Skipped hints are assumed stale —
+    // they are never put back.  This prevents stale hints from becoming
+    // permanent traps that redirect the camera back to a bucket that
+    // has already been filled.
+    cam_hint_next = -1;
+    cam_hint_next_next = -1;
+    cam_hint_next_next_next = -1;
+
     if (h1 >= 0 && (uint8_t)h1 != other_target && (uint8_t)h1 != completed && !is_protected((uint8_t)h1)) {
         chosen = (uint8_t)h1;
-        cam_hint_next = h2;
+        cam_hint_next = h2;         // shift remaining hints up
         cam_hint_next_next = h3;
-        cam_hint_next_next_next = -1;
     } else if (h2 >= 0 && (uint8_t)h2 != other_target && (uint8_t)h2 != completed && !is_protected((uint8_t)h2)) {
-        chosen = (uint8_t)h2;
-        cam_hint_next = h1;     // preserve h1 — it was only skipped (other_target
-                                // collision or temporarily protected), may be
-                                // valid on the next ISR call
-        cam_hint_next_next = h3;
-        cam_hint_next_next_next = -1;
+        chosen = (uint8_t)h2;       // h1 discarded (stale)
+        cam_hint_next = h3;         // shift remaining hint up
     } else if (h3 >= 0 && (uint8_t)h3 != other_target && (uint8_t)h3 != completed && !is_protected((uint8_t)h3)) {
-        chosen = (uint8_t)h3;
-        cam_hint_next = h1;     // preserve h1, h2 — same reason
-        cam_hint_next_next = h2;
-        cam_hint_next_next_next = -1;
+        chosen = (uint8_t)h3;       // h1, h2 discarded (stale)
     } else if (cand_a != completed && !is_protected(cand_a)) {
         // Natural next is available and not the just-completed bucket
         chosen = cand_a;
