@@ -98,8 +98,11 @@ extern volatile uint32_t bucket_state[3];
                                      //  ISR needs the distinction to transition -> PD)
 
 extern volatile uint8_t  bucket_tx_state[3];
+extern volatile uint32_t bucket_tx_min_counter[3]; // ISR only upgrades TX state if
+                                                   // completed counter >= this value
 extern volatile int8_t   cam_hint_next;
 extern volatile int8_t   cam_hint_next_next;
+extern volatile int8_t   cam_hint_next_next_next;
 extern volatile int32_t  mcu_temp_x10;          // MCU temperature x10 (365 = 36.5C)
 
 #define USE_100BASE_FX (false)

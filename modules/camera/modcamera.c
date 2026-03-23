@@ -141,9 +141,10 @@ static char x_header_buckets_tx[] = "X-Buckets-tx: FREE  , FREE  , FREE  \r\n";
 #define X_HEADER_TX_B_OFFSET 22
 #define X_HEADER_TX_C_OFFSET 30
 
-static char x_header_camera_next[] = "X-Buckets-camera-next: -, -\r\n";
+static char x_header_camera_next[] = "X-Buckets-camera-next: -, -, -\r\n";
 #define X_HEADER_CAMERA_NEXT_1_OFFSET 23
 #define X_HEADER_CAMERA_NEXT_2_OFFSET 26
+#define X_HEADER_CAMERA_NEXT_3_OFFSET 29
 
 static const char x_header_terminator[] = "\r\n";
 
@@ -238,8 +239,10 @@ static void write_camera_next_header(void)
 {
     int8_t h1 = cam_hint_next;
     int8_t h2 = cam_hint_next_next;
+    int8_t h3 = cam_hint_next_next_next;
     x_header_camera_next[X_HEADER_CAMERA_NEXT_1_OFFSET] = (h1 >= 0 && h1 < 3) ? bucket_name[h1] : '-';
     x_header_camera_next[X_HEADER_CAMERA_NEXT_2_OFFSET] = (h2 >= 0 && h2 < 3) ? bucket_name[h2] : '-';
+    x_header_camera_next[X_HEADER_CAMERA_NEXT_3_OFFSET] = (h3 >= 0 && h3 < 3) ? bucket_name[h3] : '-';
 }
 
 static inline uint32_t pack_tx_states(void)
@@ -435,6 +438,14 @@ static void apply_50_percent_protection(uint8_t sending_bucket)
         // o2 has the completed upper half — protect it
         bucket_tx_state[o2] = BUCKET_TX_STATE_PD;
     }
+
+    // Step 3: refresh hints. sending_bucket is about to become just_finished,
+    // so the next TX pair must come from {o1, o2}. Any surviving hint that
+    // still points to sending_bucket is now stale — the ISR would follow it
+    // and write to the wrong bucket. Overwrite unconditionally.
+    cam_hint_next = o1;
+    cam_hint_next_next = o2;
+    cam_hint_next_next_next = sending_bucket;
 }
 
 
@@ -472,8 +483,11 @@ static mp_obj_t camera_stream_start(void) {
     // When camera catches up, ISR will upgrade them to TX_REC, then TXP/PD.
     bucket_tx_state[tx_first] = BUCKET_TX_STATE_QUEUED;
     bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
+    bucket_tx_min_counter[tx_first] = cam_counter;
+    bucket_tx_min_counter[tx_second] = cam_counter;
     cam_hint_next = tx_first;
     cam_hint_next_next = tx_second;
+    cam_hint_next_next_next = 3 - tx_first - tx_second;  // the remaining bucket
 
     // Pre-build x_headers for the first frame
     write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
@@ -626,16 +640,17 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             bucket_tx_state[tx_second] = BUCKET_TX_STATE_TXP;
         }
 
-        // Set early hints at mid-frame. tx_second will become just_finished,
-        // so the next TX pair must come from the other two buckets. We don't
-        // know the order yet (that requires the end-of-frame snapshot), but
-        // steering the camera toward the right buckets now prevents stale
-        // hints from misdirecting ISR decisions during the lower-half send.
-        {
+        // Set early hints at mid-frame, but ONLY if both hint slots are
+        // already consumed. If hints from the decision are still present,
+        // they may point to tx_second (which the camera still needs to
+        // write to for the current frame) — overwriting them would
+        // misdirect the ISR.
+        if (cam_hint_next < 0) {
             uint8_t mid_cand_a = (tx_second + 1) % 3;
             uint8_t mid_cand_b = (tx_second + 2) % 3;
             cam_hint_next = mid_cand_a;
             cam_hint_next_next = mid_cand_b;
+            cam_hint_next_next_next = tx_second;
         }
 
         // Snapshot mid-point: bucket states after 1st half sent
@@ -751,6 +766,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 
         cam_hint_next = tx_first;
         cam_hint_next_next = tx_second;
+        cam_hint_next_next_next = just_finished;
 
         uint32_t hfa = bucket_get_halfframe(snap[cand_a]);
         uint32_t hfb = bucket_get_halfframe(snap[cand_b]);
@@ -764,6 +780,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         
         if (bucket_is_dirty(snap[tx_first])) {
             bucket_tx_state[tx_first] = BUCKET_TX_STATE_TX_REC;
+            bucket_tx_min_counter[tx_first] = cam_counter;
         } else if (bucket_is_complete(snap[tx_first])) {
             bucket_tx_state[tx_first] = BUCKET_TX_STATE_TXP;
         } else {
@@ -772,6 +789,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 
         if (bucket_is_dirty(snap[tx_second])) {
             bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
+            bucket_tx_min_counter[tx_second] = cam_counter;
         } else if (bucket_is_complete(snap[tx_second]) &&
                    bucket_tx_state[tx_first] == BUCKET_TX_STATE_TXP &&
                    (snap[tx_first] >> BUCKET_FRAME_SHIFT) ==
@@ -784,6 +802,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             bucket_tx_state[tx_second] = BUCKET_TX_STATE_PD;
         } else {
             bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
+            bucket_tx_min_counter[tx_second] = cam_counter;
         }
         
         // Release the departing bucket that was just finished
@@ -818,6 +837,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         bucket_tx_state[2] = BUCKET_TX_STATE_FREE;
         cam_hint_next = -1;
         cam_hint_next_next = -1;
+        cam_hint_next_next_next = -1;
     }
 
     return mp_obj_new_int(batch_sent);

@@ -68,8 +68,10 @@ volatile uint32_t cam_counter = 0;
 
 // TX intent (TX writes, ISR reads+upgrades)
 volatile uint8_t bucket_tx_state[3] = {BUCKET_TX_STATE_FREE, BUCKET_TX_STATE_FREE, BUCKET_TX_STATE_FREE};
+volatile uint32_t bucket_tx_min_counter[3] = {0, 0, 0};
 volatile int8_t cam_hint_next = -1;
 volatile int8_t cam_hint_next_next = -1;
+volatile int8_t cam_hint_next_next_next = -1;
 volatile int32_t mcu_temp_x10 = 365;            // default 36.5C until Python updates
 
 // Internal ISR tracking: which bucket each DMA channel targets
@@ -145,9 +147,11 @@ void setup_dma_for_capture()
     for (int i = 0; i < 3; i++) {
         bucket_state[i] = bucket_make_empty();
         bucket_tx_state[i] = BUCKET_TX_STATE_FREE;
+        bucket_tx_min_counter[i] = 0;
     }
     cam_hint_next = -1;
     cam_hint_next_next = -1;
+    cam_hint_next_next_next = -1;
     cam_counter = 0;
     ch_target[0] = 0;       // CH_A starts at bucket 0
     ch_target[1] = 1;       // CH_B starts at bucket 1
@@ -222,11 +226,15 @@ static void handle_half_complete(uint32_t completed_ch)
     cam_counter++;
 
     // --- Apply spec protection upgrades upon completion ---
-    // If TX is actively sending this (TX REC), it is now TXP.
-    // If it is the queued partner (QUEUED), it is now PD.
-    if (bucket_tx_state[completed] == BUCKET_TX_STATE_TX_REC) {
+    // Only upgrade if this completion is for a half-frame the TX thread
+    // actually cares about (old_counter >= the minimum counter set by TX
+    // when it assigned QUEUED/TX_REC). Without this, a stale completion
+    // from an earlier frame triggers a spurious upgrade to PD/TXP.
+    if (bucket_tx_state[completed] == BUCKET_TX_STATE_TX_REC &&
+        old_counter >= bucket_tx_min_counter[completed]) {
         bucket_tx_state[completed] = BUCKET_TX_STATE_TXP;
-    } else if (bucket_tx_state[completed] == BUCKET_TX_STATE_QUEUED) {
+    } else if (bucket_tx_state[completed] == BUCKET_TX_STATE_QUEUED &&
+               old_counter >= bucket_tx_min_counter[completed]) {
         bucket_tx_state[completed] = BUCKET_TX_STATE_PD;
     }
 
@@ -252,16 +260,24 @@ static void handle_half_complete(uint32_t completed_ch)
     uint8_t chosen;
     int8_t h1 = cam_hint_next;
     int8_t h2 = cam_hint_next_next;
+    int8_t h3 = cam_hint_next_next_next;
     if (h1 >= 0 && (uint8_t)h1 != other_target && !is_protected((uint8_t)h1)) {
         chosen = (uint8_t)h1;
         cam_hint_next = h2;
-        cam_hint_next_next = -1;
+        cam_hint_next_next = h3;
+        cam_hint_next_next_next = -1;
     } else if (h2 >= 0 && (uint8_t)h2 != other_target && !is_protected((uint8_t)h2)) {
         chosen = (uint8_t)h2;
         cam_hint_next = h1;     // preserve h1 — it was only skipped (other_target
                                 // collision or temporarily protected), may be
                                 // valid on the next ISR call
-        cam_hint_next_next = -1;
+        cam_hint_next_next = h3;
+        cam_hint_next_next_next = -1;
+    } else if (h3 >= 0 && (uint8_t)h3 != other_target && !is_protected((uint8_t)h3)) {
+        chosen = (uint8_t)h3;
+        cam_hint_next = h1;     // preserve h1, h2 — same reason
+        cam_hint_next_next = h2;
+        cam_hint_next_next_next = -1;
     } else if (!is_protected(cand_a)) {
         // Natural next is available
         chosen = cand_a;
