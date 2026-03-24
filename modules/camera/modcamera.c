@@ -436,22 +436,34 @@ static uint32_t t_frame_start;
 #define FIFTY_PERCENT_BYTES (TAGGED_HALF_FRAME_BYTES / 2)  // ~38,406
 
 // ******************************************************************************
-// function:   Apply the 50%-mark TX/protection rule-set.
+// function:   Apply the 50%-mark camera-direction rule-set.
 //
-//             A = sending_bucket (currently sending lower half, mid-point)
+//             A = sending_bucket (currently sending lower half, at mid-point)
 //             B = (A + 1) % 3
 //             C = (A + 2) % 3
 //
 //             At 50% mark:
-//               - A is unprotected (state set to FREE)
-//               - hints/protection follow explicit state cases:
+//               - A is un-protected (TXP → FREE) so camera can reuse it.
+//               - B and C keep whatever TX state they had (no blanket reset).
+//               - Hints and PD follow 12 explicit cases:
 //
-//               1) B=~nU, C=(n-1)L      -> hints C,A,A   protect none
-//               2) B=~nL, C=nU          -> hints A,A,A   protect C
-//               3) B=~nL, C=stale       -> hints B,C,A   protect none
-//               4a) B=nU, C=(n-1)L      -> hints C,A,A   protect B
-//               4b) B=nU, C=nL          -> hints A,A,A   protect B,C
-//               4c) B=nL, C=(n-1)U      -> hints B,C,A   protect none
+//             Dirty B (camera writing to B):
+//               1)  B=~nU, C=(n-1)L      → hints C,A,A   protect none
+//               2)  B=~nL, C=nU          → hints A,A,A   protect C
+//               3)  B=~nL, C=stale       → hints B,C,A   protect none
+//
+//             Dirty C (camera writing to C) — mirrors:
+//               M1) C=~nU, B=(n-1)L      → hints B,A,A   protect none
+//               M2) C=~nL, B=nU          → hints A,A,A   protect B
+//               M3) C=~nL, B=stale       → hints C,B,A   protect none
+//
+//             Both complete:
+//               4a) B=nU, C=(n-1)L       → hints C,A,A   protect B
+//               4b) B=nU, C=nL           → hints A,A,A   protect B,C
+//               4c) B=nL, C=(n-1)U       → hints B,C,A   protect none
+//               M4a) C=nU, B=(n-1)L      → hints B,A,A   protect C
+//               M4b) C=nU, B=nL          → hints A,A,A   protect B,C
+//               M4c) C=nL, B=(n-1)U      → hints C,B,A   protect none
 //
 //             invalid/empty is treated as stale data.
 // ******************************************************************************
@@ -464,13 +476,14 @@ static void apply_50_percent_protection(uint8_t sending_bucket)
     uint32_t sb = bucket_state[b];
     uint32_t sc = bucket_state[c];
 
-    bool b_valid = bucket_is_valid(sb);
-    bool c_valid = bucket_is_valid(sc);
-    bool b_dirty = bucket_is_dirty(sb);
-    bool b_upper = bucket_half_is_upper(sb);
-    bool c_upper = bucket_half_is_upper(sc);
+    bool b_valid    = bucket_is_valid(sb);
+    bool c_valid    = bucket_is_valid(sc);
+    bool b_dirty    = bucket_is_dirty(sb);
+    bool c_dirty    = bucket_is_dirty(sc);
+    bool b_upper    = bucket_half_is_upper(sb);
+    bool c_upper    = bucket_half_is_upper(sc);
     bool b_complete = b_valid && !b_dirty;
-    bool c_complete = bucket_is_complete(sc);
+    bool c_complete = c_valid && !c_dirty;
 
     uint32_t fb = sb >> BUCKET_FRAME_SHIFT;
     uint32_t fc = sc >> BUCKET_FRAME_SHIFT;
@@ -478,62 +491,108 @@ static void apply_50_percent_protection(uint8_t sending_bucket)
     // 50% mark: un-protect currently-sent bucket so camera can use it.
     bucket_tx_state[a] = BUCKET_TX_STATE_FREE;
 
-    // Default: no protection on other two buckets.
-    bucket_tx_state[b] = BUCKET_TX_STATE_FREE;
-    bucket_tx_state[c] = BUCKET_TX_STATE_FREE;
-
     // Default hints (safe deterministic fallback): B,C,A.
     int8_t h1 = (int8_t)b;
     int8_t h2 = (int8_t)c;
     int8_t h3 = (int8_t)a;
 
-    // --- Case mapping (A=sending, B=o1, C=o2) ---
+    // --- Dirty B: camera is actively writing to B ---
 
-    // Case 1: B=~nU, C=(n-1)L  -> C,A,A ; no protection
-    if (b_valid && b_dirty && b_upper &&
-        c_complete && !c_upper && c_valid && fb == (fc + 1)) {
+    // Case 1: B=~nU, C=(n-1)L  → C,A,A ; no protection
+    if (b_dirty && b_upper &&
+        c_complete && !c_upper && fb == (fc + 1)) {
         h1 = (int8_t)c;
         h2 = (int8_t)a;
         h3 = (int8_t)a;
 
-    // Case 2: B=~nL, C=nU      -> A,A,A ; protect C
-    } else if (b_valid && b_dirty && !b_upper &&
-               c_complete && c_upper && c_valid && fb == fc) {
+    // Case 2: B=~nL, C=nU      → A,A,A ; protect C
+    } else if (b_dirty && !b_upper &&
+               c_complete && c_upper && fb == fc) {
         h1 = (int8_t)a;
         h2 = (int8_t)a;
         h3 = (int8_t)a;
         bucket_tx_state[c] = BUCKET_TX_STATE_PD;
 
-    // Case 3: B=~nL, C=stale   -> B,C,A ; no protection
-    } else if (b_valid && b_dirty && !b_upper) {
+    // Case 3: B=~nL, C=stale   → B,C,A ; no protection
+    } else if (b_dirty && !b_upper) {
         h1 = (int8_t)b;
         h2 = (int8_t)c;
         h3 = (int8_t)a;
 
-    // Case 4a: B=nU, C=(n-1)L  -> C,A,A ; protect B
+    // --- Dirty C: camera is actively writing to C (mirrors) ---
+
+    // Case M1: C=~nU, B=(n-1)L → B,A,A ; no protection
+    } else if (c_dirty && c_upper &&
+               b_complete && !b_upper && fc == (fb + 1)) {
+        h1 = (int8_t)b;
+        h2 = (int8_t)a;
+        h3 = (int8_t)a;
+
+    // Case M2: C=~nL, B=nU     → A,A,A ; protect B
+    } else if (c_dirty && !c_upper &&
+               b_complete && b_upper && fc == fb) {
+        h1 = (int8_t)a;
+        h2 = (int8_t)a;
+        h3 = (int8_t)a;
+        bucket_tx_state[b] = BUCKET_TX_STATE_PD;
+
+    // Case M3: C=~nL, B=stale  → C,B,A ; no protection
+    } else if (c_dirty && !c_upper) {
+        h1 = (int8_t)c;
+        h2 = (int8_t)b;
+        h3 = (int8_t)a;
+
+    // --- Both complete ---
+
+    // Case 4a: B=nU, C=(n-1)L  → C,A,A ; protect B
     } else if (b_complete && b_upper &&
-               c_complete && !c_upper && c_valid && fb == (fc + 1)) {
+               c_complete && !c_upper && fb == (fc + 1)) {
         h1 = (int8_t)c;
         h2 = (int8_t)a;
         h3 = (int8_t)a;
         bucket_tx_state[b] = BUCKET_TX_STATE_PD;
 
-    // Case 4b: B=nU, C=nL      -> A,A,A ; protect B,C
+    // Case 4b: B=nU, C=nL      → A,A,A ; protect B,C
     } else if (b_complete && b_upper &&
-               c_complete && !c_upper && c_valid && fb == fc) {
+               c_complete && !c_upper && fb == fc) {
         h1 = (int8_t)a;
         h2 = (int8_t)a;
         h3 = (int8_t)a;
         bucket_tx_state[b] = BUCKET_TX_STATE_PD;
         bucket_tx_state[c] = BUCKET_TX_STATE_PD;
 
-    // Case 4c: B=nL, C=(n-1)U  -> B,C,A ; no protection
+    // Case M4c: C=nL, B=(n-1)U → C,B,A ; no protection
+    } else if (b_complete && b_upper &&
+               c_complete && !c_upper && fc == (fb + 1)) {
+        h1 = (int8_t)c;
+        h2 = (int8_t)b;
+        h3 = (int8_t)a;
+
+    // Case M4a: C=nU, B=(n-1)L → B,A,A ; protect C
     } else if (b_complete && !b_upper &&
-               c_complete && c_upper && c_valid && fb == (fc + 1)) {
+               c_complete && c_upper && fc == (fb + 1)) {
+        h1 = (int8_t)b;
+        h2 = (int8_t)a;
+        h3 = (int8_t)a;
+        bucket_tx_state[c] = BUCKET_TX_STATE_PD;
+
+    // Case M4b: C=nU, B=nL     → A,A,A ; protect B,C
+    } else if (b_complete && !b_upper &&
+               c_complete && c_upper && fc == fb) {
+        h1 = (int8_t)a;
+        h2 = (int8_t)a;
+        h3 = (int8_t)a;
+        bucket_tx_state[b] = BUCKET_TX_STATE_PD;
+        bucket_tx_state[c] = BUCKET_TX_STATE_PD;
+
+    // Case 4c: B=nL, C=(n-1)U  → B,C,A ; no protection
+    } else if (b_complete && !b_upper &&
+               c_complete && c_upper && fb == (fc + 1)) {
         h1 = (int8_t)b;
         h2 = (int8_t)c;
         h3 = (int8_t)a;
     }
+    // else: default B,C,A (e.g., both stale/empty, both same half-type)
 
     // Use the resolved hint tuple.
     cam_hint_next = h1;
