@@ -211,6 +211,62 @@
     padding-bottom: 8px;
     border-bottom: 1px solid rgba(255,255,255,.04);
   }
+  .meta-group-light {
+    position: relative;
+    background: rgba(148,163,184,.16);
+    border: 1px solid rgba(148,163,184,.32);
+    border-radius: 6px;
+    padding: 30px 8px 8px;
+  }
+  .meta-group-light .meta-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+  .meta-copy-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    height: 24px;
+    min-width: 24px;
+    padding: 0 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(148,163,184,.35);
+    border-radius: 5px;
+    background: rgba(21,28,40,.85);
+    color: #cbd5e1;
+    cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .meta-copy-btn:hover {
+    background: rgba(59,130,246,.22);
+    border-color: rgba(59,130,246,.6);
+    color: #e2e8f0;
+  }
+  .meta-copy-btn.copied {
+    background: rgba(34,197,94,.2);
+    border-color: rgba(34,197,94,.6);
+    color: #dcfce7;
+    padding: 0 8px;
+  }
+  .meta-copy-btn svg {
+    width: 14px;
+    height: 14px;
+    fill: currentColor;
+  }
+  .meta-copy-label {
+    display: none;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+  }
+  .meta-copy-btn.copied svg {
+    display: none;
+  }
+  .meta-copy-btn.copied .meta-copy-label {
+    display: inline;
+  }
   .meta-key {
     color: var(--muted);
     text-transform: capitalize;
@@ -370,6 +426,7 @@
   let currentFrame = 0; // 0-indexed
   let rendering = false;
   let autoSwapSet = false;
+  let copyResetTimer = null;
 
   // ---- Helpers ----
   function showError(msg) {
@@ -382,6 +439,23 @@
 
   async function readSlice(f, start, end) {
     return new Uint8Array(await f.slice(start, end).arrayBuffer());
+  }
+
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    ta.style.pointerEvents = 'none';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
   }
 
   // ---- Index builder ----
@@ -644,13 +718,49 @@
     ];
 
     let html = '';
-    for (const [label, value] of rows) {
+    let lightGroupOpen = false;
+    for (let i = 0; i < rows.length; i++) {
+      const [label, value] = rows[i];
+      if (i === 3) {
+        html += '<div class="meta-group-light">'
+             + '<button type="button" class="meta-copy-btn" id="meta-copy-btn" '
+             + 'title="Copy grouped metadata" aria-label="Copy grouped metadata">'
+             + '<svg viewBox="0 0 24 24" aria-hidden="true">'
+             + '<path d="M16 1H6a2 2 0 0 0-2 2v12h2V3h10V1Zm3 4H10a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16h-9V7h9v14Z"/>'
+             + '</svg><span class="meta-copy-label">Copied!</span></button>';
+        lightGroupOpen = true;
+      }
       html += '<div class="meta-row"><div class="meta-key">' +
               escHtml(label) + '</div><div class="meta-val">' +
               escHtml(value) + '</div></div>';
+      if (lightGroupOpen && i === rows.length - 1) html += '</div>';
     }
 
     $metaPanel.innerHTML = html || '<div class="meta-row" style="grid-column:1/-1;text-align:center"><span class="meta-key">No metadata</span></div>';
+
+    const copyBtn = document.getElementById('meta-copy-btn');
+    if (copyBtn) {
+      const copyPayload = rows.slice(3)
+        .map(([label, value]) => label + '\n' + value)
+        .join('\n');
+      copyBtn.addEventListener('click', async () => {
+        try {
+          await copyText(copyPayload);
+          if (copyResetTimer) clearTimeout(copyResetTimer);
+          copyBtn.classList.add('copied');
+          copyBtn.title = 'Copied!';
+          copyBtn.setAttribute('aria-label', 'Copied!');
+          copyResetTimer = setTimeout(() => {
+            copyBtn.classList.remove('copied');
+            copyBtn.title = 'Copy grouped metadata';
+            copyBtn.setAttribute('aria-label', 'Copy grouped metadata');
+            copyResetTimer = null;
+          }, 3000);
+        } catch (err) {
+          showError('Failed to copy grouped metadata: ' + err.message);
+        }
+      });
+    }
   }
 
   function escHtml(s) {
