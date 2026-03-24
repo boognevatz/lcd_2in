@@ -523,7 +523,6 @@ static mp_obj_t camera_stream_start(void) {
     cam_hint_next = tx_first;
     cam_hint_next_next = tx_second;
     cam_hint_next_next_next = 3 - tx_first - tx_second;  // the remaining bucket
-    snapshot_hints(tx_first, tx_second, 3 - tx_first - tx_second);
 
     // Pre-build x_headers for the first frame
     write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
@@ -687,7 +686,6 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             cam_hint_next = mid_cand_a;
             cam_hint_next_next = mid_cand_b;
             cam_hint_next_next_next = tx_second;
-            snapshot_hints(mid_cand_a, mid_cand_b, tx_second);
         }
 
         // Snapshot mid-point: bucket states after 1st half sent
@@ -804,7 +802,6 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         cam_hint_next = tx_first;
         cam_hint_next_next = tx_second;
         cam_hint_next_next_next = just_finished;
-        snapshot_hints(tx_first, tx_second, just_finished);
 
         uint32_t hfa = bucket_get_halfframe(snap[cand_a]);
         uint32_t hfb = bucket_get_halfframe(snap[cand_b]);
