@@ -150,6 +150,10 @@ static char x_header_camera_next[] = "X-Buckets-camera-next: ---------, --------
 // Snapshot of hints at the time they were set (for diagnostic display)
 static int8_t cam_hint_snap[3] = {-1, -1, -1};
 static uint32_t cam_hint_snap_counter = 0;
+static uint32_t cam_hint_snap_time_us = 0;
+
+static char x_header_camera_next_time[] = "X-Buckets-camera-next-time: 0000000000000\r\n";
+#define X_HEADER_CAMERA_NEXT_TIME_OFFSET 28
 
 static const char x_header_terminator[] = "\r\n";
 
@@ -277,6 +281,7 @@ static void snapshot_hints(int8_t h1, int8_t h2, int8_t h3)
     cam_hint_snap[1] = h2;
     cam_hint_snap[2] = h3;
     cam_hint_snap_counter = cam_counter;
+    cam_hint_snap_time_us = mp_hal_ticks_us();
 }
 
 static inline uint32_t pack_tx_states(void)
@@ -474,16 +479,25 @@ static void apply_50_percent_protection(uint8_t sending_bucket)
     }
 
     // Step 3: refresh hints.  Priority order:
-    //   h1 = o1:             the "third" bucket (not in TX pair), camera has
-    //                        been free to use it — most likely target
-    //   h2 = sending_bucket: just freed RIGHT NOW at this 50% mark —
-    //                        guaranteed available
-    //   h3 = o2:             was tx_first, freed when the upper half was sent
-    //                        (~37ms ago) — camera may have already claimed it
-    cam_hint_next = o1;
+    //   h1 = non-dirty bucket: immediately available for camera's next write
+    //   h2 = sending_bucket:   just freed RIGHT NOW at this 50% mark
+    //   h3 = dirty bucket:     camera is currently writing to it, will be
+    //                          completed by ISR soon — lowest priority
+    //
+    // We already have s1/s2 (bucket states of o1/o2).  If o1 is dirty,
+    // swap so the non-dirty bucket goes first.
+    uint8_t h_first, h_last;
+    if (bucket_is_dirty(s1)) {
+        h_first = o2;   // o2 is not dirty — first
+        h_last  = o1;   // o1 is dirty — last
+    } else {
+        h_first = o1;   // o1 is not dirty — first (or neither dirty)
+        h_last  = o2;   // o2 is dirty (or neither) — last
+    }
+    cam_hint_next = h_first;
     cam_hint_next_next = sending_bucket;
-    cam_hint_next_next_next = o2;
-    snapshot_hints(o1, sending_bucket, o2);
+    cam_hint_next_next_next = h_last;
+    snapshot_hints(h_first, sending_bucket, h_last);
 }
 
 
@@ -647,6 +661,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_camera_next, sizeof(x_header_camera_next) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
+        ret = mp_stream_write_exactly(socket_obj, x_header_camera_next_time, sizeof(x_header_camera_next_time) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
         ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
@@ -686,8 +703,15 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         if (cam_hint_next < 0) {
             uint8_t mid_cand_a = (tx_second + 1) % 3;
             uint8_t mid_cand_b = (tx_second + 2) % 3;
-            cam_hint_next = mid_cand_a;
-            cam_hint_next_next = mid_cand_b;
+            // Put non-dirty candidate first — same logic as apply_50_percent_protection
+            uint32_t ms_a = bucket_state[mid_cand_a];
+            if (bucket_is_dirty(ms_a)) {
+                cam_hint_next = mid_cand_b;
+                cam_hint_next_next = mid_cand_a;
+            } else {
+                cam_hint_next = mid_cand_a;
+                cam_hint_next_next = mid_cand_b;
+            }
             cam_hint_next_next_next = tx_second;
         }
 
@@ -866,6 +890,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], bucket_tx_state[1]);
         write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_C_OFFSET], bucket_tx_state[2]);
         write_camera_next_header();
+        write_u32_grouped(&x_header_camera_next_time[X_HEADER_CAMERA_NEXT_TIME_OFFSET], cam_hint_snap_time_us);
     }
 
     // On disconnect, release all protection

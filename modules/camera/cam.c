@@ -267,18 +267,25 @@ static void handle_half_complete(uint32_t completed_ch)
     // they are never put back.  This prevents stale hints from becoming
     // permanent traps that redirect the camera back to a bucket that
     // has already been filled.
+    //
+    // Hint checks only guard against other_target (DMA conflict) and
+    // is_protected (TX needs the data).  We intentionally do NOT check
+    // != completed here: TX hints are deliberate directives — if TX
+    // says "write to A", the camera should obey even if A was just
+    // completed.  The completed exclusion is only applied in the
+    // round-robin fallback where the ISR decides on its own.
     cam_hint_next = -1;
     cam_hint_next_next = -1;
     cam_hint_next_next_next = -1;
 
-    if (h1 >= 0 && (uint8_t)h1 != other_target && (uint8_t)h1 != completed && !is_protected((uint8_t)h1)) {
+    if (h1 >= 0 && (uint8_t)h1 != other_target && !is_protected((uint8_t)h1)) {
         chosen = (uint8_t)h1;
         cam_hint_next = h2;         // shift remaining hints up
         cam_hint_next_next = h3;
-    } else if (h2 >= 0 && (uint8_t)h2 != other_target && (uint8_t)h2 != completed && !is_protected((uint8_t)h2)) {
+    } else if (h2 >= 0 && (uint8_t)h2 != other_target && !is_protected((uint8_t)h2)) {
         chosen = (uint8_t)h2;       // h1 discarded (stale)
         cam_hint_next = h3;         // shift remaining hint up
-    } else if (h3 >= 0 && (uint8_t)h3 != other_target && (uint8_t)h3 != completed && !is_protected((uint8_t)h3)) {
+    } else if (h3 >= 0 && (uint8_t)h3 != other_target && !is_protected((uint8_t)h3)) {
         chosen = (uint8_t)h3;       // h1, h2 discarded (stale)
     } else if (cand_a != completed && !is_protected(cand_a)) {
         // Natural next is available and not the just-completed bucket
