@@ -436,68 +436,110 @@ static uint32_t t_frame_start;
 #define FIFTY_PERCENT_BYTES (TAGGED_HALF_FRAME_BYTES / 2)  // ~38,406
 
 // ******************************************************************************
-// function:   Apply the 50%-mark protection swap.
+// function:   Apply the 50%-mark TX/protection rule-set.
 //
-//             sending_bucket : the bucket currently being TX'd (to release).
-//             The two "other" buckets are (sending_bucket+1)%3 and
-//             (sending_bucket+2)%3.
+//             A = sending_bucket (currently sending lower half, mid-point)
+//             B = (A + 1) % 3
+//             C = (A + 2) % 3
 //
-//             Step 1 — Release sending_bucket from protected state.
-//             Step 2 — Inspect the other two:
-//                      if  one is complete+upper  AND  the other is dirty+lower
-//                      → mark the completed-upper one as PD (protected).
+//             At 50% mark:
+//               - A is unprotected (state set to FREE)
+//               - hints/protection follow explicit state cases:
+//
+//               1) B=~nU, C=(n-1)L      -> hints C,A,A   protect none
+//               2) B=~nL, C=nU          -> hints A,A,A   protect C
+//               3) B=~nL, C=stale       -> hints B,C,A   protect none
+//               4a) B=nU, C=(n-1)L      -> hints C,A,A   protect B
+//               4b) B=nU, C=nL          -> hints A,A,A   protect B,C
+//               4c) B=nL, C=(n-1)U      -> hints B,C,A   protect none
+//
+//             invalid/empty is treated as stale data.
 // ******************************************************************************
 static void apply_50_percent_protection(uint8_t sending_bucket)
 {
-    // Step 1: un-protect the bucket we are currently sending.
-    bucket_tx_state[sending_bucket] = BUCKET_TX_STATE_FREE;
+    uint8_t a = sending_bucket;
+    uint8_t b = (a + 1) % 3;
+    uint8_t c = (a + 2) % 3;
 
-    // Step 2: look at the other two buckets.
-    uint8_t o1 = (sending_bucket + 1) % 3;
-    uint8_t o2 = (sending_bucket + 2) % 3;
+    uint32_t sb = bucket_state[b];
+    uint32_t sc = bucket_state[c];
 
-    uint32_t s1 = bucket_state[o1];
-    uint32_t s2 = bucket_state[o2];
+    bool b_valid = bucket_is_valid(sb);
+    bool c_valid = bucket_is_valid(sc);
+    bool b_dirty = bucket_is_dirty(sb);
+    bool b_upper = bucket_half_is_upper(sb);
+    bool c_upper = bucket_half_is_upper(sc);
+    bool b_complete = b_valid && !b_dirty;
+    bool c_complete = bucket_is_complete(sc);
 
-    bool s1_upper_done  = bucket_is_complete(s1) && bucket_half_is_upper(s1);
-    bool s1_lower_dirty = bucket_is_dirty(s1)    && !bucket_half_is_upper(s1);
-    bool s2_upper_done  = bucket_is_complete(s2) && bucket_half_is_upper(s2);
-    bool s2_lower_dirty = bucket_is_dirty(s2)    && !bucket_half_is_upper(s2);
+    uint32_t fb = sb >> BUCKET_FRAME_SHIFT;
+    uint32_t fc = sc >> BUCKET_FRAME_SHIFT;
 
-    // Only protect if both halves belong to the same frame.
-    // Without this check we can spuriously PD-protect a stale upper from
-    // an old frame, blocking the ISR from writing to that bucket.
-    uint32_t f1 = s1 >> BUCKET_FRAME_SHIFT;
-    uint32_t f2 = s2 >> BUCKET_FRAME_SHIFT;
+    // 50% mark: un-protect currently-sent bucket so camera can use it.
+    bucket_tx_state[a] = BUCKET_TX_STATE_FREE;
 
-    if (s1_upper_done && s2_lower_dirty && f1 == f2) {
-        // o1 has the completed upper half — protect it
-        bucket_tx_state[o1] = BUCKET_TX_STATE_PD;
-    } else if (s2_upper_done && s1_lower_dirty && f1 == f2) {
-        // o2 has the completed upper half — protect it
-        bucket_tx_state[o2] = BUCKET_TX_STATE_PD;
+    // Default: no protection on other two buckets.
+    bucket_tx_state[b] = BUCKET_TX_STATE_FREE;
+    bucket_tx_state[c] = BUCKET_TX_STATE_FREE;
+
+    // Default hints (safe deterministic fallback): B,C,A.
+    int8_t h1 = (int8_t)b;
+    int8_t h2 = (int8_t)c;
+    int8_t h3 = (int8_t)a;
+
+    // --- Case mapping (A=sending, B=o1, C=o2) ---
+
+    // Case 1: B=~nU, C=(n-1)L  -> C,A,A ; no protection
+    if (b_valid && b_dirty && b_upper &&
+        c_complete && !c_upper && c_valid && fb == (fc + 1)) {
+        h1 = (int8_t)c;
+        h2 = (int8_t)a;
+        h3 = (int8_t)a;
+
+    // Case 2: B=~nL, C=nU      -> A,A,A ; protect C
+    } else if (b_valid && b_dirty && !b_upper &&
+               c_complete && c_upper && c_valid && fb == fc) {
+        h1 = (int8_t)a;
+        h2 = (int8_t)a;
+        h3 = (int8_t)a;
+        bucket_tx_state[c] = BUCKET_TX_STATE_PD;
+
+    // Case 3: B=~nL, C=stale   -> B,C,A ; no protection
+    } else if (b_valid && b_dirty && !b_upper) {
+        h1 = (int8_t)b;
+        h2 = (int8_t)c;
+        h3 = (int8_t)a;
+
+    // Case 4a: B=nU, C=(n-1)L  -> C,A,A ; protect B
+    } else if (b_complete && b_upper &&
+               c_complete && !c_upper && c_valid && fb == (fc + 1)) {
+        h1 = (int8_t)c;
+        h2 = (int8_t)a;
+        h3 = (int8_t)a;
+        bucket_tx_state[b] = BUCKET_TX_STATE_PD;
+
+    // Case 4b: B=nU, C=nL      -> A,A,A ; protect B,C
+    } else if (b_complete && b_upper &&
+               c_complete && !c_upper && c_valid && fb == fc) {
+        h1 = (int8_t)a;
+        h2 = (int8_t)a;
+        h3 = (int8_t)a;
+        bucket_tx_state[b] = BUCKET_TX_STATE_PD;
+        bucket_tx_state[c] = BUCKET_TX_STATE_PD;
+
+    // Case 4c: B=nL, C=(n-1)U  -> B,C,A ; no protection
+    } else if (b_complete && !b_upper &&
+               c_complete && c_upper && c_valid && fb == (fc + 1)) {
+        h1 = (int8_t)b;
+        h2 = (int8_t)c;
+        h3 = (int8_t)a;
     }
 
-    // Step 3: refresh hints.  Priority order:
-    //   h1 = non-dirty bucket: immediately available for camera's next write
-    //   h2 = sending_bucket:   just freed RIGHT NOW at this 50% mark
-    //   h3 = dirty bucket:     camera is currently writing to it, will be
-    //                          completed by ISR soon — lowest priority
-    //
-    // We already have s1/s2 (bucket states of o1/o2).  If o1 is dirty,
-    // swap so the non-dirty bucket goes first.
-    uint8_t h_first, h_last;
-    if (bucket_is_dirty(s1)) {
-        h_first = o2;   // o2 is not dirty — first
-        h_last  = o1;   // o1 is dirty — last
-    } else {
-        h_first = o1;   // o1 is not dirty — first (or neither dirty)
-        h_last  = o2;   // o2 is dirty (or neither) — last
-    }
-    cam_hint_next = h_first;
-    cam_hint_next_next = sending_bucket;
-    cam_hint_next_next_next = h_last;
-    snapshot_hints(h_first, sending_bucket, h_last);
+    // Use the resolved hint tuple.
+    cam_hint_next = h1;
+    cam_hint_next_next = h2;
+    cam_hint_next_next_next = h3;
+    snapshot_hints(h1, h2, h3);
 }
 
 
