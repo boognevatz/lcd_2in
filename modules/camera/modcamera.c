@@ -473,14 +473,17 @@ static void apply_50_percent_protection(uint8_t sending_bucket)
         bucket_tx_state[o2] = BUCKET_TX_STATE_PD;
     }
 
-    // Step 3: refresh hints. sending_bucket is about to become just_finished,
-    // so the next TX pair must come from {o1, o2}. Any surviving hint that
-    // still points to sending_bucket is now stale — the ISR would follow it
-    // and write to the wrong bucket. Overwrite unconditionally.
+    // Step 3: refresh hints.  Priority order:
+    //   h1 = o1:             the "third" bucket (not in TX pair), camera has
+    //                        been free to use it — most likely target
+    //   h2 = sending_bucket: just freed RIGHT NOW at this 50% mark —
+    //                        guaranteed available
+    //   h3 = o2:             was tx_first, freed when the upper half was sent
+    //                        (~37ms ago) — camera may have already claimed it
     cam_hint_next = o1;
-    cam_hint_next_next = o2;
-    cam_hint_next_next_next = sending_bucket;
-    snapshot_hints(o1, o2, sending_bucket);
+    cam_hint_next_next = sending_bucket;
+    cam_hint_next_next_next = o2;
+    snapshot_hints(o1, sending_bucket, o2);
 }
 
 
