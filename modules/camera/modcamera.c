@@ -141,10 +141,15 @@ static char x_header_buckets_tx[] = "X-Buckets-tx: FREE  , FREE  , FREE  \r\n";
 #define X_HEADER_TX_B_OFFSET 22
 #define X_HEADER_TX_C_OFFSET 30
 
-static char x_header_camera_next[] = "X-Buckets-camera-next: -, -, -\r\n";
+#define X_HEADER_CAMERA_NEXT_SLOT_LEN 9
+static char x_header_camera_next[] = "X-Buckets-camera-next: ---------, ---------, ---------\r\n";
 #define X_HEADER_CAMERA_NEXT_1_OFFSET 23
-#define X_HEADER_CAMERA_NEXT_2_OFFSET 26
-#define X_HEADER_CAMERA_NEXT_3_OFFSET 29
+#define X_HEADER_CAMERA_NEXT_2_OFFSET 34
+#define X_HEADER_CAMERA_NEXT_3_OFFSET 45
+
+// Snapshot of hints at the time they were set (for diagnostic display)
+static int8_t cam_hint_snap[3] = {-1, -1, -1};
+static uint32_t cam_hint_snap_counter = 0;
 
 static const char x_header_terminator[] = "\r\n";
 
@@ -235,14 +240,43 @@ static void write_tx_state_slot(char *slot, uint8_t state)
     memcpy(slot, label, len < X_HEADER_TX_SLOT_LEN ? len : X_HEADER_TX_SLOT_LEN);
 }
 
+static void write_camera_next_slot(char *slot, int8_t hint, uint32_t counter)
+{
+    if (hint < 0 || hint >= 3) {
+        memset(slot, '-', X_HEADER_CAMERA_NEXT_SLOT_LEN);
+        return;
+    }
+    slot[0] = bucket_name[hint];
+    slot[1] = '-';
+    uint32_t frame = counter / 2;
+    // 6-digit zero-padded frame number (positions 2-7)
+    for (int i = 7; i >= 2; i--) {
+        slot[i] = '0' + (frame % 10);
+        frame /= 10;
+    }
+    slot[8] = (counter % 2 == 0) ? 'U' : 'L';
+}
+
 static void write_camera_next_header(void)
 {
-    int8_t h1 = cam_hint_next;
-    int8_t h2 = cam_hint_next_next;
-    int8_t h3 = cam_hint_next_next_next;
-    x_header_camera_next[X_HEADER_CAMERA_NEXT_1_OFFSET] = (h1 >= 0 && h1 < 3) ? bucket_name[h1] : '-';
-    x_header_camera_next[X_HEADER_CAMERA_NEXT_2_OFFSET] = (h2 >= 0 && h2 < 3) ? bucket_name[h2] : '-';
-    x_header_camera_next[X_HEADER_CAMERA_NEXT_3_OFFSET] = (h3 >= 0 && h3 < 3) ? bucket_name[h3] : '-';
+    // ISR(N) picks a target for half-frame N+2 (1-deep DMA pipeline).
+    // h1 consumed at ISR(counter) → target for counter+2
+    // h2 consumed at ISR(counter+1) → target for counter+3
+    // h3 consumed at ISR(counter+2) → target for counter+4
+    write_camera_next_slot(&x_header_camera_next[X_HEADER_CAMERA_NEXT_1_OFFSET],
+                           cam_hint_snap[0], cam_hint_snap_counter + 2);
+    write_camera_next_slot(&x_header_camera_next[X_HEADER_CAMERA_NEXT_2_OFFSET],
+                           cam_hint_snap[1], cam_hint_snap_counter + 3);
+    write_camera_next_slot(&x_header_camera_next[X_HEADER_CAMERA_NEXT_3_OFFSET],
+                           cam_hint_snap[2], cam_hint_snap_counter + 4);
+}
+
+static void snapshot_hints(int8_t h1, int8_t h2, int8_t h3)
+{
+    cam_hint_snap[0] = h1;
+    cam_hint_snap[1] = h2;
+    cam_hint_snap[2] = h3;
+    cam_hint_snap_counter = cam_counter;
 }
 
 static inline uint32_t pack_tx_states(void)
@@ -446,6 +480,7 @@ static void apply_50_percent_protection(uint8_t sending_bucket)
     cam_hint_next = o1;
     cam_hint_next_next = o2;
     cam_hint_next_next_next = sending_bucket;
+    snapshot_hints(o1, o2, sending_bucket);
 }
 
 
@@ -488,6 +523,7 @@ static mp_obj_t camera_stream_start(void) {
     cam_hint_next = tx_first;
     cam_hint_next_next = tx_second;
     cam_hint_next_next_next = 3 - tx_first - tx_second;  // the remaining bucket
+    snapshot_hints(tx_first, tx_second, 3 - tx_first - tx_second);
 
     // Pre-build x_headers for the first frame
     write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
@@ -651,6 +687,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             cam_hint_next = mid_cand_a;
             cam_hint_next_next = mid_cand_b;
             cam_hint_next_next_next = tx_second;
+            snapshot_hints(mid_cand_a, mid_cand_b, tx_second);
         }
 
         // Snapshot mid-point: bucket states after 1st half sent
@@ -767,6 +804,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         cam_hint_next = tx_first;
         cam_hint_next_next = tx_second;
         cam_hint_next_next_next = just_finished;
+        snapshot_hints(tx_first, tx_second, just_finished);
 
         uint32_t hfa = bucket_get_halfframe(snap[cand_a]);
         uint32_t hfb = bucket_get_halfframe(snap[cand_b]);
