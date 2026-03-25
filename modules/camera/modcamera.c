@@ -482,7 +482,7 @@ static uint32_t t_frame_start;
 //               - Hints (for N+2, N+3, N+4) and PD follow 12 explicit cases:
 //
 //             Dirty B (camera writing to B):
-//               1)  B=~nU, C!=~nL         → hints A,C,C   protect none
+//               1)  B=~nU, C=^nL         → hints A,A,A   protect none  (C cemented next)
 //               2)  B=~nL, C=nU          → hints B,A,A   protect C
 //               3)  B=~nL, C=stale       → hints C,B,A   protect none
 //
@@ -546,7 +546,13 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
 
     // --- Dirty B: camera is actively writing to B ---
 
-    // Case 1: B=~nU, C!=~nL     → A,C,C ; no protection
+    // Case 1: B=~nU, C=^nL     → A,A,A ; no protection (cemented next on C)
+    } else if (b_dirty && b_upper && c_cemented && !c_upper) {
+        h1 = (int8_t)a;
+        h2 = (int8_t)a;
+        h3 = (int8_t)a;
+
+    // Case 1 legacy fallback: B=~nU (no cement) → A,C,C ; no protection
     } else if (b_dirty && b_upper) {
         h1 = (int8_t)a;
         h2 = (int8_t)c;
@@ -568,7 +574,13 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
 
     // --- Dirty C: camera is actively writing to C (mirrors) ---
 
-    // Case M1: C=~nU, B!=~nL    → A,B,B ; no protection
+    // Case M1: C=~nU, B=^nL    → A,A,A ; no protection (cemented next on B)
+    } else if (c_dirty && c_upper && b_cemented && !b_upper) {
+        h1 = (int8_t)a;
+        h2 = (int8_t)a;
+        h3 = (int8_t)a;
+
+    // Case M1 legacy fallback: C=~nU (no cement) → A,B,B ; no protection
     } else if (c_dirty && c_upper) {
         h1 = (int8_t)a;
         h2 = (int8_t)b;
