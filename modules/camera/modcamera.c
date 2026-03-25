@@ -465,7 +465,7 @@ static uint32_t t_frame_start;
 // ******************************************************************************
 // function:   Apply the 50%-mark camera-direction rule-set.
 //
-//             A = sending_bucket (currently sending lower half, at mid-point)
+//             A = bucket_tx_now (currently sending lower half, at mid-point)
 //             B = (A + 1) % 3
 //             C = (A + 2) % 3
 //
@@ -494,9 +494,9 @@ static uint32_t t_frame_start;
 //
 //             invalid/empty is treated as stale data.
 // ******************************************************************************
-static void apply_50_percent_protection(uint8_t sending_bucket)
+static void apply_50_percent_protection(uint8_t bucket_tx_now)
 {
-    uint8_t a = sending_bucket;
+    uint8_t a = bucket_tx_now;
     uint8_t b = (a + 1) % 3;
     uint8_t c = (a + 2) % 3;
 
