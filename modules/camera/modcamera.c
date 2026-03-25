@@ -284,10 +284,9 @@ static void write_camera_next_slot(char *slot, int8_t hint, uint32_t counter)
 
 static void write_camera_next_header(void)
 {
-    // ISR(N) picks a target for half-frame N+2 (1-deep DMA pipeline).
-    // h1 consumed at ISR(counter) → target for counter+2
-    // h2 consumed at ISR(counter+1) → target for counter+3
-    // h3 consumed at ISR(counter+2) → target for counter+4
+    // Labels are generated from cam_hint_snap_counter, which is captured as
+    // the currently dirty half-frame counter at 50%-mark decision time.
+    // Therefore h1/h2/h3 represent dirty+2, dirty+3, dirty+4.
     write_camera_next_slot(&x_header_camera_next[X_HEADER_CAMERA_NEXT_1_OFFSET],
                            cam_hint_snap[0], cam_hint_snap_counter + 2);
     write_camera_next_slot(&x_header_camera_next[X_HEADER_CAMERA_NEXT_2_OFFSET],
@@ -296,12 +295,12 @@ static void write_camera_next_header(void)
                            cam_hint_snap[2], cam_hint_snap_counter + 4);
 }
 
-static void snapshot_hints(int8_t h1, int8_t h2, int8_t h3)
+static void snapshot_hints(int8_t h1, int8_t h2, int8_t h3, uint32_t base_counter)
 {
     cam_hint_snap[0] = h1;
     cam_hint_snap[1] = h2;
     cam_hint_snap[2] = h3;
-    cam_hint_snap_counter = cam_counter;
+    cam_hint_snap_counter = base_counter;
     cam_hint_snap_time_us = mp_hal_ticks_us();
 }
 
@@ -456,6 +455,32 @@ static uint32_t t_frame_start;
 
 #define REPORT_INTERVAL 50
 
+static uint8_t pick_preferred_bucket(uint8_t x, uint8_t y)
+{
+    uint32_t sx = bucket_state[x];
+    uint32_t sy = bucket_state[y];
+    bool x_valid = bucket_is_valid(sx);
+    bool y_valid = bucket_is_valid(sy);
+
+    if (x_valid != y_valid) {
+        return x_valid ? x : y;
+    }
+
+    bool x_upper = x_valid && bucket_half_is_upper(sx);
+    bool y_upper = y_valid && bucket_half_is_upper(sy);
+    if (x_upper != y_upper) {
+        return x_upper ? x : y;
+    }
+
+    uint32_t hx = x_valid ? bucket_get_halfframe(sx) : 0;
+    uint32_t hy = y_valid ? bucket_get_halfframe(sy) : 0;
+    if (hx != hy) {
+        return (hx > hy) ? x : y;
+    }
+
+    return (x < y) ? x : y;
+}
+
 // 50% transfer mark: at this byte offset within a half-frame send we
 // release the *current* bucket's protection and, if the two OTHER buckets
 // form the pattern "upper half done + lower half in progress", protect
@@ -518,6 +543,7 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
     bool c_upper    = bucket_half_is_upper(sc);
     bool b_complete = b_valid && !b_dirty;
     bool c_complete = c_valid && !c_dirty;
+    bool a_cemented = bucket_tx_next_cemented[a] != 0;
     bool b_cemented = bucket_tx_next_cemented[b] != 0;
     bool c_cemented = bucket_tx_next_cemented[c] != 0;
 
@@ -546,7 +572,19 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
 
     // --- Dirty B: camera is actively writing to B ---
 
-    // Case 1: B=~nU, C=^nL     → A,A,A ; no protection (cemented next on C)
+    // Case 1a: B=~nU and A is already cemented next.
+    // If C already holds nU, keep A for N+2..N+4; otherwise steer to C.
+    } else if (b_dirty && b_upper && a_cemented && c_complete && c_upper) {
+        h1 = (int8_t)a;
+        h2 = (int8_t)a;
+        h3 = (int8_t)a;
+
+    } else if (b_dirty && b_upper && a_cemented) {
+        h1 = (int8_t)c;
+        h2 = (int8_t)c;
+        h3 = (int8_t)c;
+
+    // Case 1b: B=~nU, C=^nL     → A,A,A ; no protection (cemented next on C)
     } else if (b_dirty && b_upper && c_cemented && !c_upper) {
         h1 = (int8_t)a;
         h2 = (int8_t)a;
@@ -574,7 +612,19 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
 
     // --- Dirty C: camera is actively writing to C (mirrors) ---
 
-    // Case M1: C=~nU, B=^nL    → A,A,A ; no protection (cemented next on B)
+    // Case M1a: C=~nU and A is already cemented next.
+    // If B already holds nU, keep A for N+2..N+4; otherwise steer to B.
+    } else if (c_dirty && c_upper && a_cemented && b_complete && b_upper) {
+        h1 = (int8_t)a;
+        h2 = (int8_t)a;
+        h3 = (int8_t)a;
+
+    } else if (c_dirty && c_upper && a_cemented) {
+        h1 = (int8_t)b;
+        h2 = (int8_t)b;
+        h3 = (int8_t)b;
+
+    // Case M1b: C=~nU, B=^nL    → A,A,A ; no protection (cemented next on B)
     } else if (c_dirty && c_upper && b_cemented && !b_upper) {
         h1 = (int8_t)a;
         h2 = (int8_t)a;
@@ -652,11 +702,20 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
     }
     // else: default B,C,A (e.g., both stale/empty, both same half-type)
 
+    // Hint labels are anchored to the currently dirty half-frame (+2..+4).
+    // If neither B nor C is dirty (rare transition), fall back to cam_counter.
+    uint32_t hint_base_counter = cam_counter;
+    if (b_dirty) {
+        hint_base_counter = fb * 2 + (b_upper ? 0 : 1);
+    } else if (c_dirty) {
+        hint_base_counter = fc * 2 + (c_upper ? 0 : 1);
+    }
+
     // Use the resolved hint tuple.
     cam_hint_next = h1;
     cam_hint_next_next = h2;
     cam_hint_next_next_next = h3;
-    snapshot_hints(h1, h2, h3);
+    snapshot_hints(h1, h2, h3, hint_base_counter);
 }
 
 
@@ -668,8 +727,45 @@ function:   Initialize stream state. Call once before the batched stream loop.
 static mp_obj_t camera_stream_start(void) {
     first_frame = true;
     frame_count = 0;
-    tx_first = 0;
-    tx_second = 1;
+
+    // Startup TX pair selection is state-driven (camera may already be running).
+    int8_t dirty_idx = -1;
+    int8_t cement_idx = -1;
+    for (int i = 0; i < 3; i++) {
+        uint32_t s = bucket_state[i];
+        if (dirty_idx < 0 && bucket_is_dirty(s)) {
+            dirty_idx = i;
+        }
+        if (cement_idx < 0 && bucket_tx_next_cemented[i] != 0) {
+            cement_idx = i;
+        }
+    }
+
+    if (dirty_idx >= 0 && bucket_half_is_upper(bucket_state[dirty_idx])) {
+        // If camera is writing an upper half, start TX from that bucket.
+        tx_first = (uint8_t)dirty_idx;
+        if (cement_idx >= 0 && cement_idx != dirty_idx) {
+            tx_second = (uint8_t)cement_idx;
+        } else {
+            uint8_t r1 = (tx_first + 1) % 3;
+            uint8_t r2 = (tx_first + 2) % 3;
+            tx_second = pick_preferred_bucket(r1, r2);
+        }
+    } else if (dirty_idx >= 0) {
+        // Dirty lower: send a preferred non-dirty bucket first, dirty bucket second.
+        uint8_t r1 = ((uint8_t)dirty_idx + 1) % 3;
+        uint8_t r2 = ((uint8_t)dirty_idx + 2) % 3;
+        tx_first = pick_preferred_bucket(r1, r2);
+        tx_second = (uint8_t)dirty_idx;
+    } else {
+        // No dirty bucket visible: pick best two buckets by priority.
+        uint8_t best = pick_preferred_bucket(0, 1);
+        best = pick_preferred_bucket(best, 2);
+        uint8_t rem1 = (best + 1) % 3;
+        uint8_t rem2 = (best + 2) % 3;
+        tx_first = best;
+        tx_second = pick_preferred_bucket(rem1, rem2);
+    }
 
     for (int i = 0; i < 3; i++) {
         prev_mid[i] = 0;
@@ -705,6 +801,17 @@ static mp_obj_t camera_stream_start(void) {
     cam_hint_next = tx_first;
     cam_hint_next_next = tx_second;
     cam_hint_next_next_next = 3 - tx_first - tx_second;  // the remaining bucket
+
+    uint32_t hint_base_counter = cam_counter;
+    for (int i = 0; i < 3; i++) {
+        uint32_t s = bucket_state[i];
+        if (bucket_is_dirty(s)) {
+            uint32_t f = s >> BUCKET_FRAME_SHIFT;
+            hint_base_counter = f * 2 + (bucket_half_is_upper(s) ? 0 : 1);
+            break;
+        }
+    }
+    snapshot_hints(cam_hint_next, cam_hint_next_next, cam_hint_next_next_next, hint_base_counter);
 
     // Pre-build x_headers for the first frame
     write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
