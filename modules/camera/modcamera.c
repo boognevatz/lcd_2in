@@ -511,8 +511,8 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
     bool c_upper    = bucket_half_is_upper(sc);
     bool b_complete = b_valid && !b_dirty;
     bool c_complete = c_valid && !c_dirty;
-    bool b_cemented = bucket_cemented_next_target[b] != 0;
-    bool c_cemented = bucket_cemented_next_target[c] != 0;
+    bool b_cemented = bucket_tx_next_cemented[b] != 0;
+    bool c_cemented = bucket_tx_next_cemented[c] != 0;
 
     uint32_t fb = sb >> BUCKET_FRAME_SHIFT;
     uint32_t fc = sc >> BUCKET_FRAME_SHIFT;
@@ -691,9 +691,9 @@ static mp_obj_t camera_stream_start(void) {
     write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
     x_header_buckets[X_HEADER_TX1_OFFSET] = bucket_name[tx_first];
     x_header_buckets[X_HEADER_TX2_OFFSET] = bucket_name[tx_second];
-    write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_A_OFFSET], bucket_state[0], bucket_cemented_next_target[0] != 0);
-    write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_B_OFFSET], bucket_state[1], bucket_cemented_next_target[1] != 0);
-    write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_C_OFFSET], bucket_state[2], bucket_cemented_next_target[2] != 0);
+    write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_A_OFFSET], bucket_state[0], bucket_tx_next_cemented[0] != 0);
+    write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_B_OFFSET], bucket_state[1], bucket_tx_next_cemented[1] != 0);
+    write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_C_OFFSET], bucket_state[2], bucket_tx_next_cemented[2] != 0);
     // prev-mid and prev-end: explicitly zero out with empty dashes
     write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_A_OFFSET], 0, false);
     write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_B_OFFSET], 0, false);
@@ -887,9 +887,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         prev_mid[0] = bucket_state[0];
         prev_mid[1] = bucket_state[1];
         prev_mid[2] = bucket_state[2];
-        prev_mid_cement[0] = bucket_cemented_next_target[0];
-        prev_mid_cement[1] = bucket_cemented_next_target[1];
-        prev_mid_cement[2] = bucket_cemented_next_target[2];
+        prev_mid_cement[0] = bucket_tx_next_cemented[0];
+        prev_mid_cement[1] = bucket_tx_next_cemented[1];
+        prev_mid_cement[2] = bucket_tx_next_cemented[2];
         prev_mid_time_us = mp_hal_ticks_us();
 
         // --- Send second half-frame (12-byte tag + 76,800 bytes) ---
@@ -931,9 +931,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         prev_end[0] = bucket_state[0];
         prev_end[1] = bucket_state[1];
         prev_end[2] = bucket_state[2];
-        prev_end_cement[0] = bucket_cemented_next_target[0];
-        prev_end_cement[1] = bucket_cemented_next_target[1];
-        prev_end_cement[2] = bucket_cemented_next_target[2];
+        prev_end_cement[0] = bucket_tx_next_cemented[0];
+        prev_end_cement[1] = bucket_tx_next_cemented[1];
+        prev_end_cement[2] = bucket_tx_next_cemented[2];
         prev_end_time_us = mp_hal_ticks_us();
 
         first_frame = false;
@@ -978,9 +978,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         snap[0] = bucket_state[0];
         snap[1] = bucket_state[1];
         snap[2] = bucket_state[2];
-        snap_cement[0] = bucket_cemented_next_target[0];
-        snap_cement[1] = bucket_cemented_next_target[1];
-        snap_cement[2] = bucket_cemented_next_target[2];
+        snap_cement[0] = bucket_tx_next_cemented[0];
+        snap_cement[1] = bucket_tx_next_cemented[1];
+        snap_cement[2] = bucket_tx_next_cemented[2];
         buckets_time_us = mp_hal_ticks_us();
         buckets_time_counter = cam_counter;
 

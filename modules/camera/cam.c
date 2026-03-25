@@ -69,7 +69,7 @@ volatile uint32_t cam_counter = 0;
 // TX intent (TX writes, ISR reads+upgrades)
 volatile uint8_t bucket_tx_state[3] = {BUCKET_TX_STATE_FREE, BUCKET_TX_STATE_FREE, BUCKET_TX_STATE_FREE};
 volatile uint32_t bucket_tx_min_counter[3] = {0, 0, 0};
-volatile uint8_t bucket_cemented_next_target[3] = {0, 0, 0};
+volatile uint8_t bucket_tx_next_cemented[3] = {0, 0, 0};
 volatile int8_t cam_hint_next = -1;
 volatile int8_t cam_hint_next_next = -1;
 volatile int8_t cam_hint_next_next_next = -1;
@@ -149,7 +149,7 @@ void setup_dma_for_capture()
         bucket_state[i] = bucket_make_empty();
         bucket_tx_state[i] = BUCKET_TX_STATE_FREE;
         bucket_tx_min_counter[i] = 0;
-        bucket_cemented_next_target[i] = 0;
+        bucket_tx_next_cemented[i] = 0;
     }
     cam_hint_next = -1;
     cam_hint_next_next = -1;
@@ -163,9 +163,9 @@ void setup_dma_for_capture()
     bucket_state[0] = bucket_make_dirty(0, true);
     ((uint32_t *)bucket[0])[1] = bucket_state[0];
     // Keep cemented-next-target update paired with dirty update.
-    bucket_cemented_next_target[0] = 0;
-    bucket_cemented_next_target[1] = 1; // CH_B is preconfigured as next target
-    bucket_cemented_next_target[2] = 0;
+    bucket_tx_next_cemented[0] = 0;
+    bucket_tx_next_cemented[1] = 1; // CH_B is preconfigured as next target
+    bucket_tx_next_cemented[2] = 0;
 
     // Enable IRQ on both channels
     dma_channel_set_irq0_enabled(DMA_CH_A, true);
@@ -311,10 +311,10 @@ static void handle_half_complete(uint32_t completed_ch)
     bucket_state[other_target] = bucket_make_dirty(new_frame, new_half_is_upper);
     ((uint32_t *)bucket[other_target])[1] = bucket_state[other_target];
 
-    bucket_cemented_next_target[0] = 0;
-    bucket_cemented_next_target[1] = 0;
-    bucket_cemented_next_target[2] = 0;
-    bucket_cemented_next_target[chosen] = 1;
+    bucket_tx_next_cemented[0] = 0;
+    bucket_tx_next_cemented[1] = 0;
+    bucket_tx_next_cemented[2] = 0;
+    bucket_tx_next_cemented[chosen] = 1;
 
     // --- Configure this channel for its next write ---
     ch_target[ch_idx] = chosen;
