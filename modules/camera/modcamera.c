@@ -469,10 +469,17 @@ static uint32_t t_frame_start;
 //             B = (A + 1) % 3
 //             C = (A + 2) % 3
 //
+//             ISR fact: the camera ISR has already cemented the *next* half-frame
+//             target (counter+1). We must not fight that; hints here steer only
+//             the camera writes starting at counter+2 onward. Example:
+//               A=^9L (TX now, already cemented for 12U by ISR), B=11U, C=~11L
+//               → we free A, protect B (PD), leave C to finish, and hint 12L/13U/13L
+//                 as A,A,A so the camera continues on A after the cemented 12U.
+//
 //             At 50% mark:
 //               - A is un-protected (TXP → FREE) so camera can reuse it.
 //               - B and C keep whatever TX state they had (no blanket reset).
-//               - Hints and PD follow 12 explicit cases:
+//               - Hints (for N+2, N+3, N+4) and PD follow 12 explicit cases:
 //
 //             Dirty B (camera writing to B):
 //               1)  B=~nU, C!=~nL         → hints A,C,C   protect none
