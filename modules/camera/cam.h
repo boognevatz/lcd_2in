@@ -99,7 +99,8 @@ extern volatile uint32_t bucket_state[3];
 
 extern volatile uint8_t  bucket_tx_state[3];
 extern volatile uint32_t bucket_tx_min_counter[3]; // ISR only upgrades TX state if
-                                                   // completed counter >= this value
+                                                    // completed counter >= this value
+extern volatile uint8_t  bucket_cemented_next_target[3];
 extern volatile int8_t   cam_hint_next;
 extern volatile int8_t   cam_hint_next_next;
 extern volatile int8_t   cam_hint_next_next_next;

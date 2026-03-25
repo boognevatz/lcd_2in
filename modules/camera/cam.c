@@ -69,6 +69,7 @@ volatile uint32_t cam_counter = 0;
 // TX intent (TX writes, ISR reads+upgrades)
 volatile uint8_t bucket_tx_state[3] = {BUCKET_TX_STATE_FREE, BUCKET_TX_STATE_FREE, BUCKET_TX_STATE_FREE};
 volatile uint32_t bucket_tx_min_counter[3] = {0, 0, 0};
+volatile uint8_t bucket_cemented_next_target[3] = {0, 0, 0};
 volatile int8_t cam_hint_next = -1;
 volatile int8_t cam_hint_next_next = -1;
 volatile int8_t cam_hint_next_next_next = -1;
@@ -148,6 +149,7 @@ void setup_dma_for_capture()
         bucket_state[i] = bucket_make_empty();
         bucket_tx_state[i] = BUCKET_TX_STATE_FREE;
         bucket_tx_min_counter[i] = 0;
+        bucket_cemented_next_target[i] = 0;
     }
     cam_hint_next = -1;
     cam_hint_next_next = -1;
@@ -160,6 +162,10 @@ void setup_dma_for_capture()
     // cam_counter=0 → frame=0, half=(0%2)=0 → UPPER, so is_upper=true
     bucket_state[0] = bucket_make_dirty(0, true);
     ((uint32_t *)bucket[0])[1] = bucket_state[0];
+    // Keep cemented-next-target update paired with dirty update.
+    bucket_cemented_next_target[0] = 0;
+    bucket_cemented_next_target[1] = 1; // CH_B is preconfigured as next target
+    bucket_cemented_next_target[2] = 0;
 
     // Enable IRQ on both channels
     dma_channel_set_irq0_enabled(DMA_CH_A, true);
@@ -238,16 +244,6 @@ static void handle_half_complete(uint32_t completed_ch)
         bucket_tx_state[completed] = BUCKET_TX_STATE_PD;
     }
 
-    // --- Update other channel's target state (single atomic write) ---
-    // The other channel just started writing, so its target is being overwritten.
-    uint32_t new_counter = cam_counter;
-    uint32_t new_frame = new_counter / 2;
-    bool new_half_is_upper = (new_counter % 2) == 0;
-    bucket_state[other_target] = bucket_make_dirty(new_frame, new_half_is_upper);
-    ((uint32_t *)bucket[other_target])[1] = bucket_state[other_target];
-
-    // --- Stamp bucket tag into the other bucket's tag word ---
-
     // --- Decide next write target for this (completing) channel ---
     // This channel will fire AFTER the other channel finishes other_target.
     // Natural round-robin: the bucket after other_target.
@@ -306,6 +302,19 @@ static void handle_half_complete(uint32_t completed_ch)
         // so there's no DMA conflict.
         chosen = other_target;
     }
+
+    // --- Update other channel's target state and cemented-next-target ---
+    // Keep these paired: when dirty target advances, next target advances too.
+    uint32_t new_counter = cam_counter;
+    uint32_t new_frame = new_counter / 2;
+    bool new_half_is_upper = (new_counter % 2) == 0;
+    bucket_state[other_target] = bucket_make_dirty(new_frame, new_half_is_upper);
+    ((uint32_t *)bucket[other_target])[1] = bucket_state[other_target];
+
+    bucket_cemented_next_target[0] = 0;
+    bucket_cemented_next_target[1] = 0;
+    bucket_cemented_next_target[2] = 0;
+    bucket_cemented_next_target[chosen] = 1;
 
     // --- Configure this channel for its next write ---
     ch_target[ch_idx] = chosen;
