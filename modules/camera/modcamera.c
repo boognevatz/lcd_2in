@@ -511,6 +511,8 @@ static void apply_50_percent_protection(uint8_t sending_bucket)
     bool c_upper    = bucket_half_is_upper(sc);
     bool b_complete = b_valid && !b_dirty;
     bool c_complete = c_valid && !c_dirty;
+    bool b_cemented = bucket_cemented_next_target[b] != 0;
+    bool c_cemented = bucket_cemented_next_target[c] != 0;
 
     uint32_t fb = sb >> BUCKET_FRAME_SHIFT;
     uint32_t fc = sc >> BUCKET_FRAME_SHIFT;
@@ -523,10 +525,22 @@ static void apply_50_percent_protection(uint8_t sending_bucket)
     int8_t h2 = (int8_t)c;
     int8_t h3 = (int8_t)a;
 
+    // If ISR already cemented one of the two non-sending targets, keep camera
+    // there first. This avoids steering back toward the active TX pair.
+    if (c_cemented && b_complete && b_upper) {
+        h1 = (int8_t)c;
+        h2 = (int8_t)c;
+        h3 = (int8_t)c;
+
+    } else if (b_cemented && c_complete && c_upper) {
+        h1 = (int8_t)b;
+        h2 = (int8_t)b;
+        h3 = (int8_t)b;
+
     // --- Dirty B: camera is actively writing to B ---
 
     // Case 1: B=~nU, C!=~nL     → A,C,C ; no protection
-    if (b_dirty && b_upper) {
+    } else if (b_dirty && b_upper) {
         h1 = (int8_t)a;
         h2 = (int8_t)c;
         h3 = (int8_t)c;
