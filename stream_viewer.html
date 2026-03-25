@@ -700,11 +700,21 @@
     const bucketsTx = map.get('X-Buckets-tx') || 'N/A';
     const bucketsCameraNext = map.get('X-Buckets-camera-next') || 'N/A';
     const bucketsCameraNextTime = formatHeaderTime(map.get('X-Buckets-camera-next-time') || 'N/A');
+    const bucketsCameraNextCounter = formatHeaderTime(map.get('X-Buckets-camera-next-counter') || 'N/A');
     const bucketsTime = formatHeaderTime(map.get('X-Buckets-time') || 'N/A');
+    const bucketsCounter = formatHeaderTime(map.get('X-Buckets-time-counter') || 'N/A');
+    const txUpperTime = formatHeaderTime(map.get('X-TX-upper-time') || 'N/A');
+    const txLowerMidTime = formatHeaderTime(map.get('X-TX-lower-mid-time') || 'N/A');
+    const txLowerTime = formatHeaderTime(map.get('X-TX-lower-time') || 'N/A');
     const bucketsPrevMidValue = bucketsPrevMidTime + '\n' + bucketsPrevMid;
     const bucketsPrevEndValue = bucketsPrevEndTime + '\n' + bucketsPrevEnd;
-    const bucketsValue = bucketsTime + '\n' + buckets;
-    const bucketsCameraNextValue = bucketsCameraNextTime + '\n' + bucketsCameraNext;
+    const bucketsValue = bucketsTime + ' (cam=' + bucketsCounter + ')\n' + buckets;
+    const bucketsCameraNextValue = bucketsCameraNextTime + ' (cam=' + bucketsCameraNextCounter + ')\n' + bucketsCameraNext;
+    const timingChainValue = 'pair select: ' + bucketsTime + ' (cam=' + bucketsCounter + ')'
+      + '\n' + 'hint set: ' + bucketsCameraNextTime + ' (cam=' + bucketsCameraNextCounter + ')'
+      + '\n' + 'tx upper: ' + txUpperTime
+      + '\n' + 'tx lower start: ' + txLowerTime
+      + '\n' + 'tx lower 50%: ' + txLowerMidTime;
 
     const rows = [
       ['temperature', temp],
@@ -715,6 +725,7 @@
       ['Buckets N START (Upper Start)', bucketsValue],
       ['Buckets N START state (Upper Start)', bucketsTx],
       ['camera hint N LOWER MID (50% of lower midframe)', bucketsCameraNextValue],
+      ['timing chain', timingChainValue],
       ['upper tag', formatBucketTag(upperTag)],
       ['lower tag', formatBucketTag(lowerTag)]
     ];
