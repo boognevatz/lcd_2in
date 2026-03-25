@@ -155,6 +155,21 @@ static uint32_t cam_hint_snap_time_us = 0;
 static char x_header_camera_next_time[] = "X-Buckets-camera-next-time: 0000000000000\r\n";
 #define X_HEADER_CAMERA_NEXT_TIME_OFFSET 28
 
+static char x_header_buckets_time_counter[] = "X-Buckets-time-counter: 0000000000000\r\n";
+#define X_HEADER_BUCKETS_COUNTER_OFFSET 24
+
+static char x_header_camera_next_counter[] = "X-Buckets-camera-next-counter: 0000000000000\r\n";
+#define X_HEADER_CAMERA_NEXT_COUNTER_OFFSET 31
+
+static char x_header_tx_upper_time[] = "X-TX-upper-time: 0000000000000\r\n";
+#define X_HEADER_TX_UPPER_TIME_OFFSET 17
+
+static char x_header_tx_lower_mid_time[] = "X-TX-lower-mid-time: 0000000000000\r\n";
+#define X_HEADER_TX_LOWER_MID_TIME_OFFSET 21
+
+static char x_header_tx_lower_time[] = "X-TX-lower-time: 0000000000000\r\n";
+#define X_HEADER_TX_LOWER_TIME_OFFSET 17
+
 static const char x_header_terminator[] = "\r\n";
 
 
@@ -419,6 +434,10 @@ static uint32_t prev_end[3];
 static uint32_t prev_mid_time_us;
 static uint32_t prev_end_time_us;
 static uint32_t buckets_time_us;
+static uint32_t buckets_time_counter;
+static uint32_t tx_upper_time_us;
+static uint32_t tx_lower_mid_time_us;
+static uint32_t tx_lower_time_us;
 static uint32_t last_sent_half_frame;
 static int8_t   wait_upper_bucket;
 static uint32_t frame_count;
@@ -448,13 +467,13 @@ static uint32_t t_frame_start;
 //               - Hints and PD follow 12 explicit cases:
 //
 //             Dirty B (camera writing to B):
-//               1)  B=~nU, C=(n-1)L      → hints C,A,A   protect none
-//               2)  B=~nL, C=nU          → hints A,A,A   protect C
+//               1)  B=~nU, C!=~nL         → hints A,C,C   protect none
+//               2)  B=~nL, C=nU          → hints B,A,A   protect C
 //               3)  B=~nL, C=stale       → hints B,C,A   protect none
 //
 //             Dirty C (camera writing to C) — mirrors:
-//               M1) C=~nU, B=(n-1)L      → hints B,A,A   protect none
-//               M2) C=~nL, B=nU          → hints A,A,A   protect B
+//               M1) C=~nU, B!=~nL         → hints A,B,B   protect none
+//               M2) C=~nL, B=nU          → hints C,A,A   protect B
 //               M3) C=~nL, B=stale       → hints C,B,A   protect none
 //
 //             Both complete:
@@ -498,17 +517,16 @@ static void apply_50_percent_protection(uint8_t sending_bucket)
 
     // --- Dirty B: camera is actively writing to B ---
 
-    // Case 1: B=~nU, C=(n-1)L  → C,A,A ; no protection
-    if (b_dirty && b_upper &&
-        c_complete && !c_upper && fb == (fc + 1)) {
-        h1 = (int8_t)c;
-        h2 = (int8_t)a;
-        h3 = (int8_t)a;
+    // Case 1: B=~nU, C!=~nL     → A,C,C ; no protection
+    if (b_dirty && b_upper) {
+        h1 = (int8_t)a;
+        h2 = (int8_t)c;
+        h3 = (int8_t)c;
 
-    // Case 2: B=~nL, C=nU      → A,A,A ; protect C
+    // Case 2: B=~nL, C=nU      → B,A,A ; protect C
     } else if (b_dirty && !b_upper &&
                c_complete && c_upper && fb == fc) {
-        h1 = (int8_t)a;
+        h1 = (int8_t)b;
         h2 = (int8_t)a;
         h3 = (int8_t)a;
         bucket_tx_state[c] = BUCKET_TX_STATE_PD;
@@ -521,17 +539,16 @@ static void apply_50_percent_protection(uint8_t sending_bucket)
 
     // --- Dirty C: camera is actively writing to C (mirrors) ---
 
-    // Case M1: C=~nU, B=(n-1)L → B,A,A ; no protection
-    } else if (c_dirty && c_upper &&
-               b_complete && !b_upper && fc == (fb + 1)) {
-        h1 = (int8_t)b;
-        h2 = (int8_t)a;
-        h3 = (int8_t)a;
+    // Case M1: C=~nU, B!=~nL    → A,B,B ; no protection
+    } else if (c_dirty && c_upper) {
+        h1 = (int8_t)a;
+        h2 = (int8_t)b;
+        h3 = (int8_t)b;
 
-    // Case M2: C=~nL, B=nU     → A,A,A ; protect B
+    // Case M2: C=~nL, B=nU     → C,A,A ; protect B
     } else if (c_dirty && !c_upper &&
                b_complete && b_upper && fc == fb) {
-        h1 = (int8_t)a;
+        h1 = (int8_t)c;
         h2 = (int8_t)a;
         h3 = (int8_t)a;
         bucket_tx_state[b] = BUCKET_TX_STATE_PD;
@@ -620,6 +637,10 @@ static mp_obj_t camera_stream_start(void) {
     prev_mid_time_us = 0;
     prev_end_time_us = 0;
     buckets_time_us = 0;
+    buckets_time_counter = 0;
+    tx_upper_time_us = 0;
+    tx_lower_mid_time_us = 0;
+    tx_lower_time_us = 0;
 
     accum_send_us = 0;
     accum_total_us = 0;
@@ -659,10 +680,16 @@ static mp_obj_t camera_stream_start(void) {
     write_u32_grouped(&x_header_buckets_prev_mid_time[X_HEADER_MID_TIME_OFFSET], prev_mid_time_us);
     write_u32_grouped(&x_header_buckets_prev_end_time[X_HEADER_END_TIME_OFFSET], prev_end_time_us);
     write_u32_grouped(&x_header_buckets_time[X_HEADER_BUCKETS_TIME_OFFSET], buckets_time_us);
+    write_u32_grouped(&x_header_buckets_time_counter[X_HEADER_BUCKETS_COUNTER_OFFSET], buckets_time_counter);
     write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], bucket_tx_state[0]);
     write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], bucket_tx_state[1]);
     write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_C_OFFSET], bucket_tx_state[2]);
     write_camera_next_header();
+    write_u32_grouped(&x_header_camera_next_time[X_HEADER_CAMERA_NEXT_TIME_OFFSET], cam_hint_snap_time_us);
+    write_u32_grouped(&x_header_camera_next_counter[X_HEADER_CAMERA_NEXT_COUNTER_OFFSET], cam_hint_snap_counter);
+    write_u32_grouped(&x_header_tx_upper_time[X_HEADER_TX_UPPER_TIME_OFFSET], tx_upper_time_us);
+    write_u32_grouped(&x_header_tx_lower_mid_time[X_HEADER_TX_LOWER_MID_TIME_OFFSET], tx_lower_mid_time_us);
+    write_u32_grouped(&x_header_tx_lower_time[X_HEADER_TX_LOWER_TIME_OFFSET], tx_lower_time_us);
 
     t_frame_start = mp_hal_ticks_us();
 
@@ -765,11 +792,27 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_camera_next_time, sizeof(x_header_camera_next_time) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
+        ret = mp_stream_write_exactly(socket_obj, x_header_buckets_time_counter, sizeof(x_header_buckets_time_counter) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_camera_next_counter, sizeof(x_header_camera_next_counter) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_tx_upper_time, sizeof(x_header_tx_upper_time) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_tx_lower_mid_time, sizeof(x_header_tx_lower_mid_time) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_tx_lower_time, sizeof(x_header_tx_lower_time) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
         ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
         // --- Send first half-frame (12-byte tag + 76,800 bytes) ---
         uint32_t upper_time_us = mp_hal_ticks_us();
+        tx_upper_time_us = upper_time_us;
         uint32_t upper_tag = bucket_state[tx_first];
         uint32_t *upper_words = (uint32_t *)bucket[tx_first];
         uint32_t upper_tx_states = pack_tx_states();
@@ -825,6 +868,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         // --- Send second half-frame (12-byte tag + 76,800 bytes) ---
         // Split at 50%: send first 50%, apply protection swap, send rest.
         uint32_t lower_time_us = mp_hal_ticks_us();
+        tx_lower_time_us = lower_time_us;
         uint32_t lower_tag = bucket_state[tx_second];
         uint32_t *lower_words = (uint32_t *)bucket[tx_second];
         uint32_t lower_tx_states = pack_tx_states();
@@ -841,6 +885,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         }
 
         // --- 50% mark: release current bucket, conditionally protect upper ---
+        tx_lower_mid_time_us = mp_hal_ticks_us();
         apply_50_percent_protection(tx_second);
 
         // Phase 2: send remaining 50%
@@ -903,6 +948,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         snap[1] = bucket_state[1];
         snap[2] = bucket_state[2];
         buckets_time_us = mp_hal_ticks_us();
+        buckets_time_counter = cam_counter;
 
         // Order: Upper half goes first (spec rule).
         bool a_upper = bucket_is_valid(snap[cand_a]) && bucket_half_is_upper(snap[cand_a]);
@@ -987,11 +1033,16 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         write_u32_grouped(&x_header_buckets_prev_mid_time[X_HEADER_MID_TIME_OFFSET], prev_mid_time_us);
         write_u32_grouped(&x_header_buckets_prev_end_time[X_HEADER_END_TIME_OFFSET], prev_end_time_us);
         write_u32_grouped(&x_header_buckets_time[X_HEADER_BUCKETS_TIME_OFFSET], buckets_time_us);
+        write_u32_grouped(&x_header_buckets_time_counter[X_HEADER_BUCKETS_COUNTER_OFFSET], buckets_time_counter);
         write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], bucket_tx_state[0]);
         write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], bucket_tx_state[1]);
         write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_C_OFFSET], bucket_tx_state[2]);
         write_camera_next_header();
         write_u32_grouped(&x_header_camera_next_time[X_HEADER_CAMERA_NEXT_TIME_OFFSET], cam_hint_snap_time_us);
+        write_u32_grouped(&x_header_camera_next_counter[X_HEADER_CAMERA_NEXT_COUNTER_OFFSET], cam_hint_snap_counter);
+        write_u32_grouped(&x_header_tx_upper_time[X_HEADER_TX_UPPER_TIME_OFFSET], tx_upper_time_us);
+        write_u32_grouped(&x_header_tx_lower_mid_time[X_HEADER_TX_LOWER_MID_TIME_OFFSET], tx_lower_mid_time_us);
+        write_u32_grouped(&x_header_tx_lower_time[X_HEADER_TX_LOWER_TIME_OFFSET], tx_lower_time_us);
     }
 
     // On disconnect, release all protection
