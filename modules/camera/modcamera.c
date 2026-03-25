@@ -482,7 +482,7 @@ static uint32_t t_frame_start;
 //             Dirty C (camera writing to C) — mirrors:
 //               M1) C=~nU, B!=~nL         → hints A,B,B   protect none
 //               M2) C=~nL, B=nU          → hints C,A,A   protect B
-//               M3) C=~nL, B=stale       → hints B,C,A   protect none
+//               M3) C=~nL, B=stale       → hints C,B,A   protect none
 //
 //             Both complete:
 //               4a) B=nU, C=(n-1)L       → hints C,C,C   protect B
@@ -561,10 +561,10 @@ static void apply_50_percent_protection(uint8_t sending_bucket)
         h3 = (int8_t)a;
         bucket_tx_state[b] = BUCKET_TX_STATE_PD;
 
-    // Case M3: C=~nL, B=stale  → B,C,A ; no protection
+    // Case M3: C=~nL, B=stale  → C,B,A ; no protection
     } else if (c_dirty && !c_upper) {
-        h1 = (int8_t)b;
-        h2 = (int8_t)c;
+        h1 = (int8_t)c;
+        h2 = (int8_t)b;
         h3 = (int8_t)a;
 
     // --- Both complete ---
