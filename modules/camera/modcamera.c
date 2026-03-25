@@ -477,10 +477,10 @@ static uint32_t t_frame_start;
 //               M3) C=~nL, B=stale       → hints C,B,A   protect none
 //
 //             Both complete:
-//               4a) B=nU, C=(n-1)L       → hints C,A,A   protect B
+//               4a) B=nU, C=(n-1)L       → hints C,C,C   protect B
 //               4b) B=nU, C=nL           → hints A,A,A   protect B,C
 //               4c) B=nL, C=(n-1)U       → hints B,C,A   protect none
-//               M4a) C=nU, B=(n-1)L      → hints B,A,A   protect C
+//               M4a) C=nU, B=(n-1)L      → hints B,B,B   protect C
 //               M4b) C=nU, B=nL          → hints A,A,A   protect B,C
 //               M4c) C=nL, B=(n-1)U      → hints C,B,A   protect none
 //
@@ -561,12 +561,12 @@ static void apply_50_percent_protection(uint8_t sending_bucket)
 
     // --- Both complete ---
 
-    // Case 4a: B=nU, C=(n-1)L  → C,A,A ; protect B
+    // Case 4a: B=nU, C=(n-1)L  → C,C,C ; protect B
     } else if (b_complete && b_upper &&
                c_complete && !c_upper && fb == (fc + 1)) {
         h1 = (int8_t)c;
-        h2 = (int8_t)a;
-        h3 = (int8_t)a;
+        h2 = (int8_t)c;
+        h3 = (int8_t)c;
         bucket_tx_state[b] = BUCKET_TX_STATE_PD;
 
     // Case 4b: B=nU, C=nL      → A,A,A ; protect B,C
@@ -585,12 +585,12 @@ static void apply_50_percent_protection(uint8_t sending_bucket)
         h2 = (int8_t)b;
         h3 = (int8_t)a;
 
-    // Case M4a: C=nU, B=(n-1)L → B,A,A ; protect C
+    // Case M4a: C=nU, B=(n-1)L → B,B,B ; protect C
     } else if (b_complete && !b_upper &&
                c_complete && c_upper && fc == (fb + 1)) {
         h1 = (int8_t)b;
-        h2 = (int8_t)a;
-        h3 = (int8_t)a;
+        h2 = (int8_t)b;
+        h3 = (int8_t)b;
         bucket_tx_state[c] = BUCKET_TX_STATE_PD;
 
     // Case M4b: C=nU, B=nL     → A,A,A ; protect B,C
