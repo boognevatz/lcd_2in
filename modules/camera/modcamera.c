@@ -552,16 +552,26 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
     }
 
     // --- Hint label anchoring ---
-    // Anchor to the currently dirty half-frame so labels read DIRTY+2..+4.
-    // Scan all three buckets; use the first dirty one found.
-    uint32_t hint_base_counter = cam_counter;
+    // Anchor to the dirty bucket with the highest half-frame counter so
+    // labels read DIRTY+2..+4.  If the ISR fires mid-scan, two buckets
+    // may momentarily appear dirty (stale + new); picking the highest
+    // counter ensures we anchor to the currently-writing one.
+    uint32_t hint_base_counter = cam_counter;  // fallback when no dirty
+    uint32_t max_dirty = 0;
+    bool found_dirty = false;
     for (int i = 0; i < 3; i++) {
         uint32_t s = bucket_state[i];
         if (bucket_is_dirty(s)) {
             uint32_t f = s >> BUCKET_FRAME_SHIFT;
-            hint_base_counter = f * 2 + (bucket_half_is_upper(s) ? 0 : 1);
-            break;
+            uint32_t c = f * 2 + (bucket_half_is_upper(s) ? 0 : 1);
+            if (!found_dirty || c > max_dirty) {
+                max_dirty = c;
+                found_dirty = true;
+            }
         }
+    }
+    if (found_dirty) {
+        hint_base_counter = max_dirty;
     }
 
     // Apply the resolved hint tuple.
@@ -657,14 +667,22 @@ static mp_obj_t camera_stream_start(void) {
     cam_hint_next_next = startup_remaining;
     cam_hint_next_next_next = startup_remaining;
 
-    uint32_t hint_base_counter = cam_counter;
+    uint32_t hint_base_counter = cam_counter;  // fallback when no dirty
+    uint32_t max_dirty = 0;
+    bool found_dirty = false;
     for (int i = 0; i < 3; i++) {
         uint32_t s = bucket_state[i];
         if (bucket_is_dirty(s)) {
             uint32_t f = s >> BUCKET_FRAME_SHIFT;
-            hint_base_counter = f * 2 + (bucket_half_is_upper(s) ? 0 : 1);
-            break;
+            uint32_t c = f * 2 + (bucket_half_is_upper(s) ? 0 : 1);
+            if (!found_dirty || c > max_dirty) {
+                max_dirty = c;
+                found_dirty = true;
+            }
         }
+    }
+    if (found_dirty) {
+        hint_base_counter = max_dirty;
     }
     snapshot_hints(cam_hint_next, cam_hint_next_next, cam_hint_next_next_next, hint_base_counter);
 
