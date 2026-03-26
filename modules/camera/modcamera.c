@@ -507,9 +507,9 @@ static uint8_t pick_preferred_bucket(uint8_t x, uint8_t y)
 //             Hints here steer DIRTY+2, DIRTY+3, DIRTY+4 only.
 //
 //             Candidate priority for hints:
-//               1. SENDING bucket  (just freed, not in next pair)
-//               2. REMAINING bucket (next-pair candidate, less preferred)
-//               3. tx_first        (next-pair candidate, least preferred)
+//               1. REMAINING bucket (not in current TX pair, safe for camera)
+//               2. tx_first        (already sent and freed earlier this frame)
+//               3. SENDING bucket  (last resort — just freed but still transmitting)
 //
 //             Hint labels are anchored to the currently dirty half-frame
 //             counter so the display reads DIRTY+2, DIRTY+3, DIRTY+4.
@@ -523,28 +523,31 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
     bucket_tx_state[sending] = BUCKET_TX_STATE_FREE;
 
     // --- Hint selection ---
-    // Primary target: SENDING (just freed, guaranteed not in next pair).
-    int8_t hint1 = (int8_t)sending;
-    int8_t hint2 = (int8_t)sending;
-    int8_t hint3 = (int8_t)sending;
+    // Primary target: REMAINING (not in current TX pair, safe for camera).
+    // SENDING is being freed but still transmitting — do NOT direct camera there.
+    int8_t hint1 = (int8_t)remaining;
+    int8_t hint2 = (int8_t)remaining;
+    int8_t hint3 = (int8_t)remaining;
 
-    // Fallback: if SENDING is somehow still protected, degrade gracefully.
-    bool sending_protected =
-        (bucket_tx_state[sending] == BUCKET_TX_STATE_TXP ||
-         bucket_tx_state[sending] == BUCKET_TX_STATE_PD);
+    // Fallback: if REMAINING is somehow still protected, degrade gracefully.
+    bool remaining_protected =
+        (bucket_tx_state[remaining] == BUCKET_TX_STATE_TXP ||
+         bucket_tx_state[remaining] == BUCKET_TX_STATE_PD);
 
-    if (sending_protected) {
-        bool remaining_protected =
-            (bucket_tx_state[remaining] == BUCKET_TX_STATE_TXP ||
-             bucket_tx_state[remaining] == BUCKET_TX_STATE_PD);
-        if (!remaining_protected) {
-            hint1 = (int8_t)remaining;
-            hint2 = (int8_t)remaining;
-            hint3 = (int8_t)remaining;
-        } else {
+    if (remaining_protected) {
+        // tx_first was already sent and freed earlier in this frame.
+        bool tx_first_protected =
+            (bucket_tx_state[tx_first] == BUCKET_TX_STATE_TXP ||
+             bucket_tx_state[tx_first] == BUCKET_TX_STATE_PD);
+        if (!tx_first_protected) {
             hint1 = (int8_t)tx_first;
             hint2 = (int8_t)tx_first;
             hint3 = (int8_t)tx_first;
+        } else {
+            // Last resort: sending (just freed, still transmitting lower 50%).
+            hint1 = (int8_t)sending;
+            hint2 = (int8_t)sending;
+            hint3 = (int8_t)sending;
         }
     }
 
@@ -648,9 +651,11 @@ static mp_obj_t camera_stream_start(void) {
     bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
     bucket_tx_min_counter[tx_first] = cam_counter;
     bucket_tx_min_counter[tx_second] = cam_counter;
-    cam_hint_next = tx_first;
-    cam_hint_next_next = tx_second;
-    cam_hint_next_next_next = 3 - tx_first - tx_second;  // the remaining bucket
+    // Direct camera AWAY from the TX pair — to the remaining bucket.
+    uint8_t startup_remaining = 3 - tx_first - tx_second;
+    cam_hint_next = startup_remaining;
+    cam_hint_next_next = startup_remaining;
+    cam_hint_next_next_next = startup_remaining;
 
     uint32_t hint_base_counter = cam_counter;
     for (int i = 0; i < 3; i++) {
@@ -840,23 +845,12 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         }
 
         // Set early hints at mid-frame, but ONLY if both hint slots are
-        // already consumed. If hints from the decision are still present,
-        // they may point to tx_second (which the camera still needs to
-        // write to for the current frame) — overwriting them would
-        // misdirect the ISR.
+        // already consumed. Direct camera to REMAINING (away from TX pair).
         if (cam_hint_next < 0) {
-            uint8_t mid_cand_a = (tx_second + 1) % 3;
-            uint8_t mid_cand_b = (tx_second + 2) % 3;
-            // Put non-dirty candidate first — same logic as apply_50_percent_protection
-            uint32_t ms_a = bucket_state[mid_cand_a];
-            if (bucket_is_dirty(ms_a)) {
-                cam_hint_next = mid_cand_b;
-                cam_hint_next_next = mid_cand_a;
-            } else {
-                cam_hint_next = mid_cand_a;
-                cam_hint_next_next = mid_cand_b;
-            }
-            cam_hint_next_next_next = tx_second;
+            uint8_t mid_remaining = 3 - tx_first - tx_second;
+            cam_hint_next = mid_remaining;
+            cam_hint_next_next = mid_remaining;
+            cam_hint_next_next_next = mid_remaining;
         }
 
         // Snapshot mid-point: bucket states after 1st half sent
@@ -983,8 +977,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             }
         }
 
-        cam_hint_next = tx_first;
-        cam_hint_next_next = tx_second;
+        // Direct camera AWAY from the new TX pair — to just_finished bucket.
+        cam_hint_next = just_finished;
+        cam_hint_next_next = just_finished;
         cam_hint_next_next_next = just_finished;
 
         uint32_t hfa = bucket_get_halfframe(snap[cand_a]);
