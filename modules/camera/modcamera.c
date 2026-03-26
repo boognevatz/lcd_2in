@@ -490,232 +490,82 @@ static uint8_t pick_preferred_bucket(uint8_t x, uint8_t y)
 // ******************************************************************************
 // function:   Apply the 50%-mark camera-direction rule-set.
 //
-//             A = bucket_tx_now (currently sending lower half, at mid-point)
-//             B = (A + 1) % 3
-//             C = (A + 2) % 3
+//             At the 50% point of sending the lower half-frame:
 //
-//             ISR fact: the camera ISR has already cemented the *next* half-frame
-//             target (counter+1). We must not fight that; hints here steer only
-//             the camera writes starting at counter+2 onward. Example:
-//               A=^9L (TX now, already cemented for 12U by ISR), B=11U, C=~11L
-//               → we free A, protect B (PD), leave C to finish, and hint 12L/13U/13L
-//                 as A,A,A so the camera continues on A after the cemented 12U.
+//             1. Free SENDING bucket (TXP → FREE) so camera can reuse it.
+//             2. Compute REMAINING = the bucket not in the current TX pair
+//                (tx_first, tx_second).  The next TX pair will be selected
+//                from the two non-SENDING buckets, so REMAINING is the one
+//                bucket guaranteed NOT to be in the next pair.
+//             3. Direct all three camera hints to REMAINING, keeping camera
+//                writes away from the next TX pair's candidate buckets.
+//             4. Do not blanket-reset other TX states.  PD/TXP upgrades are
+//                handled by the ISR and by end-of-frame pair selection.
 //
-//             At 50% mark:
-//               - A is un-protected (TXP → FREE) so camera can reuse it.
-//               - B and C keep whatever TX state they had (no blanket reset).
-//               - Hints (for N+2, N+3, N+4) and PD follow 12 explicit cases:
+//             ISR fact: the camera ISR has already cemented the next
+//             half-frame target (DIRTY+1).  We must not fight that.
+//             Hints here steer DIRTY+2, DIRTY+3, DIRTY+4 only.
 //
-//             Dirty B (camera writing to B):
-//               1)  B=~nU, C=^nL         → hints A,A,A   protect none  (C cemented next)
-//               2)  B=~nL, C=nU          → hints B,A,A   protect C
-//               3)  B=~nL, C=stale       → hints C,B,A   protect none
+//             Candidate priority for hints:
+//               1. REMAINING bucket (not in current TX pair)
+//               2. tx_second  (later TX slot — less urgent)
+//               3. tx_first   (already freed earlier in the frame)
 //
-//             Dirty C (camera writing to C) — mirrors:
-//               M1) C=~nU, B!=~nL         → hints A,B,B   protect none
-//               M2) C=~nL, B=nU          → hints C,A,A   protect B
-//               M3) C=~nL, B=stale       → hints C,B,A   protect none
-//
-//             Both complete:
-//               4a) B=nU, C=(n-1)L       → hints C,C,C   protect B
-//               4b) B=nU, C=nL           → hints A,A,A   protect B,C
-//               4c) B=nL, C=(n-1)U       → hints B,C,A   protect none
-//               M4a) C=nU, B=(n-1)L      → hints B,B,B   protect C
-//               M4b) C=nU, B=nL          → hints A,A,A   protect B,C
-//               M4c) C=nL, B=(n-1)U      → hints C,B,A   protect none
-//
-//             invalid/empty is treated as stale data.
+//             Hint labels are anchored to the currently dirty half-frame
+//             counter so the display reads DIRTY+2, DIRTY+3, DIRTY+4.
 // ******************************************************************************
 static void apply_50_percent_protection(uint8_t bucket_tx_now)
 {
-    uint8_t a = bucket_tx_now;
-    uint8_t b = (a + 1) % 3;
-    uint8_t c = (a + 2) % 3;
+    uint8_t sending   = bucket_tx_now;
+    uint8_t remaining = 3 - tx_first - tx_second;
 
-    uint32_t sb = bucket_state[b];
-    uint32_t sc = bucket_state[c];
+    // 50% mark: free the SENDING bucket so camera can reuse it.
+    bucket_tx_state[sending] = BUCKET_TX_STATE_FREE;
 
-    bool b_valid    = bucket_is_valid(sb);
-    bool c_valid    = bucket_is_valid(sc);
-    bool b_dirty    = bucket_is_dirty(sb);
-    bool c_dirty    = bucket_is_dirty(sc);
-    bool b_upper    = bucket_half_is_upper(sb);
-    bool c_upper    = bucket_half_is_upper(sc);
-    bool b_complete = b_valid && !b_dirty;
-    bool c_complete = c_valid && !c_dirty;
-    bool a_cemented = bucket_tx_next_cemented[a] != 0;
-    bool b_cemented = bucket_tx_next_cemented[b] != 0;
-    bool c_cemented = bucket_tx_next_cemented[c] != 0;
+    // --- Hint selection ---
+    // Primary target: REMAINING (away from next TX pair candidates).
+    int8_t hint1 = (int8_t)remaining;
+    int8_t hint2 = (int8_t)remaining;
+    int8_t hint3 = (int8_t)remaining;
 
-    uint32_t fb = sb >> BUCKET_FRAME_SHIFT;
-    uint32_t fc = sc >> BUCKET_FRAME_SHIFT;
+    // Fallback: if REMAINING is somehow still protected, degrade gracefully.
+    bool remaining_protected =
+        (bucket_tx_state[remaining] == BUCKET_TX_STATE_TXP ||
+         bucket_tx_state[remaining] == BUCKET_TX_STATE_PD);
 
-    // 50% mark: un-protect currently-sent bucket so camera can use it.
-    bucket_tx_state[a] = BUCKET_TX_STATE_FREE;
-
-    // Default hints (safe deterministic fallback): B,C,A.
-    int8_t h1 = (int8_t)b;
-    int8_t h2 = (int8_t)c;
-    int8_t h3 = (int8_t)a;
-
-    // If ISR already cemented one of the two non-sending targets, keep camera
-    // there first. This avoids steering back toward the active TX pair.
-    if (c_cemented && b_complete && b_upper) {
-        h1 = (int8_t)c;
-        h2 = (int8_t)c;
-        h3 = (int8_t)c;
-
-    } else if (b_cemented && c_complete && c_upper) {
-        h1 = (int8_t)b;
-        h2 = (int8_t)b;
-        h3 = (int8_t)b;
-
-    // --- Dirty B: camera is actively writing to B ---
-
-    // Case 1a: B=~nU and A is already cemented next.
-    // If C already holds nU, keep A for N+2..N+4; otherwise steer to C.
-    } else if (b_dirty && b_upper && a_cemented && c_complete && c_upper) {
-        h1 = (int8_t)a;
-        h2 = (int8_t)a;
-        h3 = (int8_t)a;
-
-    } else if (b_dirty && b_upper && a_cemented) {
-        h1 = (int8_t)c;
-        h2 = (int8_t)c;
-        h3 = (int8_t)c;
-
-    // Case 1b: B=~nU, C=^nL     → A,A,A ; no protection (cemented next on C)
-    } else if (b_dirty && b_upper && c_cemented && !c_upper) {
-        h1 = (int8_t)a;
-        h2 = (int8_t)a;
-        h3 = (int8_t)a;
-
-    // Case 1 legacy fallback: B=~nU (no cement) → A,C,C ; no protection
-    } else if (b_dirty && b_upper) {
-        h1 = (int8_t)a;
-        h2 = (int8_t)c;
-        h3 = (int8_t)c;
-
-    // Case 2: B=~nL, C=nU      → B,A,A ; protect C
-    } else if (b_dirty && !b_upper &&
-               c_complete && c_upper && fb == fc) {
-        h1 = (int8_t)b;
-        h2 = (int8_t)a;
-        h3 = (int8_t)a;
-        bucket_tx_state[c] = BUCKET_TX_STATE_PD;
-
-    // Case 3: B=~nL, C=stale   → C,B,A ; no protection
-    } else if (b_dirty && !b_upper) {
-        h1 = (int8_t)c;
-        h2 = (int8_t)b;
-        h3 = (int8_t)a;
-
-    // --- Dirty C: camera is actively writing to C (mirrors) ---
-
-    // Case M1a: C=~nU and A is already cemented next.
-    // If B already holds nU, keep A for N+2..N+4; otherwise steer to B.
-    } else if (c_dirty && c_upper && a_cemented && b_complete && b_upper) {
-        h1 = (int8_t)a;
-        h2 = (int8_t)a;
-        h3 = (int8_t)a;
-
-    } else if (c_dirty && c_upper && a_cemented) {
-        h1 = (int8_t)b;
-        h2 = (int8_t)b;
-        h3 = (int8_t)b;
-
-    // Case M1b: C=~nU, B=^nL    → A,A,A ; no protection (cemented next on B)
-    } else if (c_dirty && c_upper && b_cemented && !b_upper) {
-        h1 = (int8_t)a;
-        h2 = (int8_t)a;
-        h3 = (int8_t)a;
-
-    // Case M1 legacy fallback: C=~nU (no cement) → A,B,B ; no protection
-    } else if (c_dirty && c_upper) {
-        h1 = (int8_t)a;
-        h2 = (int8_t)b;
-        h3 = (int8_t)b;
-
-    // Case M2: C=~nL, B=nU     → C,A,A ; protect B
-    } else if (c_dirty && !c_upper &&
-               b_complete && b_upper && fc == fb) {
-        h1 = (int8_t)c;
-        h2 = (int8_t)a;
-        h3 = (int8_t)a;
-        bucket_tx_state[b] = BUCKET_TX_STATE_PD;
-
-    // Case M3: C=~nL, B=stale  → C,B,A ; no protection
-    } else if (c_dirty && !c_upper) {
-        h1 = (int8_t)c;
-        h2 = (int8_t)b;
-        h3 = (int8_t)a;
-
-    // --- Both complete ---
-
-    // Case 4a: B=nU, C=(n-1)L  → C,C,C ; protect B
-    } else if (b_complete && b_upper &&
-               c_complete && !c_upper && fb == (fc + 1)) {
-        h1 = (int8_t)c;
-        h2 = (int8_t)c;
-        h3 = (int8_t)c;
-        bucket_tx_state[b] = BUCKET_TX_STATE_PD;
-
-    // Case 4b: B=nU, C=nL      → A,A,A ; protect B,C
-    } else if (b_complete && b_upper &&
-               c_complete && !c_upper && fb == fc) {
-        h1 = (int8_t)a;
-        h2 = (int8_t)a;
-        h3 = (int8_t)a;
-        bucket_tx_state[b] = BUCKET_TX_STATE_PD;
-        bucket_tx_state[c] = BUCKET_TX_STATE_PD;
-
-    // Case M4c: C=nL, B=(n-1)U → C,B,A ; no protection
-    } else if (b_complete && b_upper &&
-               c_complete && !c_upper && fc == (fb + 1)) {
-        h1 = (int8_t)c;
-        h2 = (int8_t)b;
-        h3 = (int8_t)a;
-
-    // Case M4a: C=nU, B=(n-1)L → B,B,B ; protect C
-    } else if (b_complete && !b_upper &&
-               c_complete && c_upper && fc == (fb + 1)) {
-        h1 = (int8_t)b;
-        h2 = (int8_t)b;
-        h3 = (int8_t)b;
-        bucket_tx_state[c] = BUCKET_TX_STATE_PD;
-
-    // Case M4b: C=nU, B=nL     → A,A,A ; protect B,C
-    } else if (b_complete && !b_upper &&
-               c_complete && c_upper && fc == fb) {
-        h1 = (int8_t)a;
-        h2 = (int8_t)a;
-        h3 = (int8_t)a;
-        bucket_tx_state[b] = BUCKET_TX_STATE_PD;
-        bucket_tx_state[c] = BUCKET_TX_STATE_PD;
-
-    // Case 4c: B=nL, C=(n-1)U  → B,C,A ; no protection
-    } else if (b_complete && !b_upper &&
-               c_complete && c_upper && fb == (fc + 1)) {
-        h1 = (int8_t)b;
-        h2 = (int8_t)c;
-        h3 = (int8_t)a;
+    if (remaining_protected) {
+        bool tx2_protected =
+            (bucket_tx_state[tx_second] == BUCKET_TX_STATE_TXP ||
+             bucket_tx_state[tx_second] == BUCKET_TX_STATE_PD);
+        if (!tx2_protected) {
+            hint1 = (int8_t)tx_second;
+            hint2 = (int8_t)tx_second;
+            hint3 = (int8_t)tx_second;
+        } else {
+            hint1 = (int8_t)tx_first;
+            hint2 = (int8_t)tx_first;
+            hint3 = (int8_t)tx_first;
+        }
     }
-    // else: default B,C,A (e.g., both stale/empty, both same half-type)
 
-    // Hint labels are anchored to the currently dirty half-frame (+2..+4).
-    // If neither B nor C is dirty (rare transition), fall back to cam_counter.
+    // --- Hint label anchoring ---
+    // Anchor to the currently dirty half-frame so labels read DIRTY+2..+4.
+    // Scan all three buckets; use the first dirty one found.
     uint32_t hint_base_counter = cam_counter;
-    if (b_dirty) {
-        hint_base_counter = fb * 2 + (b_upper ? 0 : 1);
-    } else if (c_dirty) {
-        hint_base_counter = fc * 2 + (c_upper ? 0 : 1);
+    for (int i = 0; i < 3; i++) {
+        uint32_t s = bucket_state[i];
+        if (bucket_is_dirty(s)) {
+            uint32_t f = s >> BUCKET_FRAME_SHIFT;
+            hint_base_counter = f * 2 + (bucket_half_is_upper(s) ? 0 : 1);
+            break;
+        }
     }
 
-    // Use the resolved hint tuple.
-    cam_hint_next = h1;
-    cam_hint_next_next = h2;
-    cam_hint_next_next_next = h3;
-    snapshot_hints(h1, h2, h3, hint_base_counter);
+    // Apply the resolved hint tuple.
+    cam_hint_next           = hint1;
+    cam_hint_next_next      = hint2;
+    cam_hint_next_next_next = hint3;
+    snapshot_hints(hint1, hint2, hint3, hint_base_counter);
 }
 
 
