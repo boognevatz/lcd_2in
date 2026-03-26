@@ -260,12 +260,12 @@ static void handle_half_complete(uint32_t completed_ch)
 
     // Strict queue semantics:
     // - Consume (pop) only a hint that was actually used.
-    // - If the head hint is temporarily blocked (other_target or protected),
-    //   keep it pending and use fallback for this ISR tick.
-    // - We intentionally do NOT check != completed for hints: they are
-    //   explicit directives from TX.
+    // - If the head hint is blocked by protection, keep it pending and use
+    //   fallback for this ISR tick.
+    // - We intentionally do NOT check != completed or != other_target for
+    //   hints: they are explicit directives from TX.
     bool used_hint = false;
-    if (hint1 >= 0 && hint1 < 3 && (uint8_t)hint1 != other_target && !is_protected((uint8_t)hint1)) {
+    if (hint1 >= 0 && hint1 < 3 && !is_protected((uint8_t)hint1)) {
         chosen = (uint8_t)hint1;
         used_hint = true;
         cam_hint_next = hint2;
@@ -273,7 +273,7 @@ static void handle_half_complete(uint32_t completed_ch)
         cam_hint_next_next_next = -1;
     } else if (hint1 < 0 &&
                hint2 >= 0 && hint2 < 3 &&
-               (uint8_t)hint2 != other_target && !is_protected((uint8_t)hint2)) {
+               !is_protected((uint8_t)hint2)) {
         chosen = (uint8_t)hint2;
         used_hint = true;
         cam_hint_next = hint3;
@@ -281,7 +281,7 @@ static void handle_half_complete(uint32_t completed_ch)
         cam_hint_next_next_next = -1;
     } else if (hint1 < 0 && hint2 < 0 &&
                hint3 >= 0 && hint3 < 3 &&
-               (uint8_t)hint3 != other_target && !is_protected((uint8_t)hint3)) {
+               !is_protected((uint8_t)hint3)) {
         chosen = (uint8_t)hint3;
         used_hint = true;
         cam_hint_next = -1;
