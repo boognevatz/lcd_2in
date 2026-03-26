@@ -187,8 +187,10 @@ static void write_bucket_slot(char *slot, uint32_t state, bool cemented)
         memcpy(slot, "           -", X_HEADER_SLOT_LEN);
         return;
     }
-    // Prefix: dirty (~) has priority, then cemented-next-target (^), then complete (space).
-    if (bucket_is_dirty(state)) {
+    // Prefix: dirty and cemented-next-target both set (+), else dirty (~), else cemented (^)
+    if (bucket_is_dirty(state) && cemented) {
+        slot[0] = '+';  // combined ^~
+    } else if (bucket_is_dirty(state)) {
         slot[0] = '~';
     } else if (cemented) {
         slot[0] = '^';
