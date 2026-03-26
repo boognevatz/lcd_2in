@@ -481,10 +481,27 @@ static uint8_t pick_preferred_bucket(uint8_t x, uint8_t y)
     return (x < y) ? x : y;
 }
 
-// 50% transfer mark: at this byte offset within a half-frame send we
-// release the *current* bucket's protection and, if the two OTHER buckets
-// form the pattern "upper half done + lower half in progress", protect
-// the upper-half bucket so the camera cannot accidentally overwrite it.
+static uint32_t pick_latest_dirty_counter(void)
+{
+    uint32_t max_dirty = 0;
+    bool found_dirty = false;
+
+    for (int i = 0; i < 3; i++) {
+        uint32_t s = bucket_state[i];
+        if (bucket_is_dirty(s)) {
+            uint32_t f = s >> BUCKET_FRAME_SHIFT;
+            uint32_t c = f * 2 + (bucket_half_is_upper(s) ? 0 : 1);
+            if (!found_dirty || c > max_dirty) {
+                max_dirty = c;
+                found_dirty = true;
+            }
+        }
+    }
+
+    return found_dirty ? max_dirty : cam_counter;
+}
+
+// 50% transfer mark within the lower half-frame send.
 #define FIFTY_PERCENT_BYTES (TAGGED_HALF_FRAME_BYTES / 2)  // ~38,406
 
 // ******************************************************************************
@@ -497,8 +514,8 @@ static uint8_t pick_preferred_bucket(uint8_t x, uint8_t y)
 //                buckets: tx_first and REMAINING (= 3 - tx_first - tx_second).
 //                Therefore SENDING is the ONLY bucket guaranteed NOT to be
 //                in the next pair.
-//             3. Direct all three camera hints to SENDING, keeping camera
-//                writes away from the next TX pair's candidate buckets.
+//             3. Direct all three camera hints to REMAINING by default,
+//                keeping camera writes away from the current TX pair.
 //             4. Do not blanket-reset other TX states.  PD/TXP upgrades are
 //                handled by the ISR and by end-of-frame pair selection.
 //
@@ -556,23 +573,7 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
     // labels read DIRTY+2..+4.  If the ISR fires mid-scan, two buckets
     // may momentarily appear dirty (stale + new); picking the highest
     // counter ensures we anchor to the currently-writing one.
-    uint32_t hint_base_counter = cam_counter;  // fallback when no dirty
-    uint32_t max_dirty = 0;
-    bool found_dirty = false;
-    for (int i = 0; i < 3; i++) {
-        uint32_t s = bucket_state[i];
-        if (bucket_is_dirty(s)) {
-            uint32_t f = s >> BUCKET_FRAME_SHIFT;
-            uint32_t c = f * 2 + (bucket_half_is_upper(s) ? 0 : 1);
-            if (!found_dirty || c > max_dirty) {
-                max_dirty = c;
-                found_dirty = true;
-            }
-        }
-    }
-    if (found_dirty) {
-        hint_base_counter = max_dirty;
-    }
+    uint32_t hint_base_counter = pick_latest_dirty_counter();
 
     // Apply the resolved hint tuple.
     cam_hint_next           = hint1;
@@ -667,23 +668,7 @@ static mp_obj_t camera_stream_start(void) {
     cam_hint_next_next = startup_remaining;
     cam_hint_next_next_next = startup_remaining;
 
-    uint32_t hint_base_counter = cam_counter;  // fallback when no dirty
-    uint32_t max_dirty = 0;
-    bool found_dirty = false;
-    for (int i = 0; i < 3; i++) {
-        uint32_t s = bucket_state[i];
-        if (bucket_is_dirty(s)) {
-            uint32_t f = s >> BUCKET_FRAME_SHIFT;
-            uint32_t c = f * 2 + (bucket_half_is_upper(s) ? 0 : 1);
-            if (!found_dirty || c > max_dirty) {
-                max_dirty = c;
-                found_dirty = true;
-            }
-        }
-    }
-    if (found_dirty) {
-        hint_base_counter = max_dirty;
-    }
+    uint32_t hint_base_counter = pick_latest_dirty_counter();
     snapshot_hints(cam_hint_next, cam_hint_next_next, cam_hint_next_next_next, hint_base_counter);
 
     // Pre-build x_headers for the first frame
@@ -999,6 +984,8 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         cam_hint_next = just_finished;
         cam_hint_next_next = just_finished;
         cam_hint_next_next_next = just_finished;
+        snapshot_hints(cam_hint_next, cam_hint_next_next, cam_hint_next_next_next,
+                       pick_latest_dirty_counter());
 
         uint32_t hfa = bucket_get_halfframe(snap[cand_a]);
         uint32_t hfb = bucket_get_halfframe(snap[cand_b]);
