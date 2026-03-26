@@ -286,7 +286,7 @@ static void write_camera_next_header(void)
 {
     // Labels are generated from cam_hint_snap_counter, which is captured as
     // the currently dirty half-frame counter at 50%-mark decision time.
-    // Therefore h1/h2/h3 represent dirty+2, dirty+3, dirty+4.
+    // Therefore hint1/hint2/hint3 represent dirty+2, dirty+3, dirty+4.
     write_camera_next_slot(&x_header_camera_next[X_HEADER_CAMERA_NEXT_1_OFFSET],
                            cam_hint_snap[0], cam_hint_snap_counter + 2);
     write_camera_next_slot(&x_header_camera_next[X_HEADER_CAMERA_NEXT_2_OFFSET],
@@ -295,11 +295,11 @@ static void write_camera_next_header(void)
                            cam_hint_snap[2], cam_hint_snap_counter + 4);
 }
 
-static void snapshot_hints(int8_t h1, int8_t h2, int8_t h3, uint32_t base_counter)
+static void snapshot_hints(int8_t hint1, int8_t hint2, int8_t hint3, uint32_t base_counter)
 {
-    cam_hint_snap[0] = h1;
-    cam_hint_snap[1] = h2;
-    cam_hint_snap[2] = h3;
+    cam_hint_snap[0] = hint1;
+    cam_hint_snap[1] = hint2;
+    cam_hint_snap[2] = hint3;
     cam_hint_snap_counter = base_counter;
     cam_hint_snap_time_us = mp_hal_ticks_us();
 }

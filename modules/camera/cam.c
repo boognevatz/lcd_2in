@@ -254,35 +254,52 @@ static void handle_half_complete(uint32_t completed_ch)
     uint8_t cand_b = (other_target + 2) % 3;  // Alternative
 
     uint8_t chosen;
-    int8_t h1 = cam_hint_next;
-    int8_t h2 = cam_hint_next_next;
-    int8_t h3 = cam_hint_next_next_next;
+    int8_t hint1 = cam_hint_next;
+    int8_t hint2 = cam_hint_next_next;
+    int8_t hint3 = cam_hint_next_next_next;
 
-    // Strict pop queue: every evaluated hint is consumed (discarded),
-    // whether it was usable or not.  Skipped hints are assumed stale —
-    // they are never put back.  This prevents stale hints from becoming
-    // permanent traps that redirect the camera back to a bucket that
-    // has already been filled.
-    //
-    // Hint checks only guard against other_target (DMA conflict) and
-    // is_protected (TX needs the data).  We intentionally do NOT check
-    // != completed here: TX hints are deliberate directives — if TX
-    // says "write to A", the camera should obey even if A was just
-    // completed.  The completed exclusion is only applied in the
-    // round-robin fallback where the ISR decides on its own.
-    cam_hint_next = -1;
-    cam_hint_next_next = -1;
-    cam_hint_next_next_next = -1;
+    // Strict queue semantics:
+    // - Consume (pop) only a hint that was actually used.
+    // - If the head hint is temporarily blocked (other_target or protected),
+    //   keep it pending and use fallback for this ISR tick.
+    // - We intentionally do NOT check != completed for hints: they are
+    //   explicit directives from TX.
+    bool used_hint = false;
+    if (hint1 >= 0 && hint1 < 3 && (uint8_t)hint1 != other_target && !is_protected((uint8_t)hint1)) {
+        chosen = (uint8_t)hint1;
+        used_hint = true;
+        cam_hint_next = hint2;
+        cam_hint_next_next = hint3;
+        cam_hint_next_next_next = -1;
+    } else if (hint1 < 0 &&
+               hint2 >= 0 && hint2 < 3 &&
+               (uint8_t)hint2 != other_target && !is_protected((uint8_t)hint2)) {
+        chosen = (uint8_t)hint2;
+        used_hint = true;
+        cam_hint_next = hint3;
+        cam_hint_next_next = -1;
+        cam_hint_next_next_next = -1;
+    } else if (hint1 < 0 && hint2 < 0 &&
+               hint3 >= 0 && hint3 < 3 &&
+               (uint8_t)hint3 != other_target && !is_protected((uint8_t)hint3)) {
+        chosen = (uint8_t)hint3;
+        used_hint = true;
+        cam_hint_next = -1;
+        cam_hint_next_next = -1;
+        cam_hint_next_next_next = -1;
+    }
 
-    if (h1 >= 0 && (uint8_t)h1 != other_target && !is_protected((uint8_t)h1)) {
-        chosen = (uint8_t)h1;
-        cam_hint_next = h2;         // shift remaining hints up
-        cam_hint_next_next = h3;
-    } else if (h2 >= 0 && (uint8_t)h2 != other_target && !is_protected((uint8_t)h2)) {
-        chosen = (uint8_t)h2;       // h1 discarded (stale)
-        cam_hint_next = h3;         // shift remaining hint up
-    } else if (h3 >= 0 && (uint8_t)h3 != other_target && !is_protected((uint8_t)h3)) {
-        chosen = (uint8_t)h3;       // h1, h2 discarded (stale)
+    if (!used_hint &&
+        (cam_hint_next < 0 || cam_hint_next >= 3) &&
+        (cam_hint_next_next < 0 || cam_hint_next_next >= 3) &&
+        (cam_hint_next_next_next < 0 || cam_hint_next_next_next >= 3)) {
+        cam_hint_next = -1;
+        cam_hint_next_next = -1;
+        cam_hint_next_next_next = -1;
+    }
+
+    if (used_hint) {
+        // chosen is already resolved from hints.
     } else if (cand_a != completed && !is_protected(cand_a)) {
         // Natural next is available and not the just-completed bucket
         chosen = cand_a;
