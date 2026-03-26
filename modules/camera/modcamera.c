@@ -493,11 +493,11 @@ static uint8_t pick_preferred_bucket(uint8_t x, uint8_t y)
 //             At the 50% point of sending the lower half-frame:
 //
 //             1. Free SENDING bucket (TXP → FREE) so camera can reuse it.
-//             2. Compute REMAINING = the bucket not in the current TX pair
-//                (tx_first, tx_second).  The next TX pair will be selected
-//                from the two non-SENDING buckets, so REMAINING is the one
-//                bucket guaranteed NOT to be in the next pair.
-//             3. Direct all three camera hints to REMAINING, keeping camera
+//             2. The next TX pair will be selected from the two non-SENDING
+//                buckets: tx_first and REMAINING (= 3 - tx_first - tx_second).
+//                Therefore SENDING is the ONLY bucket guaranteed NOT to be
+//                in the next pair.
+//             3. Direct all three camera hints to SENDING, keeping camera
 //                writes away from the next TX pair's candidate buckets.
 //             4. Do not blanket-reset other TX states.  PD/TXP upgrades are
 //                handled by the ISR and by end-of-frame pair selection.
@@ -507,9 +507,9 @@ static uint8_t pick_preferred_bucket(uint8_t x, uint8_t y)
 //             Hints here steer DIRTY+2, DIRTY+3, DIRTY+4 only.
 //
 //             Candidate priority for hints:
-//               1. REMAINING bucket (not in current TX pair)
-//               2. tx_second  (later TX slot — less urgent)
-//               3. tx_first   (already freed earlier in the frame)
+//               1. SENDING bucket  (just freed, not in next pair)
+//               2. REMAINING bucket (next-pair candidate, less preferred)
+//               3. tx_first        (next-pair candidate, least preferred)
 //
 //             Hint labels are anchored to the currently dirty half-frame
 //             counter so the display reads DIRTY+2, DIRTY+3, DIRTY+4.
@@ -523,24 +523,24 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
     bucket_tx_state[sending] = BUCKET_TX_STATE_FREE;
 
     // --- Hint selection ---
-    // Primary target: REMAINING (away from next TX pair candidates).
-    int8_t hint1 = (int8_t)remaining;
-    int8_t hint2 = (int8_t)remaining;
-    int8_t hint3 = (int8_t)remaining;
+    // Primary target: SENDING (just freed, guaranteed not in next pair).
+    int8_t hint1 = (int8_t)sending;
+    int8_t hint2 = (int8_t)sending;
+    int8_t hint3 = (int8_t)sending;
 
-    // Fallback: if REMAINING is somehow still protected, degrade gracefully.
-    bool remaining_protected =
-        (bucket_tx_state[remaining] == BUCKET_TX_STATE_TXP ||
-         bucket_tx_state[remaining] == BUCKET_TX_STATE_PD);
+    // Fallback: if SENDING is somehow still protected, degrade gracefully.
+    bool sending_protected =
+        (bucket_tx_state[sending] == BUCKET_TX_STATE_TXP ||
+         bucket_tx_state[sending] == BUCKET_TX_STATE_PD);
 
-    if (remaining_protected) {
-        bool tx2_protected =
-            (bucket_tx_state[tx_second] == BUCKET_TX_STATE_TXP ||
-             bucket_tx_state[tx_second] == BUCKET_TX_STATE_PD);
-        if (!tx2_protected) {
-            hint1 = (int8_t)tx_second;
-            hint2 = (int8_t)tx_second;
-            hint3 = (int8_t)tx_second;
+    if (sending_protected) {
+        bool remaining_protected =
+            (bucket_tx_state[remaining] == BUCKET_TX_STATE_TXP ||
+             bucket_tx_state[remaining] == BUCKET_TX_STATE_PD);
+        if (!remaining_protected) {
+            hint1 = (int8_t)remaining;
+            hint2 = (int8_t)remaining;
+            hint3 = (int8_t)remaining;
         } else {
             hint1 = (int8_t)tx_first;
             hint2 = (int8_t)tx_first;
