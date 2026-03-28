@@ -81,11 +81,11 @@ static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_xclk_pin_obj, camera_set_xclk_pin);
 static const char boundary_prefix_first[] =
     "--frame\r\n"
     "Content-Type: application/octet-stream\r\n"
-    "Content-Length: 00153624\r\n";
+    "Content-Length: 00153632\r\n";
 static const char boundary_prefix_subsequent[] =
     "\r\n--frame\r\n"
     "Content-Type: application/octet-stream\r\n"
-    "Content-Length: 00153624\r\n";
+    "Content-Length: 00153632\r\n";
 
 // Bucket name lookup: index 0->'A', 1->'B', 2->'C'
 static const char bucket_name[] = "ABC";
@@ -141,25 +141,15 @@ static char x_header_buckets_tx[] = "X-Buckets-tx: FREE  , FREE  , FREE  \r\n";
 #define X_HEADER_TX_B_OFFSET 22
 #define X_HEADER_TX_C_OFFSET 30
 
-#define X_HEADER_CAMERA_NEXT_SLOT_LEN 9
-static char x_header_camera_next[] = "X-Buckets-camera-next: ---------, ---------, ---------\r\n";
-#define X_HEADER_CAMERA_NEXT_1_OFFSET 23
-#define X_HEADER_CAMERA_NEXT_2_OFFSET 34
-#define X_HEADER_CAMERA_NEXT_3_OFFSET 45
-
-// Snapshot of hints at the time they were set (for diagnostic display)
-static int8_t cam_hint_snap[3] = {-1, -1, -1};
-static uint32_t cam_hint_snap_counter = 0;
-static uint32_t cam_hint_snap_time_us = 0;
-
-static char x_header_camera_next_time[] = "X-Buckets-camera-next-time: 0000000000000\r\n";
-#define X_HEADER_CAMERA_NEXT_TIME_OFFSET 28
-
 static char x_header_buckets_time_counter[] = "X-Buckets-time-counter: 0000000000000\r\n";
 #define X_HEADER_BUCKETS_COUNTER_OFFSET 24
 
-static char x_header_camera_next_counter[] = "X-Buckets-camera-next-counter: 0000000000000\r\n";
-#define X_HEADER_CAMERA_NEXT_COUNTER_OFFSET 31
+// 50%-mark camera hints snapshot (set in apply_50_percent_protection)
+// Format: 3 bucket letters (A/B/C or -)
+static char x_header_lower_mid_hints[] = "X-Buckets-lower-mid-hints: -,-,-\r\n";
+#define X_HEADER_LOWER_MID_HINT_1_OFFSET 27
+#define X_HEADER_LOWER_MID_HINT_2_OFFSET 29
+#define X_HEADER_LOWER_MID_HINT_3_OFFSET 31
 
 static char x_header_tx_upper_time[] = "X-TX-upper-time: 0000000000000\r\n";
 #define X_HEADER_TX_UPPER_TIME_OFFSET 17
@@ -267,43 +257,14 @@ static void write_tx_state_slot(char *slot, uint8_t state)
     memcpy(slot, label, len < X_HEADER_TX_SLOT_LEN ? len : X_HEADER_TX_SLOT_LEN);
 }
 
-static void write_camera_next_slot(char *slot, int8_t hint, uint32_t counter)
+static void write_lower_mid_hints_header(int8_t h1, int8_t h2, int8_t h3)
 {
-    if (hint < 0 || hint >= 3) {
-        memset(slot, '-', X_HEADER_CAMERA_NEXT_SLOT_LEN);
-        return;
-    }
-    slot[0] = bucket_name[hint];
-    slot[1] = '-';
-    uint32_t frame = counter / 2;
-    // 6-digit zero-padded frame number (positions 2-7)
-    for (int i = 7; i >= 2; i--) {
-        slot[i] = '0' + (frame % 10);
-        frame /= 10;
-    }
-    slot[8] = (counter % 2 == 0) ? 'U' : 'L';
-}
-
-static void write_camera_next_header(void)
-{
-    // Labels are generated from cam_hint_snap_counter, which is captured as
-    // the currently dirty half-frame counter at 50%-mark decision time.
-    // Therefore hint1/hint2/hint3 represent dirty+2, dirty+3, dirty+4.
-    write_camera_next_slot(&x_header_camera_next[X_HEADER_CAMERA_NEXT_1_OFFSET],
-                           cam_hint_snap[0], cam_hint_snap_counter + 2);
-    write_camera_next_slot(&x_header_camera_next[X_HEADER_CAMERA_NEXT_2_OFFSET],
-                           cam_hint_snap[1], cam_hint_snap_counter + 3);
-    write_camera_next_slot(&x_header_camera_next[X_HEADER_CAMERA_NEXT_3_OFFSET],
-                           cam_hint_snap[2], cam_hint_snap_counter + 4);
-}
-
-static void snapshot_hints(int8_t hint1, int8_t hint2, int8_t hint3, uint32_t base_counter)
-{
-    cam_hint_snap[0] = hint1;
-    cam_hint_snap[1] = hint2;
-    cam_hint_snap[2] = hint3;
-    cam_hint_snap_counter = base_counter;
-    cam_hint_snap_time_us = mp_hal_ticks_us();
+    x_header_lower_mid_hints[X_HEADER_LOWER_MID_HINT_1_OFFSET] =
+        (h1 >= 0 && h1 < 3) ? bucket_name[h1] : '-';
+    x_header_lower_mid_hints[X_HEADER_LOWER_MID_HINT_2_OFFSET] =
+        (h2 >= 0 && h2 < 3) ? bucket_name[h2] : '-';
+    x_header_lower_mid_hints[X_HEADER_LOWER_MID_HINT_3_OFFSET] =
+        (h3 >= 0 && h3 < 3) ? bucket_name[h3] : '-';
 }
 
 static inline uint32_t pack_tx_states(void)
@@ -483,25 +444,6 @@ static uint8_t pick_preferred_bucket(uint8_t x, uint8_t y)
     return (x < y) ? x : y;
 }
 
-static uint32_t pick_latest_dirty_counter(void)
-{
-    uint32_t max_dirty = 0;
-    bool found_dirty = false;
-
-    for (int i = 0; i < 3; i++) {
-        uint32_t s = bucket_state[i];
-        if (bucket_is_dirty(s)) {
-            uint32_t f = s >> BUCKET_FRAME_SHIFT;
-            uint32_t c = f * 2 + (bucket_half_is_upper(s) ? 0 : 1);
-            if (!found_dirty || c > max_dirty) {
-                max_dirty = c;
-                found_dirty = true;
-            }
-        }
-    }
-
-    return found_dirty ? max_dirty : cam_counter;
-}
 
 // 50% transfer mark within the lower half-frame send.
 #define FIFTY_PERCENT_BYTES (TAGGED_HALF_FRAME_BYTES / 2)  // ~38,406
@@ -570,18 +512,13 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
         }
     }
 
-    // --- Hint label anchoring ---
-    // Anchor to the dirty bucket with the highest half-frame counter so
-    // labels read DIRTY+2..+4.  If the ISR fires mid-scan, two buckets
-    // may momentarily appear dirty (stale + new); picking the highest
-    // counter ensures we anchor to the currently-writing one.
-    uint32_t hint_base_counter = pick_latest_dirty_counter();
-
     // Apply the resolved hint tuple.
     cam_hint_next           = hint1;
     cam_hint_next_next      = hint2;
     cam_hint_next_next_next = hint3;
-    snapshot_hints(hint1, hint2, hint3, hint_base_counter);
+
+    // Save for the X-Buckets-lower-mid-hints header
+    write_lower_mid_hints_header(hint1, hint2, hint3);
 }
 
 
@@ -670,8 +607,8 @@ static mp_obj_t camera_stream_start(void) {
     cam_hint_next_next = startup_remaining;
     cam_hint_next_next_next = startup_remaining;
 
-    uint32_t hint_base_counter = pick_latest_dirty_counter();
-    snapshot_hints(cam_hint_next, cam_hint_next_next, cam_hint_next_next_next, hint_base_counter);
+    // Initialize the 50% hints header to dashes (no 50% event yet)
+    write_lower_mid_hints_header(-1, -1, -1);
 
     // Pre-build x_headers for the first frame
     write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
@@ -694,9 +631,7 @@ static mp_obj_t camera_stream_start(void) {
     write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], bucket_tx_state[0]);
     write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], bucket_tx_state[1]);
     write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_C_OFFSET], bucket_tx_state[2]);
-    write_camera_next_header();
-    write_u32_grouped(&x_header_camera_next_time[X_HEADER_CAMERA_NEXT_TIME_OFFSET], cam_hint_snap_time_us);
-    write_u32_grouped(&x_header_camera_next_counter[X_HEADER_CAMERA_NEXT_COUNTER_OFFSET], cam_hint_snap_counter);
+    // x_header_lower_mid_hints is already built (initialized at startup or from apply_50_percent_protection)
     write_u32_grouped(&x_header_tx_upper_time[X_HEADER_TX_UPPER_TIME_OFFSET], tx_upper_time_us);
     write_u32_grouped(&x_header_tx_lower_mid_time[X_HEADER_TX_LOWER_MID_TIME_OFFSET], tx_lower_mid_time_us);
     write_u32_grouped(&x_header_tx_lower_time[X_HEADER_TX_LOWER_TIME_OFFSET], tx_lower_time_us);
@@ -796,16 +731,10 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_buckets_tx, sizeof(x_header_buckets_tx) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
-        ret = mp_stream_write_exactly(socket_obj, x_header_camera_next, sizeof(x_header_camera_next) - 1, &errcode);
-        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
-
-        ret = mp_stream_write_exactly(socket_obj, x_header_camera_next_time, sizeof(x_header_camera_next_time) - 1, &errcode);
-        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
-
         ret = mp_stream_write_exactly(socket_obj, x_header_buckets_time_counter, sizeof(x_header_buckets_time_counter) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
-        ret = mp_stream_write_exactly(socket_obj, x_header_camera_next_counter, sizeof(x_header_camera_next_counter) - 1, &errcode);
+        ret = mp_stream_write_exactly(socket_obj, x_header_lower_mid_hints, sizeof(x_header_lower_mid_hints) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
         ret = mp_stream_write_exactly(socket_obj, x_header_tx_upper_time, sizeof(x_header_tx_upper_time) - 1, &errcode);
@@ -820,7 +749,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
-        // --- Send first half-frame (12-byte tag + 76,800 bytes) ---
+        // --- Send first half-frame (16-byte tag + 76,800 bytes) ---
         uint32_t upper_time_us = mp_hal_ticks_us();
         tx_upper_time_us = upper_time_us;
         uint32_t upper_tag = bucket_state[tx_first];
@@ -867,7 +796,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         prev_mid_cement[2] = bucket_tx_next_cemented[2];
         prev_mid_time_us = mp_hal_ticks_us();
 
-        // --- Send second half-frame (12-byte tag + 76,800 bytes) ---
+        // --- Send second half-frame (16-byte tag + 76,800 bytes) ---
         // Split at 50%: send first 50%, apply protection swap, send rest.
         uint32_t lower_time_us = mp_hal_ticks_us();
         tx_lower_time_us = lower_time_us;
@@ -986,8 +915,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         cam_hint_next = just_finished;
         cam_hint_next_next = just_finished;
         cam_hint_next_next_next = just_finished;
-        snapshot_hints(cam_hint_next, cam_hint_next_next, cam_hint_next_next_next,
-                       pick_latest_dirty_counter());
+        // (hints are now in-frame via ISR tag; 50% hints are saved in apply_50_percent_protection)
 
         uint32_t hfa = bucket_get_halfframe(snap[cand_a]);
         uint32_t hfb = bucket_get_halfframe(snap[cand_b]);
@@ -1049,9 +977,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], bucket_tx_state[0]);
         write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], bucket_tx_state[1]);
         write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_C_OFFSET], bucket_tx_state[2]);
-        write_camera_next_header();
-        write_u32_grouped(&x_header_camera_next_time[X_HEADER_CAMERA_NEXT_TIME_OFFSET], cam_hint_snap_time_us);
-        write_u32_grouped(&x_header_camera_next_counter[X_HEADER_CAMERA_NEXT_COUNTER_OFFSET], cam_hint_snap_counter);
+        // x_header_lower_mid_hints already built by apply_50_percent_protection
         write_u32_grouped(&x_header_tx_upper_time[X_HEADER_TX_UPPER_TIME_OFFSET], tx_upper_time_us);
         write_u32_grouped(&x_header_tx_lower_mid_time[X_HEADER_TX_LOWER_MID_TIME_OFFSET], tx_lower_mid_time_us);
         write_u32_grouped(&x_header_tx_lower_time[X_HEADER_TX_LOWER_TIME_OFFSET], tx_lower_time_us);
