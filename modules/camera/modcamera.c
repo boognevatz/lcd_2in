@@ -81,11 +81,11 @@ static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_xclk_pin_obj, camera_set_xclk_pin);
 static const char boundary_prefix_first[] =
     "--frame\r\n"
     "Content-Type: application/octet-stream\r\n"
-    "Content-Length: 00153632\r\n";
+    "Content-Length: 00153640\r\n";
 static const char boundary_prefix_subsequent[] =
     "\r\n--frame\r\n"
     "Content-Type: application/octet-stream\r\n"
-    "Content-Length: 00153632\r\n";
+    "Content-Length: 00153640\r\n";
 
 // Bucket name lookup: index 0->'A', 1->'B', 2->'C'
 static const char bucket_name[] = "ABC";
@@ -749,7 +749,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
-        // --- Send first half-frame (16-byte tag + 76,800 bytes) ---
+        // --- Send first half-frame (20-byte tag + 76,800 bytes) ---
         uint32_t upper_time_us = mp_hal_ticks_us();
         tx_upper_time_us = upper_time_us;
         uint32_t upper_tag = bucket_state[tx_first];
@@ -802,7 +802,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         prev_mid_cement[2] = bucket_tx_next_cemented[2];
         prev_mid_time_us = mp_hal_ticks_us();
 
-        // --- Send second half-frame (16-byte tag + 76,800 bytes) ---
+        // --- Send second half-frame (20-byte tag + 76,800 bytes) ---
         // Split at 50%: send first 50%, apply protection swap, send rest.
         uint32_t lower_time_us = mp_hal_ticks_us();
         tx_lower_time_us = lower_time_us;

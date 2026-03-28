@@ -29,6 +29,7 @@
 
 #include "hardware/dma.h"
 #include "hardware/irq.h"
+#include "hardware/timer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,7 +48,7 @@ static PIO pio_cam = pio0;
 // statemachine's pointer
 static uint32_t sm_cam; // CAMERA's state machines
 
-// 3 half-frame buckets (76,816 bytes each: 16-byte tag + 76,800 pixel data)
+// 3 half-frame buckets (76,820 bytes each: 20-byte tag + 76,800 pixel data)
 static uint8_t bucket_mem_0[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
 static uint8_t bucket_mem_1[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
 static uint8_t bucket_mem_2[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
@@ -129,7 +130,7 @@ void setup_dma_for_capture()
     channel_config_set_transfer_data_size(&c_a, DMA_SIZE_16);
     channel_config_set_chain_to(&c_a, DMA_CH_B);
     dma_channel_configure(DMA_CH_A, &c_a,
-                          bucket[0] + BUCKET_TAG_SIZE, // write past 16-byte tag
+                          bucket[0] + BUCKET_TAG_SIZE, // write past 20-byte tag
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
                           HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers
                           false);                 // don't start yet
@@ -139,7 +140,7 @@ void setup_dma_for_capture()
     channel_config_set_transfer_data_size(&c_b, DMA_SIZE_16);
     channel_config_set_chain_to(&c_b, DMA_CH_A);
     dma_channel_configure(DMA_CH_B, &c_b,
-                          bucket[1] + BUCKET_TAG_SIZE, // write past 16-byte tag
+                          bucket[1] + BUCKET_TAG_SIZE, // write past 20-byte tag
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
                           HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers
                           false);                 // don't start yet
@@ -244,6 +245,9 @@ static void handle_half_complete(uint32_t completed_ch)
                           ? (uint32_t)cam_hint_next_next_next : 3u;
         ((uint32_t *)bucket[completed])[3] = h1 | (h2 << 2) | (h3 << 4);
     }
+
+    // --- Stamp ISR completion timestamp (5th uint32_t, bytes 16-19) ---
+    ((uint32_t *)bucket[completed])[4] = time_us_32();
 
     // --- Advance camera counter ---
     cam_counter++;

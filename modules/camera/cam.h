@@ -40,8 +40,8 @@
 #define FRAME_BYTES       (CAM_FUL_SIZE * 2)                    // 153,600
 #define HALF_FRAME_BYTES  (FRAME_BYTES / 2)                     // 76,800
 #define HALF_FRAME_XFERS  (HALF_FRAME_BYTES / sizeof(uint16_t)) // 38,400
-#define BUCKET_TAG_SIZE       16                                 // 16-byte tag (time_us + bucket tag + tx states + camera hint)
-#define TAGGED_HALF_FRAME_BYTES (BUCKET_TAG_SIZE + HALF_FRAME_BYTES) // 76,816
+#define BUCKET_TAG_SIZE       20                                 // 20-byte tag (time_us + bucket tag + tx states + camera hint + isr_time_us)
+#define TAGGED_HALF_FRAME_BYTES (BUCKET_TAG_SIZE + HALF_FRAME_BYTES) // 76,820
 
 extern uint8_t *bucket[3];              // 3 half-frame buckets
 

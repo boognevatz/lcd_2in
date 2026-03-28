@@ -492,9 +492,9 @@
       const ctx = $canvas.getContext('2d');
       ctx.imageSmoothingEnabled = false;
       const W = 240, H = 320;
-      const DEFAULT_TAG_SIZE = 16;
+      const DEFAULT_TAG_SIZE = 20;
       const BASE_PIXEL_BYTES = W * H * 2;
-      const PIXEL_BYTES = BASE_PIXEL_BYTES + (DEFAULT_TAG_SIZE * 2); // 153632 (2x16-byte tags + pixel data)
+      const PIXEL_BYTES = BASE_PIXEL_BYTES + (DEFAULT_TAG_SIZE * 2); // 153640 (2x20-byte tags + pixel data)
       const MIN_PIXEL_BYTES = BASE_PIXEL_BYTES + 8; // 2x4-byte tags
       const HALF_PIXEL_BYTES = W * (H / 2) * 2; // 76800
 
@@ -543,7 +543,7 @@
         const extra = contentLength - BASE_PIXEL_BYTES;
         if (extra % 2 !== 0) return DEFAULT_TAG_SIZE;
         const tag = extra / 2;
-        if (tag === 16 || tag === 12 || tag === 8 || tag === 4) return tag;
+        if (tag === 20 || tag === 16 || tag === 12 || tag === 8 || tag === 4) return tag;
         return DEFAULT_TAG_SIZE;
       }
 
@@ -686,7 +686,7 @@
           di += 4;
         }
 
-        // Lower half: skip another 12-byte tag, read 76800 bytes of pixel data
+        // Lower half: skip another tag, read 76800 bytes of pixel data
         si += tagSize;
         for (let i = 0; i < halfPixels; i++) {
           if (si + 1 >= pixelData.length) break;
@@ -857,13 +857,14 @@
         return data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24);
       }
 
-      // Read a 16-byte tag (time_us + bucket tag + tx states + camera hint)
+      // Read a 20-byte tag (time_us + bucket tag + tx states + camera hint + isr_time_us)
       function readBucketTag(data, offset) {
         return {
           time: readU32(data, offset),
           tag: readU32(data, offset + 4),
           tx: readU32(data, offset + 8),
-          hint: readU32(data, offset + 12)
+          hint: readU32(data, offset + 12),
+          isr_time: readU32(data, offset + 16)
         };
       }
 
@@ -932,7 +933,10 @@
         const isUpper = (tag & 0x04) !== 0;
         const isDirty = (tag & 0x02) !== 0;
         const isValid = (tag & 0x01) !== 0;
-        return '' + formatGrouped(tagInfo.time >>> 0)
+        const isrTime = tagInfo.isr_time >>> 0;
+        const txTime = tagInfo.time >>> 0;
+        return 'tx_time=' + formatGrouped(txTime)
+          + '  isr_time=' + formatGrouped(isrTime)
           + '\n' + formatTxStates(tagInfo.tx >>> 0)
           + '\n' + 'frame=' + frame
           + ' ' + (isUpper ? 'UPPER' : 'LOWER')
