@@ -758,6 +758,12 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         upper_words[0] = upper_time_us;
         upper_words[1] = upper_tag;
         upper_words[2] = upper_tx_states;
+        {
+            uint32_t th1 = (cam_hint_next >= 0 && cam_hint_next < 3) ? (uint32_t)cam_hint_next : 3u;
+            uint32_t th2 = (cam_hint_next_next >= 0 && cam_hint_next_next < 3) ? (uint32_t)cam_hint_next_next : 3u;
+            uint32_t th3 = (cam_hint_next_next_next >= 0 && cam_hint_next_next_next < 3) ? (uint32_t)cam_hint_next_next_next : 3u;
+            upper_words[3] |= ((th1 | (th2 << 2) | (th3 << 4)) << 6);
+        }
         ret = mp_stream_write_exactly(
             socket_obj, bucket[tx_first], TAGGED_HALF_FRAME_BYTES, &errcode);
         if (ret == MP_STREAM_ERROR || ret == 0) {
@@ -806,6 +812,12 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         lower_words[0] = lower_time_us;
         lower_words[1] = lower_tag;
         lower_words[2] = lower_tx_states;
+        {
+            uint32_t th1 = (cam_hint_next >= 0 && cam_hint_next < 3) ? (uint32_t)cam_hint_next : 3u;
+            uint32_t th2 = (cam_hint_next_next >= 0 && cam_hint_next_next < 3) ? (uint32_t)cam_hint_next_next : 3u;
+            uint32_t th3 = (cam_hint_next_next_next >= 0 && cam_hint_next_next_next < 3) ? (uint32_t)cam_hint_next_next_next : 3u;
+            lower_words[3] |= ((th1 | (th2 << 2) | (th3 << 4)) << 6);
+        }
 
         // Phase 1: send first 50% of the half-frame
         ret = mp_stream_write_exactly(

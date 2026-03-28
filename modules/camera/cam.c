@@ -228,26 +228,21 @@ static void handle_half_complete(uint32_t completed_ch)
     // This lets the client verify which frame/half the bucket actually contains.
     ((uint32_t *)bucket[completed])[1] = bucket_state[completed];
 
-    // --- Stamp camera hint into the tag (offset 4, 5th uint32_t) ---
-    // Encode current cam_hint_next as half-frame number (same format as bucket_state).
-    // If no hint is set (-1), encode as current cam_counter (what camera will write next).
+    // --- Stamp all 3 camera hints into the tag (4th uint32_t, bytes 12-15) ---
+    // Encoding: 2 bits per hint (0=A, 1=B, 2=C, 3=none)
+    //   bits 1:0 = cam_hint_next
+    //   bits 3:2 = cam_hint_next_next
+    //   bits 5:4 = cam_hint_next_next_next
+    //   bits 11:6 = transmit hints (set by modcamera.c)
+    //   bits 31:12 = reserved (0)
     {
-        int8_t hint = cam_hint_next;
-        uint32_t hint_half_frame;
-        if (hint >= 0 && hint < 3) {
-            // Hint points to a bucket: use that bucket's current half-frame counter
-            uint32_t s = bucket_state[hint];
-            hint_half_frame = bucket_get_halfframe(s);
-        } else {
-            // No hint set: encode as current cam_counter (what camera will write next)
-            hint_half_frame = cam_counter;
-        }
-        // Encode: frame = hint_half_frame/2, half = (hint_half_frame % 2), bits 1-0 = 0
-        uint32_t hint_tag = (hint_half_frame / 2) << BUCKET_FRAME_SHIFT;
-        if (hint_half_frame % 2 == 0) {
-            hint_tag |= BUCKET_HALF_MASK;  // UPPER
-        }
-        ((uint32_t *)bucket[completed])[3] = hint_tag;
+        uint32_t h1 = (cam_hint_next >= 0 && cam_hint_next < 3)
+                          ? (uint32_t)cam_hint_next : 3u;
+        uint32_t h2 = (cam_hint_next_next >= 0 && cam_hint_next_next < 3)
+                          ? (uint32_t)cam_hint_next_next : 3u;
+        uint32_t h3 = (cam_hint_next_next_next >= 0 && cam_hint_next_next_next < 3)
+                          ? (uint32_t)cam_hint_next_next_next : 3u;
+        ((uint32_t *)bucket[completed])[3] = h1 | (h2 << 2) | (h3 << 4);
     }
 
     // --- Advance camera counter ---
