@@ -910,15 +910,15 @@
       function formatCamHintTag(value) {
         if (value === 0) return 'none';
         const names = ['A', 'B', 'C', '-'];
-        const c1 = value & 3;
-        const c2 = (value >> 2) & 3;
-        const c3 = (value >> 4) & 3;
-        let s = 'cap=' + names[c1] + ',' + names[c2] + ',' + names[c3];
+        const hint_isr1 = value & 3;
+        const hint_isr2 = (value >> 2) & 3;
+        const hint_isr3 = (value >> 4) & 3;
+        let s = 'camera_hints_by_isr=' + names[hint_isr1] + ',' + names[hint_isr2] + ',' + names[hint_isr3];
         if (value > 0x3F) {
-          const t1 = (value >> 6) & 3;
-          const t2 = (value >> 8) & 3;
-          const t3 = (value >> 10) & 3;
-          s += ' tx=' + names[t1] + ',' + names[t2] + ',' + names[t3];
+          const hint_tx1 = (value >> 6) & 3;
+          const hint_tx2 = (value >> 8) & 3;
+          const hint_tx3 = (value >> 10) & 3;
+          s += '\n    camera_hints_by_tx=' + names[hint_tx1] + ',' + names[hint_tx2] + ',' + names[hint_tx3];
         }
         return s;
       }
@@ -939,7 +939,7 @@
           + ' dirty=' + (isDirty ? 'Y' : 'N')
           + ' valid=' + (isValid ? 'Y' : 'N')
           + '\n' + formatBits(tag >>> 0, 32)
-          + '\nhint: ' + formatCamHintTag(tagInfo.hint >>> 0);
+          + '\n' + formatCamHintTag(tagInfo.hint >>> 0);
       }
 
       // ---- UI updates ----
