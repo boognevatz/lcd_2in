@@ -908,18 +908,20 @@
 
       // Format the camera hint tag stamped by ISR and TX
       // bits 5:0 = capture hints, bits 11:6 = transmit hints
-      function formatCamHintTag(value) {
-        if (value === 0) return 'none';
+      function formatCamHintTag(value, isrTime, txTime) {
+        if (value === 0) return 'camera_hints_by_isr_time=' + formatGrouped(isrTime) + '\nnone';
         const names = ['A', 'B', 'C', '-'];
         const hint_isr1 = value & 3;
         const hint_isr2 = (value >> 2) & 3;
         const hint_isr3 = (value >> 4) & 3;
-        let s = 'camera_hints_by_isr=' + names[hint_isr1] + ',' + names[hint_isr2] + ',' + names[hint_isr3];
+        let s = 'camera_hints_by_isr_time=' + formatGrouped(isrTime) + '\n' +
+                'camera_hints_by_isr=' + names[hint_isr1] + ',' + names[hint_isr2] + ',' + names[hint_isr3];
         if (value > 0x3F) {
           const hint_tx1 = (value >> 6) & 3;
           const hint_tx2 = (value >> 8) & 3;
           const hint_tx3 = (value >> 10) & 3;
-          s += '\n    camera_hints_by_tx=' + names[hint_tx1] + ',' + names[hint_tx2] + ',' + names[hint_tx3];
+          s += '\ncamera_hints_by_tx_time=' + formatGrouped(txTime) +
+               '\ncamera_hints_by_tx=' + names[hint_tx1] + ',' + names[hint_tx2] + ',' + names[hint_tx3];
         }
         return s;
       }
@@ -935,15 +937,13 @@
         const isValid = (tag & 0x01) !== 0;
         const isrTime = tagInfo.isr_time >>> 0;
         const txTime = tagInfo.time >>> 0;
-        return 'tx_time=' + formatGrouped(txTime)
-          + '  isr_time=' + formatGrouped(isrTime)
-          + '\n' + formatTxStates(tagInfo.tx >>> 0)
+        return formatTxStates(tagInfo.tx >>> 0)
           + '\n' + 'frame=' + frame
           + ' ' + (isUpper ? 'UPPER' : 'LOWER')
           + ' dirty=' + (isDirty ? 'Y' : 'N')
           + ' valid=' + (isValid ? 'Y' : 'N')
           + '\n' + formatBits(tag >>> 0, 32)
-          + '\n' + formatCamHintTag(tagInfo.hint >>> 0);
+          + '\n' + formatCamHintTag(tagInfo.hint >>> 0, isrTime, txTime);
       }
 
       // ---- UI updates ----
