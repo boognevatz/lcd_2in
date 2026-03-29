@@ -151,6 +151,11 @@ static char x_header_lower_mid_hints[] = "X-Buckets-lower-mid-hints: -,-,-\r\n";
 #define X_HEADER_LOWER_MID_HINT_2_OFFSET 29
 #define X_HEADER_LOWER_MID_HINT_3_OFFSET 31
 
+static char x_header_buckets_prev_lower_mid[] = "X-Buckets-prev-lower-mid:           -,           -,           -\r\n";
+#define X_HEADER_PREV_LOWER_MID_A_OFFSET 25
+#define X_HEADER_PREV_LOWER_MID_B_OFFSET 38
+#define X_HEADER_PREV_LOWER_MID_C_OFFSET 51
+
 static char x_header_prev_upper_start_time[] = "X-Buckets-Prev-Upper-Start-time: 0000000000000\r\n";
 #define X_HEADER_PREV_UPPER_START_TIME_OFFSET 33
 
@@ -401,6 +406,8 @@ static uint32_t prev_mid[3];
 static uint32_t prev_end[3];
 static uint8_t  prev_mid_cement[3];
 static uint8_t  prev_end_cement[3];
+static uint32_t prev_lower_mid[3];
+static uint8_t  prev_lower_mid_cement[3];
 static uint32_t prev_upper_end_time_us;
 static uint32_t prev_end_time_us;
 static uint32_t upper_start_time_us;
@@ -575,6 +582,8 @@ static mp_obj_t camera_stream_start(void) {
         prev_end[i] = 0;
         prev_mid_cement[i] = 0;
         prev_end_cement[i] = 0;
+        prev_lower_mid[i] = 0;
+        prev_lower_mid_cement[i] = 0;
     }
     prev_upper_end_time_us = 0;
     prev_end_time_us = 0;
@@ -601,12 +610,7 @@ static mp_obj_t camera_stream_start(void) {
     bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
     bucket_tx_min_counter[tx_first] = cam_counter;
     bucket_tx_min_counter[tx_second] = cam_counter;
-    // Direct camera AWAY from the TX pair — to the remaining bucket.
-    uint8_t startup_remaining = 3 - tx_first - tx_second;
-    cam_hint_next = startup_remaining;
-    cam_hint_next_next = startup_remaining;
-    cam_hint_next_next_next = startup_remaining;
-
+    
     // Initialize the 50% hints header to dashes (no 50% event yet)
     write_lower_mid_hints_header(-1, -1, -1);
 
@@ -621,6 +625,9 @@ static mp_obj_t camera_stream_start(void) {
     write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_A_OFFSET], 0, false);
     write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_B_OFFSET], 0, false);
     write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_C_OFFSET], 0, false);
+    write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_A_OFFSET], 0, false);
+    write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_B_OFFSET], 0, false);
+    write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_C_OFFSET], 0, false);
     write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_A_OFFSET], 0, false);
     write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_B_OFFSET], 0, false);
     write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_C_OFFSET], 0, false);
@@ -737,6 +744,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_lower_mid_hints, sizeof(x_header_lower_mid_hints) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
+        ret = mp_stream_write_exactly(socket_obj, x_header_buckets_prev_lower_mid, sizeof(x_header_buckets_prev_lower_mid) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
         ret = mp_stream_write_exactly(socket_obj, x_header_prev_upper_start_time, sizeof(x_header_prev_upper_start_time) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
@@ -784,15 +794,6 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             bucket_tx_state[tx_second] = BUCKET_TX_STATE_TXP;
         }
 
-        // Set early hints at mid-frame, but ONLY if both hint slots are
-        // already consumed. Direct camera to REMAINING (away from TX pair).
-        if (cam_hint_next < 0) {
-            uint8_t mid_remaining = 3 - tx_first - tx_second;
-            cam_hint_next = mid_remaining;
-            cam_hint_next_next = mid_remaining;
-            cam_hint_next_next_next = mid_remaining;
-        }
-
         // Snapshot mid-point: bucket states after 1st half sent
         prev_mid[0] = bucket_state[0];
         prev_mid[1] = bucket_state[1];
@@ -828,6 +829,12 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         }
 
         // --- 50% mark: release current bucket, conditionally protect upper ---
+        prev_lower_mid[0] = bucket_state[0];
+        prev_lower_mid[1] = bucket_state[1];
+        prev_lower_mid[2] = bucket_state[2];
+        prev_lower_mid_cement[0] = bucket_tx_next_cemented[0];
+        prev_lower_mid_cement[1] = bucket_tx_next_cemented[1];
+        prev_lower_mid_cement[2] = bucket_tx_next_cemented[2];
         prev_lower_mid_time_us = mp_hal_ticks_us();
         apply_50_percent_protection(tx_second);
 
@@ -923,12 +930,6 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             }
         }
 
-        // Direct camera AWAY from the new TX pair — to just_finished bucket.
-        cam_hint_next = just_finished;
-        cam_hint_next_next = just_finished;
-        cam_hint_next_next_next = just_finished;
-        // (hints are now in-frame via ISR tag; 50% hints are saved in apply_50_percent_protection)
-
         uint32_t hfa = bucket_get_halfframe(snap[cand_a]);
         uint32_t hfb = bucket_get_halfframe(snap[cand_b]);
         bool a_dirty_lower = bucket_is_dirty(snap[cand_a]) && !bucket_half_is_upper(snap[cand_a]);
@@ -979,6 +980,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_A_OFFSET], prev_mid[0], prev_mid_cement[0] != 0);
         write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_B_OFFSET], prev_mid[1], prev_mid_cement[1] != 0);
         write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_C_OFFSET], prev_mid[2], prev_mid_cement[2] != 0);
+        write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_A_OFFSET], prev_lower_mid[0], prev_lower_mid_cement[0] != 0);
+        write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_B_OFFSET], prev_lower_mid[1], prev_lower_mid_cement[1] != 0);
+        write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_C_OFFSET], prev_lower_mid[2], prev_lower_mid_cement[2] != 0);
         write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_A_OFFSET], prev_end[0], prev_end_cement[0] != 0);
         write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_B_OFFSET], prev_end[1], prev_end_cement[1] != 0);
         write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_C_OFFSET], prev_end[2], prev_end_cement[2] != 0);
