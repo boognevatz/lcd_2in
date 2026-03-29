@@ -126,6 +126,11 @@ static char x_header_buckets_prev_end[] = "X-Buckets-prev-end:           -,     
 static char x_header_prev_end_time[] = "X-Buckets-Prev-End-time: 0000000000000\r\n";
 #define X_HEADER_PREV_END_TIME_OFFSET 25
 
+static char x_header_buckets_prev_upper_start[] = "X-Buckets-prev-upper-start:           -,           -,           -\r\n";
+#define X_HEADER_PREV_UPPER_START_A_OFFSET 27
+#define X_HEADER_PREV_UPPER_START_B_OFFSET 40
+#define X_HEADER_PREV_UPPER_START_C_OFFSET 53
+
 static char x_header_buckets[] = "X-Buckets: A,A,           -,           -,           -\r\n";
 #define X_HEADER_TX1_OFFSET 11
 #define X_HEADER_TX2_OFFSET 13
@@ -707,9 +712,19 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             break;
         }
 
-        // --- Send pre-built X-headers individually ---
-        ret = mp_stream_write_exactly(socket_obj, x_header_temperature, sizeof(x_header_temperature) - 1, &errcode);
-        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+// --- Send pre-built X-headers individually ---
+    ret = mp_stream_write_exactly(socket_obj, x_header_prev_upper_start, sizeof(x_header_prev_upper_start) - 1, &errcode);
+    if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+    ret = mp_stream_write_exactly(socket_obj, x_header_prev_lower_start, sizeof(x_header_prev_lower_start) - 1, &errcode);
+    if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+    // --- Send pre-built X-headers individually ---
+    ret = mp_stream_write_exactly(socket_obj, x_header_prev_upper_start, sizeof(x_header_prev_upper_start) - 1, &errcode);
+    if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+    ret = mp_stream_write_exactly(socket_obj, x_header_prev_lower_start, sizeof(x_header_prev_lower_start) - 1, &errcode);
+    if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
         ret = mp_stream_write_exactly(socket_obj, x_header_ext_temp, sizeof(x_header_ext_temp) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
