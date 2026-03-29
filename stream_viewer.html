@@ -796,6 +796,13 @@
         const prevUpperStartTime = formatHeaderTime(map.get('X-Buckets-Prev-Upper-Start-time') || 'N/A');
         const prevLowerMidTime = formatHeaderTime(map.get('X-Buckets-Prev-Lower-Mid-time') || 'N/A');
         const prevLowerStartTime = formatHeaderTime(map.get('X-Buckets-Prev-Lower-Start-time') || 'N/A');
+        
+        const bucketsPrevUpperStart = map.get('X-Buckets-prev-upper-start') || 'N/A';
+        const bucketsPrevLowerStart = map.get('X-Buckets-prev-lower-start') || 'N/A';
+        
+        const bucketsPrevUpperStartValue = prevUpperStartTime + '\n' + bucketsPrevUpperStart;
+        const bucketsPrevLowerStartValue = prevLowerStartTime + '\n' + bucketsPrevLowerStart;
+        
         const bucketsPrevLowerMid = map.get('X-Buckets-prev-lower-mid') || 'N/A';
         const bucketsPrevMidValue = prevUpperEndTime + '\n' + bucketsPrevMid;
         const lowerMidHintsValue = prevLowerMidTime + '\n' + lowerMidHints + '\n' + bucketsPrevLowerMid;
