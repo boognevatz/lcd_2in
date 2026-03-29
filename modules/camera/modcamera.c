@@ -498,42 +498,80 @@ static uint8_t pick_preferred_bucket(uint8_t x, uint8_t y)
 // ******************************************************************************
 static void apply_50_percent_protection(uint8_t bucket_tx_now)
 {
-    uint8_t sending   = bucket_tx_now;
-    uint8_t remaining = 3 - tx_first - tx_second;
-
+    uint8_t sending = bucket_tx_now;
+    
     // 50% mark: free the SENDING bucket so camera can reuse it.
     bucket_tx_state[sending] = BUCKET_TX_STATE_FREE;
 
-    // --- Hint selection ---
-    // Primary target: REMAINING (not in current TX pair, safe for camera).
-    // SENDING is being freed but still transmitting — do NOT direct camera there.
-    int8_t hint1 = (int8_t)remaining;
-    int8_t hint2 = (int8_t)remaining;
-    int8_t hint3 = (int8_t)remaining;
-
-    // Fallback: if REMAINING is somehow still protected, degrade gracefully.
-    bool remaining_protected =
-        (bucket_tx_state[remaining] == BUCKET_TX_STATE_TXP ||
-         bucket_tx_state[remaining] == BUCKET_TX_STATE_PD);
-
-    if (remaining_protected) {
-        // tx_first was already sent and freed earlier in this frame.
-        bool tx_first_protected =
-            (bucket_tx_state[tx_first] == BUCKET_TX_STATE_TXP ||
-             bucket_tx_state[tx_first] == BUCKET_TX_STATE_PD);
-        if (!tx_first_protected) {
-            hint1 = (int8_t)tx_first;
-            hint2 = (int8_t)tx_first;
-            hint3 = (int8_t)tx_first;
-        } else {
-            // Last resort: sending (just freed, still transmitting lower 50%).
-            hint1 = (int8_t)sending;
-            hint2 = (int8_t)sending;
-            hint3 = (int8_t)sending;
+    // 1. Find the most recently completed (dirty) half-frame that is NEWER than what we just sent
+    int d_idx = -1;
+    uint32_t max_hf = last_sent_half_frame; 
+    for (int i = 0; i < 3; i++) {
+        if (bucket_is_dirty(bucket_state[i])) {
+            uint32_t hf = bucket_get_halfframe(bucket_state[i]);
+            if (hf > max_hf) {
+                max_hf = hf;
+                d_idx = i;
+            }
         }
     }
 
-    // Apply the resolved hint tuple.
+    // 2. Find the bucket the camera is currently writing to (cemented)
+    int c_idx = -1;
+    for (int i = 0; i < 3; i++) {
+        if (bucket_tx_next_cemented[i] != 0) {
+            c_idx = i;
+            break;
+        }
+    }
+
+    int8_t hint1 = -1, hint2 = -1, hint3 = -1;
+
+    // Apply the state-machine rules
+    if (d_idx >= 0 && c_idx >= 0) {
+        bool d_is_upper = bucket_half_is_upper(bucket_state[d_idx]);
+        
+        if (d_is_upper) {
+            // CASE 1: Camera finished Upper, is currently writing Lower into c_idx
+            if (c_idx != d_idx) {
+                // Perfect pair (d_idx=Upper, c_idx=Lower). Protect both!
+                // Steer the camera to the completely idle third bucket.
+                int third = 3 - d_idx - c_idx;
+                hint1 = third; hint2 = third; hint3 = third;
+            } else {
+                // FALLBACK: Camera overwrote its own Upper with Lower. Lost Upper.
+                // We need new Upper and Lower. Point to the completely idle bucket.
+                int idle = 3 - d_idx - sending; 
+                hint1 = idle; hint2 = sending; hint3 = sending;
+            }
+        } else {
+            // CASE 2: Camera finished Lower, is currently writing Upper into c_idx
+            if (c_idx != d_idx) {
+                // c_idx gets the new Upper. d_idx has old Lower (stale, unpaired).
+                // Next Lower goes to d_idx (safe idle). Next Upper goes to sending (busy idle).
+                hint1 = d_idx; hint2 = sending; hint3 = sending;
+            } else {
+                // CASE 3: Self-cemented (overwriting Lower with Upper). 
+                // Next Lower goes to the completely idle bucket.
+                int idle = 3 - d_idx - sending;
+                hint1 = idle; hint2 = sending; hint3 = sending;
+            }
+        }
+    } else {
+        // STARTUP FALLBACK: Camera hasn't finished any new halves yet.
+        // We prioritize completely idle buckets, then 'sending'.
+        int idle = -1;
+        for (int i = 0; i < 3; i++) {
+            if (i != sending && i != c_idx && i != d_idx) {
+                idle = i;
+                break;
+            }
+        }
+        if (idle == -1) idle = sending;
+        hint1 = idle; hint2 = sending; hint3 = sending;
+    }
+
+    // Assign the sequential hints that the ISR will pop one-by-one
     cam_hint_next           = hint1;
     cam_hint_next_next      = hint2;
     cam_hint_next_next_next = hint3;
