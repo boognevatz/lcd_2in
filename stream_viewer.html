@@ -121,12 +121,26 @@
       justify-content: center;
     }
 
+    #viewer-left-column {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    #viewer-card {
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--surface);
+    }
+
     /* Canvas wrapper */
     #canvas-wrap {
       display: flex;
       justify-content: center;
       background: #000;
-      border-radius: var(--radius) var(--radius) 0 0;
       padding: 12px;
       position: relative;
     }
@@ -435,33 +449,37 @@
   <!-- Viewer -->
   <div id="viewer">
     <div id="main-row">
-      <div id="canvas-wrap">
-        <canvas id="canvas" width="240" height="320"></canvas>
+      <div id="viewer-left-column">
+        <div id="viewer-card">
+          <div id="canvas-wrap">
+            <canvas id="canvas" width="240" height="320"></canvas>
+          </div>
+
+          <div id="controls">
+            <button class="nav-btn" id="btn-first" title="First frame (Home)">&#x23EE;</button>
+            <button class="nav-btn" id="btn-prev10" title="Back 10 frames (PgUp)">&laquo;</button>
+            <button class="nav-btn" id="btn-prev" title="Previous frame (&larr;)">&lsaquo;</button>
+            <input type="number" id="frame-input" min="1" value="1">
+            <span id="frame-total">/ 0</span>
+            <button class="nav-btn" id="btn-next" title="Next frame (&rarr;)">&rsaquo;</button>
+            <button class="nav-btn" id="btn-next10" title="Forward 10 frames (PgDn)">&raquo;</button>
+            <button class="nav-btn" id="btn-last" title="Last frame (End)">&#x23ED;</button>
+          </div>
+
+          <div id="options-row">
+            <label><input type="checkbox" id="opt-swap-bytes"> Swap byte order</label>
+            <label><input type="checkbox" id="opt-swap-rb"> Swap R/B channels</label>
+          </div>
+        </div>
+
+        <div id="kbd-hint">
+          <kbd>&larr;</kbd> <kbd>&rarr;</kbd> prev/next &nbsp;
+          <kbd>PgUp</kbd> <kbd>PgDn</kbd> &pm;10 &nbsp;
+          <kbd>Home</kbd> <kbd>End</kbd> first/last
+        </div>
       </div>
 
       <div id="meta-panel"></div>
-    </div>
-
-    <div id="controls">
-      <button class="nav-btn" id="btn-first" title="First frame (Home)">&#x23EE;</button>
-      <button class="nav-btn" id="btn-prev10" title="Back 10 frames (PgUp)">&laquo;</button>
-      <button class="nav-btn" id="btn-prev" title="Previous frame (&larr;)">&lsaquo;</button>
-      <input type="number" id="frame-input" min="1" value="1">
-      <span id="frame-total">/ 0</span>
-      <button class="nav-btn" id="btn-next" title="Next frame (&rarr;)">&rsaquo;</button>
-      <button class="nav-btn" id="btn-next10" title="Forward 10 frames (PgDn)">&raquo;</button>
-      <button class="nav-btn" id="btn-last" title="Last frame (End)">&#x23ED;</button>
-    </div>
-
-    <div id="options-row">
-      <label><input type="checkbox" id="opt-swap-bytes"> Swap byte order</label>
-      <label><input type="checkbox" id="opt-swap-rb"> Swap R/B channels</label>
-    </div>
-
-    <div id="kbd-hint">
-      <kbd>&larr;</kbd> <kbd>&rarr;</kbd> prev/next &nbsp;
-      <kbd>PgUp</kbd> <kbd>PgDn</kbd> &pm;10 &nbsp;
-      <kbd>Home</kbd> <kbd>End</kbd> first/last
     </div>
   </div>
 
