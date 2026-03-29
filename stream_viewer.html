@@ -793,11 +793,11 @@
           ['temperature', temp],
           ['ext temp', extTemp],
           ['barometer', baro],
-          ['Buckets N-1 MID (Upper End)', bucketsPrevMidValue],
-          ['Buckets N-1 END (Lower end)', bucketsPrevEndValue],
-          ['Buckets N START (Upper Start)', bucketsTime + ' (cam=' + bucketsCounter + ')\n' + buckets],
-          ['Buckets N START state (Upper Start)', bucketsTx],
-          ['50% lower-mid hints', lowerMidHints],
+          ['N-1 Buckets Upper End', bucketsPrevMidValue],
+          ['N-1 Buckets 50% Lower Mid hints', lowerMidHints],
+          ['N-1 Buckets Lower end', bucketsPrevEndValue],
+          ['N   Buckets Upper Start', bucketsTime + ' (cam=' + bucketsCounter + ')\n' + buckets],
+          ['N   Buckets Upper Start state', bucketsTx],
           ['timing chain', timingChainValue],
           ['upper tag', formatBucketTag(upperTag)],
           ['lower tag', formatBucketTag(lowerTag)]
@@ -909,20 +909,19 @@
       // Format the camera hint tag stamped by ISR and TX
       // bits 5:0 = capture hints, bits 11:6 = transmit hints
       function formatCamHintTag(value, isrTime, txTime) {
-        if (value === 0) return 'camera_hints_by_isr_time=' + formatGrouped(isrTime) + '\nnone';
         const names = ['A', 'B', 'C', '-'];
         const hint_isr1 = value & 3;
         const hint_isr2 = (value >> 2) & 3;
         const hint_isr3 = (value >> 4) & 3;
         let s = 'camera_hints_by_isr_time=' + formatGrouped(isrTime) + '\n' +
                 'camera_hints_by_isr=' + names[hint_isr1] + ',' + names[hint_isr2] + ',' + names[hint_isr3];
-        if (value > 0x3F) {
-          const hint_tx1 = (value >> 6) & 3;
-          const hint_tx2 = (value >> 8) & 3;
-          const hint_tx3 = (value >> 10) & 3;
-          s += '\ncamera_hints_by_tx_time=' + formatGrouped(txTime) +
-               '\ncamera_hints_by_tx=' + names[hint_tx1] + ',' + names[hint_tx2] + ',' + names[hint_tx3];
-        }
+        
+        const hint_tx1 = (value >> 6) & 3;
+        const hint_tx2 = (value >> 8) & 3;
+        const hint_tx3 = (value >> 10) & 3;
+        s += '\ncamera_hints_by_tx_time=' + formatGrouped(txTime) +
+             '\ncamera_hints_by_tx=' + names[hint_tx1] + ',' + names[hint_tx2] + ',' + names[hint_tx3];
+             
         return s;
       }
 
