@@ -771,36 +771,34 @@
         const extTemp = map.get('X-Ext-Temp') || 'N/A';
         const baro = map.get('X-Barometer') || 'N/A';
         const bucketsPrevMid = map.get('X-Buckets-prev-mid') || 'N/A';
-        const bucketsPrevMidTime = formatHeaderTime(map.get('X-Buckets-prev-mid-time') || 'N/A');
+        const prevUpperEndTime = formatHeaderTime(map.get('X-Buckets-Prev-Upper-End-time') || 'N/A');
         const bucketsPrevEnd = map.get('X-Buckets-prev-end') || 'N/A';
-        const bucketsPrevEndTime = formatHeaderTime(map.get('X-Buckets-prev-end-time') || 'N/A');
+        const prevEndTime = formatHeaderTime(map.get('X-Buckets-Prev-End-time') || 'N/A');
         const buckets = map.get('X-Buckets') || 'N/A';
         const bucketsTx = map.get('X-Buckets-tx') || 'N/A';
         const lowerMidHints = map.get('X-Buckets-lower-mid-hints') || 'N/A';
-        const bucketsTime = formatHeaderTime(map.get('X-Buckets-time') || 'N/A');
+        const upperStartTime = formatHeaderTime(map.get('X-Buckets-Upper-Start-time') || 'N/A');
         const bucketsCounter = formatHeaderTime(map.get('X-Buckets-time-counter') || 'N/A');
-        const txUpperTime = formatHeaderTime(map.get('X-TX-upper-time') || 'N/A');
-        const txLowerMidTime = formatHeaderTime(map.get('X-TX-lower-mid-time') || 'N/A');
-        const txLowerTime = formatHeaderTime(map.get('X-TX-lower-time') || 'N/A');
-        const bucketsPrevMidValue = bucketsPrevMidTime + '\n' + bucketsPrevMid;
-        const bucketsPrevEndValue = bucketsPrevEndTime + '\n' + bucketsPrevEnd;
-        const timingChainValue = 'pair select: ' + bucketsTime + ' (cam=' + bucketsCounter + ')'
-          + '\n' + 'tx upper: ' + txUpperTime
-          + '\n' + 'tx lower start: ' + txLowerTime
-          + '\n' + 'tx lower 50%: ' + txLowerMidTime;
+        const prevUpperStartTime = formatHeaderTime(map.get('X-Buckets-Prev-Upper-Start-time') || 'N/A');
+        const prevLowerMidTime = formatHeaderTime(map.get('X-Buckets-Prev-Lower-Mid-time') || 'N/A');
+        const prevLowerStartTime = formatHeaderTime(map.get('X-Buckets-Prev-Lower-Start-time') || 'N/A');
+        const bucketsPrevMidValue = prevUpperEndTime + '\n' + bucketsPrevMid;
+        const lowerMidHintsValue = prevLowerMidTime + '\n' + lowerMidHints;
+        const bucketsPrevEndValue = prevEndTime + '\n' + bucketsPrevEnd;
 
         const rows = [
-          ['temperature', temp],
-          ['ext temp', extTemp],
-          ['barometer', baro],
-          ['N-1 Buckets Upper End', bucketsPrevMidValue],
-          ['N-1 Buckets 50% Lower Mid hints', lowerMidHints],
-          ['N-1 Buckets Lower end', bucketsPrevEndValue],
-          ['N   Buckets Upper Start', bucketsTime + ' (cam=' + bucketsCounter + ')\n' + buckets],
-          ['N   Buckets Upper Start state', bucketsTx],
-          ['timing chain', timingChainValue],
-          ['upper tag', formatBucketTag(upperTag)],
-          ['lower tag', formatBucketTag(lowerTag)]
+          ['Temperature', temp],
+          ['Ext temp', extTemp],
+          ['Barometer', baro],
+          ['PREV Buckets Upper start: ', prevUpperStartTime],
+          ['PREV Buckets Upper End', bucketsPrevMidValue],
+          ['PREV Buckets Lower start: ', prevLowerStartTime],
+          ['PREV Buckets Lower Mid hints', lowerMidHintsValue],
+          ['PREV Buckets End', bucketsPrevEndValue],
+          ['Buckets Upper Start', upperStartTime + ' (cam=' + bucketsCounter + ')\n' + buckets],
+          ['Buckets Upper Start state', bucketsTx],
+          ['Upper tag', formatBucketTag(upperTag)],
+          ['Lower tag', formatBucketTag(lowerTag)]
         ];
 
         let html = '';
