@@ -89,9 +89,9 @@ Connection: close
         const ctx = canvas.getContext('2d');
         const width = 240;
         const height = 320;
-        const TAG_SIZE = 12;  // 12-byte tag per half-frame (time_us + bucket tag + tx states)
+        const TAG_SIZE = 20;  // 20-byte tag per half-frame (time_us + bucket tag + tx states + hints + isr_time)
         const halfPixelBytes = width * (height / 2) * 2; // 76800
-        const frameSize = width * height * 2 + TAG_SIZE * 2; // 153624
+        const frameSize = width * height * 2 + TAG_SIZE * 2; // 153640
 
         let frameCount = 0;
         let fpsCounter = 0;
@@ -107,8 +107,8 @@ Connection: close
         function displayImage(arrayBuffer) {
             const data = new Uint8Array(arrayBuffer);
 
-            // --- Extract frame numbers from 12-byte tags ---
-            // Tag layout: [time_us(4B), bucket_state(4B), tx_states(4B)]
+            // --- Extract frame numbers from 20-byte tags ---
+            // Tag layout: [time_us(4B), bucket_state(4B), tx_states(4B), hints(4B), isr_time(4B)]
             // bucket_state: bits 31-3 = frame number, bit 2 = half, bit 1 = dirty, bit 0 = valid
             // Upper tag at offset 0, lower tag at offset TAG_SIZE + halfPixelBytes
             const upperStateOffset = 4; // bytes 4-7 of upper tag
@@ -137,7 +137,7 @@ Connection: close
             const imageData = ctx.createImageData(width, height);
             const halfPixels = width * (height / 2);
 
-            // Upper half: skip 12-byte tag, read 76800 bytes
+            // Upper half: skip 20-byte tag, read 76800 bytes
             let si = TAG_SIZE;
             let di = 0;
             for (let i = 0; i < halfPixels; i++) {
@@ -154,7 +154,7 @@ Connection: close
                 di += 4;
             }
 
-            // Lower half: skip another 12-byte tag, read 76800 bytes
+            // Lower half: skip another 20-byte tag, read 76800 bytes
             si += TAG_SIZE;
             for (let i = 0; i < halfPixels; i++) {
                 if (si + 1 >= data.length) break;
