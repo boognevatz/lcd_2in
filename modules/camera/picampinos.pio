@@ -9,12 +9,10 @@ start1:
     wait 0  pin 8       ; wait until VSYNC=0
     wait 1  pin 8       ; wait until VSYNC=1 (start of frame)
 
-loop0:
-    mov     x, y        ; x = y (y: number of total pixel (in words: 32bit) in an image)
-    wait 0  pin 9       ; wait until HREF=0 (start of line)
+    mov     x, y        ; x = y (number of total pixels in an image)
 
 loop1:
-    wait 1  pin 9       ; wait until HREF=1 (start of line)
+    wait 1  pin 9       ; wait until HREF=1 (valid pixel data)
     
     ; Read 8-bit data (high byte: high-order part of RGB565)
     wait 1  pin 10      ; wait until PCLK = 1 (start of pixel)
@@ -29,11 +27,7 @@ loop1:
     ; Combine the high byte and low byte into a complete 16-bit RGB565 data (with bit-reversal if needed)
     push                ; RX_FIFO <= ISR (push the 16-bit RGB565 data into RX_FIFO)
 
-    jmp     x--, loop1  ; Decrement x (total pixels), and loop until all pixels in the row are read
-
-    wait 0  pin 9       ; wait until HREF=0 (end of line)
-
-    jmp     loop0       ; Continue to next line (next row of pixels)
+    jmp     x--, loop1  ; Decrement x (total pixels), and loop until all pixels in the image are read
 
     ; End of frame - jump back to waiting for next VSYNC signal
     jmp     start1      ; jump to start1 to wait for the next frame (VSYNC high)
