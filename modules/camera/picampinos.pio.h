@@ -13,36 +13,34 @@
 // ---------- //
 
 #define picampinos_wrap_target 0
-#define picampinos_wrap 17
-#define picampinos_pio_version 1
+#define picampinos_wrap 15
+#define picampinos_pio_version 0
 
 static const uint16_t picampinos_program_instructions[] = {
             //     .wrap_target
-    0x6020, //  0: out    x, 32
-    0x6040, //  1: out    y, 32
-    0x2028, //  2: wait   0 pin, 8
-    0x20a8, //  3: wait   1 pin, 8
-    0xa022, //  4: mov    x, y
-    0x2029, //  5: wait   0 pin, 9
-    0x20a9, //  6: wait   1 pin, 9
-    0x20aa, //  7: wait   1 pin, 10
-    0x4008, //  8: in     pins, 8
-    0x202a, //  9: wait   0 pin, 10
-    0x20aa, // 10: wait   1 pin, 10
-    0x4008, // 11: in     pins, 8
-    0x202a, // 12: wait   0 pin, 10
-    0x8020, // 13: push   block
-    0x0046, // 14: jmp    x--, 6
-    0x2029, // 15: wait   0 pin, 9
-    0x0004, // 16: jmp    4
-    0x0002, // 17: jmp    2
+    0x20a9, //  0: wait   1 pin, 9
+    0x202a, //  1: wait   0 pin, 10
+    0x20aa, //  2: wait   1 pin, 10
+    0x4008, //  3: in     pins, 8
+    0x202a, //  4: wait   0 pin, 10
+    0x20aa, //  5: wait   1 pin, 10
+    0x4008, //  6: in     pins, 8
+    0x202a, //  7: wait   0 pin, 10
+    0x20aa, //  8: wait   1 pin, 10
+    0x4008, //  9: in     pins, 8
+    0x202a, // 10: wait   0 pin, 10
+    0x20aa, // 11: wait   1 pin, 10
+    0x4008, // 12: in     pins, 8
+    0x202a, // 13: wait   0 pin, 10
+    0x8000, // 14: push   noblock
+    0x00c1, // 15: jmp    pin, 1
             //     .wrap
 };
 
 #if !PICO_NO_HARDWARE
 static const struct pio_program picampinos_program = {
     .instructions = picampinos_program_instructions,
-    .length = 18,
+    .length = 16,
     .origin = -1,
     .pio_version = picampinos_pio_version,
 #if PICO_PIO_VERSION > 0
@@ -56,19 +54,23 @@ static inline pio_sm_config picampinos_program_get_default_config(uint offset) {
     return c;
 }
 
-static inline void picampinos_program_init( PIO pio, uint32_t sm, uint32_t offset, uint32_t in_base ,uint32_t in_pin_num )
+static inline void picampinos_program_init( PIO pio, uint32_t sm, uint32_t offset, uint32_t in_base ,uint32_t in_pin_num, uint32_t href_pin, uint32_t pclk_pin)
 {
     pio_sm_config c = picampinos_program_get_default_config(offset);
     sm_config_set_set_pins(&c, in_base, in_pin_num);
     sm_config_set_in_pins(&c, in_base);
-    sm_config_set_in_shift(&c, false, false, 32); // auto push : false
-    sm_config_set_out_shift(&c, false, true, 32); // auto pull : true
-    uint32_t pin_offset;
-    for (pin_offset = 0; pin_offset < in_pin_num; pin_offset++)
+    sm_config_set_jmp_pin(&c, href_pin);
+    // RIGHT shift, autopush DISABLED (manual push)
+    sm_config_set_in_shift(&c, true, false, 32); 
+    for (uint32_t i = 0; i < in_pin_num; i++)
     {
-        pio_gpio_init(pio, in_base + pin_offset);
+        pio_gpio_init(pio, in_base + i);
     }
+    pio_gpio_init(pio, href_pin);
+    pio_gpio_init(pio, pclk_pin);
     pio_sm_set_consecutive_pindirs(pio, sm, in_base, in_pin_num, false);
+    pio_sm_set_consecutive_pindirs(pio, sm, href_pin, 1, false);
+    pio_sm_set_consecutive_pindirs(pio, sm, pclk_pin, 1, false);
     sm_config_set_clkdiv(&c, 1);
     pio_sm_init(pio, sm, offset, &c);
     pio_sm_set_enabled(pio, sm, true);

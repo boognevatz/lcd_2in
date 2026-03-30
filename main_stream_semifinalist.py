@@ -105,11 +105,8 @@ print_memory_stats("After network initialization")
 
 # Initialize Camera
 try:
-    import ov5640_jpeg 
-    # import ov5640_i2c
-    ov5640_jpeg.init_cam(test_pattern=False)
-    # ov5640_i2c.init_cam()
-    camera.start_cam()
+    import ov5640_i2c
+    ov5640_i2c.init_cam(format="jpeg", resolution="vga", test_pattern=False)
     debug_print("Camera started")
     print_memory_stats("After Camera Init")
 except Exception as e:

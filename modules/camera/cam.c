@@ -190,6 +190,7 @@ void setup_dma_for_capture()
         vsync_raw_irq_handler_installed = true;
     }
     gpio_set_irq_enabled(g_cam_pinmap.vsync, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
+    irq_set_enabled(IO_IRQ_BANK0, true);
 
     // Enable IRQ on both channels
     dma_channel_set_irq0_enabled(DMA_CH_A, true);
@@ -424,6 +425,13 @@ static void vsync_handler(uint gpio, uint32_t events) {
     // It's a valid early frame end (JPEG). Abort the DMA.
     dma_channel_abort(active_ch);
 
+    // Clear the PIO state machine so it drops the stuck half-word from the last frame
+    // and resets its program counter back to 'wait 1 pin 9' for the new frame.
+    pio_sm_set_enabled(pio_cam, sm_cam, false);
+    pio_sm_restart(pio_cam, sm_cam);
+    pio_sm_clear_fifos(pio_cam, sm_cam);
+    pio_sm_set_enabled(pio_cam, sm_cam, true);
+
     if (is_first_bucket) {
         jpeg_frame_size = written_bytes;
     } else {
@@ -459,6 +467,11 @@ static void vsync_handler(uint gpio, uint32_t events) {
         dma_hw->ints0 = (1u << next_ch);
         handle_half_complete(next_ch);
     }
+
+    // Restart the continuous DMA chain loop for the next frame
+    uint32_t next_ch_to_start = (active_ch == DMA_CH_A) ? DMA_CH_B : DMA_CH_A;
+    uint32_t channel_to_start = is_first_bucket ? active_ch : next_ch_to_start;
+    dma_channel_start(channel_to_start);
 }
 
 static void vsync_raw_irq_handler(void)
@@ -530,6 +543,9 @@ void cam_set_pinmap(uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3, uint8_t d4, 
     g_cam_pinmap.xclk = xclk;
 }
 
+static uint32_t offset_cam = 0;
+static bool pio_program_loaded = false;
+
 /********************************************************************************
 function:   Start the camera
 parameter:
@@ -539,17 +555,23 @@ void start_cam()
     // Use the lowest data pin as the base for PIO, and 8 pins for D0-D7
     uint32_t cam_base_pin = g_cam_pinmap.d[0];
     uint32_t cam_num_pins = 11;
-    uint32_t offset_cam = pio_add_program(pio_cam, &picampinos_program);
-    picampinos_program_init(pio_cam, sm_cam, offset_cam, cam_base_pin, cam_num_pins);
+    if (!pio_program_loaded) {
+        offset_cam = pio_add_program(pio_cam, &picampinos_program);
+        pio_program_loaded = true;
+    }
+    picampinos_program_init(pio_cam, sm_cam, offset_cam, cam_base_pin, cam_num_pins, g_cam_pinmap.href, g_cam_pinmap.pclk);
+    
+    // Keep VSYNC on SIO for reliable GPIO edge detection and diagnostics.
+    gpio_init(g_cam_pinmap.vsync);
+    gpio_set_dir(g_cam_pinmap.vsync, GPIO_IN);
+    gpio_disable_pulls(g_cam_pinmap.vsync);
+
     // Enable the state machine and clear the FIFO
     pio_sm_set_enabled(pio_cam, sm_cam, false);
     pio_sm_clear_fifos(pio_cam, sm_cam);
     pio_sm_restart(pio_cam, sm_cam);
     pio_sm_set_enabled(pio_cam, sm_cam, true);
 
-    // Setting the X and Y registers
-    pio_sm_put_blocking(pio_cam, sm_cam, 0);                  // X=0 : reserved
-    pio_sm_put_blocking(pio_cam, sm_cam, (CAM_FUL_SIZE - 1)); // Y: total words in an image
     mp_printf(MP_PYTHON_PRINTER, "start_cam finished, camera started\n");
     setup_dma_for_capture();
 }
@@ -582,6 +604,16 @@ parameter:
 ********************************************************************************/
 void free_cam()
 {
+    // Disable PIO
+    pio_sm_set_enabled(pio_cam, sm_cam, false);
+
+    // Disable VSYNC GPIO interrupt
+    gpio_set_irq_enabled(g_cam_pinmap.vsync, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+    if (vsync_raw_irq_handler_installed) {
+        gpio_remove_raw_irq_handler(g_cam_pinmap.vsync, vsync_raw_irq_handler);
+        vsync_raw_irq_handler_installed = false;
+    }
+
     // Disable IRQ settings
     irq_set_enabled(DMA_IRQ_0, false);
     dma_channel_set_irq0_enabled(DMA_CH_A, false);

@@ -1,10 +1,8 @@
-# ov5640_rgb565_config.py
-# Default RGB565 register initialization sequence ported from C
-
 import time
 import camera
 
-REGS = [
+# Base registers shared by all modes
+BASE_REGS = [
     (0x3008, 0x82), # SYSTEM_CTROL0: software reset
     (0xFFFF, 10),   # delay 10ms
     (0x3008, 0x42), # SYSTEM_CTROL0: power down
@@ -90,17 +88,17 @@ REGS = [
     (0x5183, 0x14),
     (0x5184, 0x25),
     (0x5185, 0x24),
-    (0x5186, 0x09),
-    (0x5187, 0x09),
-    (0x5188, 0x09),
-    (0x5189, 0x75),
-    (0x518a, 0x54),
-    (0x518b, 0xe0),
-    (0x518c, 0xb2),
-    (0x518d, 0x42),
-    (0x518e, 0x3d),
-    (0x518f, 0x56),
-    (0x5190, 0x46),
+    (0x5186, 0x10),
+    (0x5187, 0x10),
+    (0x5188, 0x10),
+    (0x5189, 0x6d),
+    (0x518a, 0x53),
+    (0x518b, 0x90),
+    (0x518c, 0x8c),
+    (0x518d, 0x3b),
+    (0x518e, 0x2c),
+    (0x518f, 0x59),
+    (0x5190, 0x42),
     (0x5191, 0xf8),
     (0x5192, 0x04),
     (0x5193, 0x70),
@@ -109,71 +107,53 @@ REGS = [
     (0x5196, 0x03),
     (0x5197, 0x01),
     (0x5198, 0x04),
-    (0x5199, 0x12),
+    (0x5199, 0x00),
     (0x519a, 0x04),
-    (0x519b, 0x00),
+    (0x519b, 0x13),
     (0x519c, 0x06),
-    (0x519d, 0x82),
+    (0x519d, 0x9e),
     (0x519e, 0x38),
 
+    # LENC (Manufacturer Calibration)
+    (0x5800, 0x2e), (0x5801, 0x1d), (0x5802, 0x15), (0x5803, 0x15),
+    (0x5804, 0x1c), (0x5805, 0x32), (0x5806, 0x14), (0x5807, 0x0b),
+    (0x5808, 0x07), (0x5809, 0x07), (0x580a, 0x0a), (0x580b, 0x12),
+    (0x580c, 0x0c), (0x580d, 0x04), (0x580e, 0x00), (0x580f, 0x00),
+    (0x5810, 0x03), (0x5811, 0x0c), (0x5812, 0x0c), (0x5813, 0x05),
+    (0x5814, 0x00), (0x5815, 0x00), (0x5816, 0x04), (0x5817, 0x0c),
+    (0x5818, 0x14), (0x5819, 0x0b), (0x581a, 0x07), (0x581b, 0x07),
+    (0x581c, 0x0b), (0x581d, 0x14), (0x581e, 0x33), (0x581f, 0x21),
+    (0x5820, 0x17), (0x5821, 0x17), (0x5822, 0x1e), (0x5823, 0x33),
+    (0x5824, 0x22), (0x5825, 0x24), (0x5826, 0x06), (0x5827, 0x26),
+    (0x5828, 0x22), (0x5829, 0x62), (0x582a, 0x24), (0x582b, 0x24),
+    (0x582c, 0x24), (0x582d, 0x42), (0x582e, 0x60), (0x582f, 0x22),
+    (0x5830, 0x20), (0x5831, 0x22), (0x5832, 0x62), (0x5833, 0x42),
+    (0x5834, 0x24), (0x5835, 0x24), (0x5836, 0x24), (0x5837, 0x42),
+    (0x5838, 0x02), (0x5839, 0x24), (0x583a, 0x06), (0x583b, 0x06),
+    (0x583c, 0x24), (0x583d, 0xee),
+
     # color matrix (Saturation)
-    (0x5381, 0x1e),
-    (0x5382, 0x5b),
-    (0x5383, 0x08),
-    (0x5384, 0x0a),
-    (0x5385, 0x7e),
-    (0x5386, 0x88),
-    (0x5387, 0x7c),
-    (0x5388, 0x6c),
-    (0x5389, 0x10),
-    (0x538a, 0x01),
-    (0x538b, 0x98),
+    (0x5381, 0x1e), (0x5382, 0x5b), (0x5383, 0x08), (0x5384, 0x0a),
+    (0x5385, 0x7e), (0x5386, 0x88), (0x5387, 0x7c), (0x5388, 0x6c),
+    (0x5389, 0x10), (0x538a, 0x01), (0x538b, 0x98),
 
     # CIP control (Sharpness)
-    (0x5300, 0x10),
-    (0x5301, 0x10),
-    (0x5302, 0x18),
-    (0x5303, 0x19),
-    (0x5304, 0x10),
-    (0x5305, 0x10),
-    (0x5306, 0x08), # denoise
-    (0x5307, 0x16),
-    (0x5308, 0x40),
-    (0x5309, 0x10),
-    (0x530a, 0x10),
-    (0x530b, 0x04),
+    (0x5300, 0x10), (0x5301, 0x10), (0x5302, 0x18), (0x5303, 0x19),
+    (0x5304, 0x10), (0x5305, 0x10), (0x5306, 0x08), (0x5307, 0x16),
+    (0x5308, 0x40), (0x5309, 0x10), (0x530a, 0x10), (0x530b, 0x04),
     (0x530c, 0x06),
 
     # GAMMA
-    (0x5480, 0x01),
-    (0x5481, 0x00),
-    (0x5482, 0x1e),
-    (0x5483, 0x3b),
-    (0x5484, 0x58),
-    (0x5485, 0x66),
-    (0x5486, 0x71),
-    (0x5487, 0x7d),
-    (0x5488, 0x83),
-    (0x5489, 0x8f),
-    (0x548a, 0x98),
-    (0x548b, 0xa6),
-    (0x548c, 0xb8),
-    (0x548d, 0xca),
-    (0x548e, 0xd7),
-    (0x548f, 0xe3),
+    (0x5480, 0x01), (0x5481, 0x00), (0x5482, 0x1e), (0x5483, 0x3b),
+    (0x5484, 0x58), (0x5485, 0x66), (0x5486, 0x71), (0x5487, 0x7d),
+    (0x5488, 0x83), (0x5489, 0x8f), (0x548a, 0x98), (0x548b, 0xa6),
+    (0x548c, 0xb8), (0x548d, 0xca), (0x548e, 0xd7), (0x548f, 0xe3),
     (0x5490, 0x1d),
 
-    # Special Digital Effects (SDE) (UV adjust)
-    (0x5580, 0x04), # enable brightness and contrast
-    (0x5583, 0x40), # special_effect
-    (0x5584, 0x10), # special_effect
-    (0x5586, 0x20), # contrast
-    (0x5587, 0x00), # brightness
-    (0x5588, 0x01), # brightness
-    (0x5589, 0x10),
-    (0x558a, 0x00),
-    (0x558b, 0xf8),
-    (0x501d, 0x40), # enable manual offset of contrast
+    # SDE
+    (0x5580, 0x06), (0x5583, 0x40), (0x5584, 0x40), (0x5586, 0x20),
+    (0x5587, 0x00), (0x5588, 0x01), (0x5589, 0x10), (0x558a, 0x00),
+    (0x558b, 0xf8), (0x501d, 0x40),
 
     # power on
     (0x3008, 0x02),
@@ -182,74 +162,175 @@ REGS = [
     (0x3c00, 0x04),
     
     (0xFFFF, 300),
-
-    # set_size_and_colorspace 320x240 (from OV5640_WR_Reg_2 conversions)
-    (0x3800, 0x01), # X_ADDR_ST_H (352 >> 8)
-    (0x3801, 0x60), # X_ADDR_ST_L (352 & 0xFF)
-    (0x3802, 0x00), # Y_ADDR_ST_H (26 >> 8)
-    (0x3803, 0x1a), # Y_ADDR_ST_L (26 & 0xFF)
-
-    (0x3804, 0x07), # X_ADDR_END_H (1792 >> 8)
-    (0x3805, 0x00), # X_ADDR_END_L (1792 & 0xFF)
-    (0x3806, 0x07), # Y_ADDR_END_H (1946 >> 8)
-    (0x3807, 0x9a), # Y_ADDR_END_L (1946 & 0xFF)
-
-    (0x3808, 0x00), # X_OUTPUT_SIZE_H (240 >> 8)  -- Wait, width=240? The C code had 240,320. 240 is width, 320 height for portrait mode.
-    (0x3809, 0xf0), # X_OUTPUT_SIZE_L (240 & 0xFF)
-    (0x380a, 0x01), # Y_OUTPUT_SIZE_H (320 >> 8)
-    (0x380b, 0x40), # Y_OUTPUT_SIZE_L (320 & 0xFF)
-
-    (0x380c, 0x07), # X_TOTAL_SIZE_H (1896 >> 8)
-    (0x380d, 0x68), # X_TOTAL_SIZE_L (1896 & 0xFF)
-    (0x380e, 0x03), # Y_TOTAL_SIZE_H (984 >> 8)
-    (0x380f, 0xd8), # Y_TOTAL_SIZE_L (984 & 0xFF)
-
-    (0x3810, 0x00), # X_OFFSET_H (16 >> 8)
-    (0x3811, 0x10), # X_OFFSET_L (16 & 0xFF)
-    (0x3812, 0x00), # Y_OFFSET_H (14 >> 8)
-    (0x3813, 0x0e), # Y_OFFSET_L (14 & 0xFF)
-
-    # Note: 0x5001 is modified dynamically in the C code, but let's read/modify it in python instead.
-    # The original C code read 0x5001, OR'd with 0x20 and wrote it back.
+    (0x0000, 0x00),
 ]
 
-def init_cam(sda=22, scl=23, pwm_pin=11, pwm_freq_khz=37000):
+def set_format(format="jpeg", resolution="vga", test_pattern=False):
+    """
+    Switch camera formats dynamically at runtime.
+    resolution options: "vga" (640x480), "720p" (1280x720), "rgb565" (240x320 portrait)
+    """
+    # 1. Stop hardware gracefully
+    camera.free_cam()
+    time.sleep_ms(20)
+
+    # 2. Re-send base registers
+    camera.write_registers(BASE_REGS)
+
+    if format == "jpeg":
+        # === JPEG Base settings ===
+        camera.write_register(0x3002, 0x00) # Release JPEG block
+        camera.write_register(0x3006, 0xff) # Enable all clocks
+        camera.write_register(0x501F, 0x00) # FORMAT_CTRL: YUV422
+        camera.write_register(0x4300, 0x30) # YUV422 byte order
+        camera.write_register(0x460b, 0x35) # JPEG marker enable
+        camera.write_register(0x471c, 0x50) # DVP path
+        camera.write_register(0x4713, 0x03) # JPEG mode 3
+        camera.write_register(0x5001, 0xa3) # ISP control
+        camera.write_register(0x3503, 0x00) # Auto AEC
+        camera.write_register(0x3821, 0x27) # Compress enable, HMIRROR, binning
+
+        # PLL Config
+        camera.write_register(0x3039, 0x00)
+        camera.write_register(0x3034, 0x1A)
+        camera.write_register(0x3035, 0x21) # sys_div=2
+        camera.write_register(0x3036, 0x2D) # mult=45
+        camera.write_register(0x3037, 0x13) # prediv=3
+        camera.write_register(0x3108, 0x16)
+        camera.write_register(0x3824, 0x10) # PCLK_RATIO=16
+        camera.write_register(0x460c, 0x22)
+        camera.write_register(0x3103, 0x13)
+        camera.write_register(0x300e, 0x58)
+
+        camera.write_register(0x3810, 0x00) # X_OFFSET
+        camera.write_register(0x3811, 0x10)
+        camera.write_register(0x3812, 0x00) # Y_OFFSET
+        camera.write_register(0x3813, 0x06)
+        
+        if resolution == "vga":
+            # True VGA config from original driver
+            camera.write_register(0x3820, 0x41) 
+            camera.write_register(0x3814, 0x31) # X_INC
+            camera.write_register(0x3815, 0x31) # Y_INC
+
+            camera.write_register(0x3800, 0x00) # Window
+            camera.write_register(0x3801, 0x00)
+            camera.write_register(0x3802, 0x00)
+            camera.write_register(0x3803, 0x04)
+            camera.write_register(0x3804, 0x0a)
+            camera.write_register(0x3805, 0x3f)
+            camera.write_register(0x3806, 0x07)
+            camera.write_register(0x3807, 0x9b)
+
+            camera.write_register(0x3808, 0x02) # X Out (640)
+            camera.write_register(0x3809, 0x80)
+            camera.write_register(0x380a, 0x01) # Y Out (480)
+            camera.write_register(0x380b, 0xe0)
+
+            camera.write_register(0x4602, 0x02) # VFIFO (640)
+            camera.write_register(0x4603, 0x80)
+            camera.write_register(0x4604, 0x01) # VFIFO (480)
+            camera.write_register(0x4605, 0xe0)
+
+            camera.write_register(0x380c, 0x07) # HTS
+            camera.write_register(0x380d, 0x68)
+            camera.write_register(0x380e, 0x04) # VTS
+            camera.write_register(0x380f, 0x38)
+
+            camera.write_register(0x4407, 0x20) # Modest compression for VGA
+
+        elif resolution == "720p":
+            # 720p (1280x720) config 
+            camera.write_register(0x3820, 0x41) 
+            camera.write_register(0x3814, 0x11) # X_INC (subsample x2)
+            camera.write_register(0x3815, 0x11) # Y_INC
+
+            # 16:9 2592x1458 window (cropped vertically)
+            camera.write_register(0x3800, 0x00)
+            camera.write_register(0x3801, 0x00)
+            camera.write_register(0x3802, 0x00)
+            camera.write_register(0x3803, 0xF3) # Y_ST = 243
+            camera.write_register(0x3804, 0x0A)
+            camera.write_register(0x3805, 0x1F) # X_END = 2591
+            camera.write_register(0x3806, 0x06)
+            camera.write_register(0x3807, 0xA5) # Y_END = 1701
+
+            camera.write_register(0x3808, 0x05) # X Out (1280)
+            camera.write_register(0x3809, 0x00)
+            camera.write_register(0x380a, 0x02) # Y Out (720)
+            camera.write_register(0x380b, 0xd0)
+
+            camera.write_register(0x4602, 0x05) # VFIFO (1280)
+            camera.write_register(0x4603, 0x00)
+            camera.write_register(0x4604, 0x02) # VFIFO (720)
+            camera.write_register(0x4605, 0xd0)
+
+            camera.write_register(0x380c, 0x0A) # HTS (Increase timing for 720p)
+            camera.write_register(0x380d, 0x8C)
+            camera.write_register(0x380e, 0x04) # VTS
+            camera.write_register(0x380f, 0x80)
+
+            # HEAVY COMPRESSION to avoid >150KB RAM overflow
+            camera.write_register(0x4407, 0x40)
+
+    elif format == "rgb565":
+        # === RGB565 Base settings (240x320 portrait) ===
+        camera.write_register(0x3820, 0x01)
+        camera.write_register(0x3821, 0x00)
+        camera.write_register(0x3814, 0x31)
+        camera.write_register(0x3815, 0x31)
+
+        camera.write_register(0x3039, 0x00)
+        camera.write_register(0x3034, 0x1A)
+        camera.write_register(0x3035, 0x11)
+        camera.write_register(0x3036, 11)
+        camera.write_register(0x3037, 0x01)
+        camera.write_register(0x3108, 0x16)
+        camera.write_register(0x3824, 0x04)
+        camera.write_register(0x460c, 0x22)
+        camera.write_register(0x3103, 0x13)
+
+        camera.write_register(0x501F, 0x01) # FORMAT_CTRL: RGB
+        camera.write_register(0x4300, 0x61) # RGB565
+
+        camera.write_register(0x3800, 0x01) # X_ST
+        camera.write_register(0x3801, 0x60)
+        camera.write_register(0x3802, 0x00) # Y_ST
+        camera.write_register(0x3803, 0x1a)
+        camera.write_register(0x3804, 0x07) # X_END
+        camera.write_register(0x3805, 0x00)
+        camera.write_register(0x3806, 0x07) # Y_END
+        camera.write_register(0x3807, 0x9a)
+
+        camera.write_register(0x3808, 0x00) # X Out (240)
+        camera.write_register(0x3809, 0xf0)
+        camera.write_register(0x380a, 0x01) # Y Out (320)
+        camera.write_register(0x380b, 0x40)
+
+        camera.write_register(0x380c, 0x07)
+        camera.write_register(0x380d, 0x68)
+        camera.write_register(0x380e, 0x03)
+        camera.write_register(0x380f, 0xd8)
+
+    camera.write_register(0x3000, 0x00) # Release reset
+    camera.write_register(0x3002, 0x00)
+    
+    if test_pattern:
+        camera.write_register(0x503D, 0xC0) 
+    else:
+        camera.write_register(0x503D, 0x00)
+
+    time.sleep_ms(50)
+    camera.start_cam()
+    try:
+        camera.stream_start() # If it's exposed, clean up stream flags
+    except AttributeError:
+        pass
+    print(f"Camera reinitialized: format={format}, resolution={resolution}")
+
+def init_cam(format="jpeg", resolution="vga", test_pattern=False, sda=22, scl=23, pwm_pin=11, pwm_freq_khz=37000):
     camera.set_pwm_pin(pwm_pin)
     camera.set_i2c_pins(sda, scl)
-    camera.init_cam() # Initializes bus
+    camera.init_cam() # Initializes hardware I2C bus
     
-    # Write the base registers
-    camera.write_registers(REGS)
-
-    # Dynamic 0x5001 update
-    val = camera.read_register(0x5001)
-    camera.write_register(0x5001, val | 0x20)
-    time.sleep_ms(50)
-
-    # set_image_options
-    camera.write_register(0x3820, 0x01) # TIMING_TC_REG20
-    camera.write_register(0x3821, 0x00) # TIMING_TC_REG21
-    camera.write_register(0x4514, 0xAA)
-    camera.write_register(0x4520, 0x0B)
-    camera.write_register(0x3814, 0x31) # X_INCREMENT
-    camera.write_register(0x3815, 0x31) # Y_INCREMENT
-    time.sleep_ms(50)
-
-    # set_pll
-    camera.write_register(0x3039, 0x00) # SC_PLL_CONTRL_5
-    camera.write_register(0x3034, 0x1A) # SC_PLL_CONTRL_0
-    camera.write_register(0x3035, 0x11) # SC_PLL_CONTRL_1
-    camera.write_register(0x3036, 11 & 0xFF) # SC_PLL_CONTRL_2
-    camera.write_register(0x3037, 0x01) # SC_PLL_CONTRL_3
-    camera.write_register(0x3108, 0x16) # SYSTEM_ROOT_DIVIDER
-    camera.write_register(0x3824, 0x04) # PCLK_RATIO
-    camera.write_register(0x460c, 0x22) # VFIFO_CTRL0C
-    camera.write_register(0x3103, 0x13) # SCCB_SYSTEM_CTRL1
-    time.sleep_ms(50)
-
-    # set_colorspace
-    camera.write_register(0x501F, 0x01) # FORMAT_CTRL
-    camera.write_register(0x4300, 0x61) # FORMAT_CTRL00
-    time.sleep_ms(50)
-
-    print("RGB565 camera initialization complete!")
+    set_format(format, resolution, test_pattern)

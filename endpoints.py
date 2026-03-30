@@ -58,7 +58,7 @@ Connection: close
     </style>
 </head>
 <body>
-    <h2>Camera Stream - RGB565</h2>
+    <h2>Camera Stream - Auto-Detect (JPEG/RGB565)</h2>
     <canvas id="camera-canvas" width="240" height="320"></canvas>
     <div id="stats">
         <div class="metric">FPS: <span id="fps">0.00</span></div>
@@ -74,6 +74,11 @@ Connection: close
         <button class="btn-led" onclick="sendLedCommand(15)">LED 15%</button>
         <button class="btn-led" onclick="sendLedCommand(20)">LED 20%</button>
         <button class="btn-led" onclick="sendLedCommand(100)">LED 100%</button>
+    </div>
+    <div id="controls">
+        <button class="btn-res" onclick="setCameraFormat('jpeg', 'vga')">VGA JPEG</button>
+        <button class="btn-res" onclick="setCameraFormat('jpeg', '720p')">720p JPEG</button>
+        <button class="btn-res" onclick="setCameraFormat('rgb565', 'vga')">RGB565</button>
     </div>
     <div id="color-format-options">
         <strong>Color Format:</strong><br>
@@ -134,6 +139,55 @@ Connection: close
                 return;
             }
 
+            function updateStats() {
+                frameCount++;
+                fpsCounter++;
+                document.getElementById('frame-count').textContent = frameCount;
+
+                const now = Date.now();
+                if (now - lastFpsTime >= 1000) {
+                    const fps = fpsCounter / ((now - lastFpsTime) / 1000);
+                    document.getElementById('fps').textContent = fps.toFixed(2);
+                    fpsCounter = 0;
+                    lastFpsTime = now;
+                }
+            }
+
+            // Auto-detect JPEG by looking for SOI marker (FF D8)
+            if (data[TAG_SIZE] === 0xFF && data[TAG_SIZE + 1] === 0xD8) {
+                const jpegData = new Uint8Array(halfPixelBytes * 2);
+                jpegData.set(data.subarray(TAG_SIZE, TAG_SIZE + halfPixelBytes), 0);
+                jpegData.set(data.subarray(TAG_SIZE * 2 + halfPixelBytes, TAG_SIZE * 2 + halfPixelBytes * 2), halfPixelBytes);
+
+                let eoiIndex = jpegData.length;
+                for (let i = 0; i < jpegData.length - 1; i++) {
+                    if (jpegData[i] === 0xFF && jpegData[i+1] === 0xD9) {
+                        eoiIndex = i + 2;
+                        break;
+                    }
+                }
+                
+                const blob = new Blob([jpegData.subarray(0, eoiIndex)], { type: 'image/jpeg' });
+                const url = URL.createObjectURL(blob);
+                const img = new Image();
+                img.onload = () => {
+                    if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+                        canvas.width = img.naturalWidth;
+                        canvas.height = img.naturalHeight;
+                    }
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    URL.revokeObjectURL(url);
+                    updateStats();
+                };
+                img.src = url;
+                return;
+            }
+
+            // --- RGB565 Rendering ---
+            if (canvas.width !== width || canvas.height !== height) {
+                canvas.width = width;
+                canvas.height = height;
+            }
             const imageData = ctx.createImageData(width, height);
             const halfPixels = width * (height / 2);
 
@@ -171,18 +225,7 @@ Connection: close
             }
 
             ctx.putImageData(imageData, 0, 0);
-
-            frameCount++;
-            fpsCounter++;
-            document.getElementById('frame-count').textContent = frameCount;
-
-            const now = Date.now();
-            if (now - lastFpsTime >= 1000) {
-                const fps = fpsCounter / ((now - lastFpsTime) / 1000);
-                document.getElementById('fps').textContent = fps.toFixed(2);
-                fpsCounter = 0;
-                lastFpsTime = now;
-            }
+            updateStats();
         }
 
         function toggleStream() {
@@ -233,6 +276,40 @@ Connection: close
             btns.forEach(b => { if (b.textContent === 'LED ' + percent + '%') b.classList.add('active'); });
 
             // Restart stream if it was running before
+            if (wasStreaming) {
+                streamEnabled = true;
+                const sbtn = document.getElementById('btn-stream');
+                sbtn.textContent = 'Stop Stream';
+                sbtn.classList.remove('stopped');
+                startStream();
+            }
+        }
+
+        async function setCameraFormat(format, res) {
+            const btns = document.querySelectorAll('.btn-res');
+            btns.forEach(b => b.disabled = true);
+            const wasStreaming = streamEnabled;
+
+            if (abortController) {
+                streamEnabled = false;
+                abortController.abort();
+            }
+
+            await new Promise(r => setTimeout(r, 600));
+
+            try {
+                document.getElementById('status').textContent = 'Switching format...';
+                const resp = await fetch('/set_format/' + format + '/' + res);
+                const text = await resp.text();
+                document.getElementById('status').textContent = 'Format: ' + text;
+            } catch (err) {
+                document.getElementById('status').textContent = 'Format error: ' + err.message;
+            }
+
+            await new Promise(r => setTimeout(r, 600));
+
+            btns.forEach(b => b.disabled = false);
+
             if (wasStreaming) {
                 streamEnabled = true;
                 const sbtn = document.getElementById('btn-stream');
@@ -642,6 +719,25 @@ def handle_getbarometer():
     return response
 
 
+def handle_set_format(path):
+    """Handle /set_format/{format}/{resolution} endpoint"""
+    parts = path.split('/')
+    if len(parts) >= 4:
+        fmt = parts[2]
+        res = parts[3]
+        try:
+            import ov5640_i2c
+            ov5640_i2c.set_format(format=fmt, resolution=res)
+            body = f"Switched to {fmt} {res}"
+        except Exception as e:
+            body = f"Error: {e}"
+    else:
+        body = "Invalid format request"
+    
+    response = f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: {len(body)}\r\n\r\n{body}".encode()
+    return response
+
+
 def handle_request(path, cl, s, create_server_socket_fn, set_head_led_brightness_fn):
     """Main request dispatcher - routes to appropriate handler
     
@@ -666,6 +762,8 @@ def handle_request(path, cl, s, create_server_socket_fn, set_head_led_brightness
         return None, new_s, True
     elif path == "/":
         return handle_root(), s, False
+    elif path.startswith('/set_format/'):
+        return handle_set_format(path), s, False
     elif path.startswith('/headled/'):
         return handle_headled(path, set_head_led_brightness_fn), s, False
     elif path == '/getmcutemperature':

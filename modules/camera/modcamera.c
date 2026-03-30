@@ -580,6 +580,12 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
     write_lower_mid_hints_header(hint1, hint2, hint3);
 }
 
+static mp_obj_t camera_free_cam(void) {
+         free_cam();
+         return mp_const_none;
+     }
+     static MP_DEFINE_CONST_FUN_OBJ_0(camera_free_cam_obj, camera_free_cam);
+
 
 /********************************************************************************
 function:   Initialize stream state. Call once before the batched stream loop.
@@ -1207,6 +1213,7 @@ static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_init_cam), MP_ROM_PTR(&camera_init_cam_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_i2c_pins), MP_ROM_PTR(&camera_set_i2c_pins_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_pwm_pin), MP_ROM_PTR(&camera_set_pwm_pin_obj) },
+    { MP_ROM_QSTR(MP_QSTR_free_cam), MP_ROM_PTR(&camera_free_cam_obj) },
     { MP_ROM_QSTR(MP_QSTR_start_cam), MP_ROM_PTR(&camera_start_cam_obj) },
     { MP_ROM_QSTR(MP_QSTR_stream_start), MP_ROM_PTR(&camera_stream_start_obj) },
     { MP_ROM_QSTR(MP_QSTR_stream_loop_c), MP_ROM_PTR(&camera_stream_loop_c_obj) },
