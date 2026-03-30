@@ -326,7 +326,8 @@ uint8_t OV5640_RD_Reg(i2c_inst_t *i2c,
  */
 void ov5640_set_data_order(bool reverse);
 
-extern const uint16_t sensor_default_regs[][2];
+int ov5640_write_register(uint16_t reg, uint8_t value);
+int ov5640_read_register(uint16_t reg);
 
 #endif // OV5640_H
 

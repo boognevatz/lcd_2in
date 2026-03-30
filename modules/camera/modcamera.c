@@ -1097,6 +1097,61 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 static MP_DEFINE_CONST_FUN_OBJ_2(camera_stream_loop_c_obj, camera_stream_loop_c);
 
 
+// Python wrapper for ov5640_write_register - write a single register
+static mp_obj_t camera_write_register(mp_obj_t reg_obj, mp_obj_t value_obj) {
+    uint16_t reg = mp_obj_get_int(reg_obj);
+    uint8_t value = mp_obj_get_int(value_obj);
+    int result = ov5640_write_register(reg, value);
+    if (result < 0) {
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Camera not initialized"));
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(camera_write_register_obj, camera_write_register);
+
+// Python wrapper for ov5640_read_register - read a single register
+static mp_obj_t camera_read_register(mp_obj_t reg_obj) {
+    uint16_t reg = mp_obj_get_int(reg_obj);
+    int value = ov5640_read_register(reg);
+    if (value < 0) {
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Camera not initialized"));
+    }
+    return mp_obj_new_int(value);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_read_register_obj, camera_read_register);
+
+// Python wrapper for writing multiple registers - accepts list of (reg, value) tuples
+static mp_obj_t camera_write_registers(mp_obj_t regs_list) {
+    size_t len;
+    mp_obj_t *items;
+    mp_obj_get_array(regs_list, &len, &items);
+    
+    for (size_t i = 0; i < len; i++) {
+        size_t pair_len;
+        mp_obj_t *pair_items;
+        mp_obj_get_array(items[i], &pair_len, &pair_items);
+        
+        if (pair_len != 2) {
+            mp_raise_ValueError(MP_ERROR_TEXT("Each entry must be (reg, value) pair"));
+        }
+        
+        uint16_t reg = mp_obj_get_int(pair_items[0]);
+        uint8_t value = mp_obj_get_int(pair_items[1]);
+        
+        if (reg == 0xFFFF) {
+            mp_hal_delay_ms(value);
+        } else {
+            int result = ov5640_write_register(reg, value);
+            if (result < 0) {
+                mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Camera not initialized"));
+            }
+        }
+    }
+    
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_write_registers_obj, camera_write_registers);
+
 // Define module globals
 static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_init_cam), MP_ROM_PTR(&camera_init_cam_obj) },
@@ -1112,6 +1167,9 @@ static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_set_data_pins), MP_ROM_PTR(&camera_set_data_pins_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_control_pins), MP_ROM_PTR(&camera_set_control_pins_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_xclk_pin), MP_ROM_PTR(&camera_set_xclk_pin_obj) },
+    { MP_ROM_QSTR(MP_QSTR_write_register), MP_ROM_PTR(&camera_write_register_obj) },
+    { MP_ROM_QSTR(MP_QSTR_read_register), MP_ROM_PTR(&camera_read_register_obj) },
+    { MP_ROM_QSTR(MP_QSTR_write_registers), MP_ROM_PTR(&camera_write_registers_obj) },
 };
 static MP_DEFINE_CONST_DICT(camera_module_globals, camera_module_globals_table);
 
