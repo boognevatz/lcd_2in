@@ -80,6 +80,15 @@ Connection: close
         <button class="btn-res" onclick="setCameraFormat('jpeg', '720p')">720p JPEG</button>
         <button class="btn-res" onclick="setCameraFormat('rgb565', 'vga')">RGB565</button>
     </div>
+    <div id="i2c-controls" style="margin-top: 10px; padding: 10px; border: 1px solid #555;">
+        <strong>I2C Register Tuning:</strong><br>
+        <label>Address: <input type="text" id="reg-address" value="0x4407" size="6"></label>
+        <label style="margin-left: 10px;">Value: <input type="text" id="reg-value" value="0x12" size="4"></label>
+        <button onclick="setI2CRegister()">Set Register</button>
+        <div style="margin-top: 5px; font-size: 12px; color: #aaa;">
+            (eg. 0x08-0x40, high quality: 0x08-0x10, low quality: 0x20-0x40)
+        </div>
+    </div>
     <div id="color-format-options">
         <strong>Color Format:</strong><br>
         <label><input type="radio" name="color-format" value="bgr"> b01234_g012345_r01234</label>
@@ -274,6 +283,51 @@ Connection: close
 
             btns.forEach(b => { b.disabled = false; b.classList.remove('active'); });
             btns.forEach(b => { if (b.textContent === 'LED ' + percent + '%') b.classList.add('active'); });
+
+            // Restart stream if it was running before
+            if (wasStreaming) {
+                streamEnabled = true;
+                const sbtn = document.getElementById('btn-stream');
+                sbtn.textContent = 'Stop Stream';
+                sbtn.classList.remove('stopped');
+                startStream();
+            }
+        }
+
+        async function setI2CRegister() {
+            const addr = document.getElementById('reg-address').value;
+            const val = document.getElementById('reg-value').value;
+            const btn = document.querySelector('button[onclick="setI2CRegister()"]');
+            
+            if (btn) btn.disabled = true;
+            const wasStreaming = streamEnabled;
+
+            // Stop stream first (frees the single socket)
+            if (abortController) {
+                streamEnabled = false;
+                abortController.abort();
+            }
+
+            // Wait for MCU to close the stream socket
+            await new Promise(r => setTimeout(r, 600));
+
+            try {
+                document.getElementById('status').textContent = 'Setting I2C...';
+                const response = await fetch(`/seti2cregister?address=${addr}&value=${val}`);
+                const text = await response.text();
+                if (response.ok) {
+                    document.getElementById('status').textContent = `I2C: ${text}`;
+                } else {
+                    document.getElementById('status').textContent = `I2C Error: ${text}`;
+                }
+            } catch (err) {
+                document.getElementById('status').textContent = 'I2C Request failed: ' + err.message;
+            }
+
+            // Wait for MCU to close command socket and recreate listener
+            await new Promise(r => setTimeout(r, 600));
+
+            if (btn) btn.disabled = false;
 
             // Restart stream if it was running before
             if (wasStreaming) {
@@ -738,6 +792,31 @@ def handle_set_format(path):
     return response
 
 
+def handle_seti2cregister(path):
+    """Handle /seti2cregister?address=0x...&value=0x... endpoint"""
+    try:
+        if '?' in path:
+            query = path.split('?')[1]
+            params = dict(p.split('=') for p in query.split('&') if '=' in p)
+            
+            addr_str = params.get('address', '0x00')
+            val_str = params.get('value', '0x00')
+            
+            address = int(addr_str, 16)
+            value = int(val_str, 16)
+            
+            import camera
+            camera.write_register(address, value)
+            body = f"Set {addr_str} to {val_str}"
+        else:
+            body = "Missing query parameters"
+    except Exception as e:
+        body = f"Error: {e}"
+        
+    response = f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: {len(body)}\r\n\r\n{body}".encode()
+    return response
+
+
 def handle_request(path, cl, s, create_server_socket_fn, set_head_led_brightness_fn):
     """Main request dispatcher - routes to appropriate handler
     
@@ -764,6 +843,8 @@ def handle_request(path, cl, s, create_server_socket_fn, set_head_led_brightness
         return handle_root(), s, False
     elif path.startswith('/set_format/'):
         return handle_set_format(path), s, False
+    elif path.startswith('/seti2cregister'):
+        return handle_seti2cregister(path), s, False
     elif path.startswith('/headled/'):
         return handle_headled(path, set_head_led_brightness_fn), s, False
     elif path == '/getmcutemperature':
