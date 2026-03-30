@@ -1,55 +1,57 @@
 .program picampinos
 
-; pin8=vsync, pin9=href, pin10=pclk, pin0-pin7=D[2:9]
-start0:
-    out     x, 32       ; X <= TX_FIFO(32bit) : X must be zero 
-    out     y, 32       ; Y <= TX_FIFO(32bit) : num of trans
+; INLINE PIO program for JPEG capture with manual push.
+;
+; HREF-gated capture: PCLK is ungated, so PIO must check HREF
+; to avoid sampling garbage during HREF-low gaps. The jmp_pin loop captures
+; 4 bytes per word while HREF stays high, then wraps to wait for next HREF.
+;
+; ISR RIGHT-shift, NO autopush (RP2350 errata RP2350-E6).
+; Right-shift ensures correct byte order in little-endian ARM memory:
+;   captured bytes B0,B1,B2,B3 → memory addr+0=B0, addr+1=B1, addr+2=B2, addr+3=B3
+;
+; Manual push every 4 bytes into one 32-bit word.
+; Frame boundaries detected by VSYNC GPIO interrupt on CPU.
 
-start1:
-    wait 0  pin 8       ; wait until VSYNC=0
-    wait 1  pin 8       ; wait until VSYNC=1 (start of frame)
-
-    mov     x, y        ; x = y (number of total pixels in an image)
-
-loop1:
-    wait 1  pin 9       ; wait until HREF=1 (valid pixel data)
-    
-    ; Read 8-bit data (high byte: high-order part of RGB565)
-    wait 1  pin 10      ; wait until PCLK = 1 (start of pixel)
-    in      pins, 8     ; get camera RGB high byte (R[4:0], G[5:3]) -> ISR
-    wait 0  pin 10      ; wait until PCLK = 0
-
-    ; Read 8-bit data (low byte: low-order part of RGB565)
-    wait 1  pin 10      ; wait until PCLK = 1 (start of next pixel byte)
-    in      pins, 8     ; get camera RGB low byte (G[2:0], B[4:0]) -> ISR
-    wait 0  pin 10      ; wait until PCLK = 0
-
-    ; Combine the high byte and low byte into a complete 16-bit RGB565 data (with bit-reversal if needed)
-    push                ; RX_FIFO <= ISR (push the 16-bit RGB565 data into RX_FIFO)
-
-    jmp     x--, loop1  ; Decrement x (total pixels), and loop until all pixels in the image are read
-
-    ; End of frame - jump back to waiting for next VSYNC signal
-    jmp     start1      ; jump to start1 to wait for the next frame (VSYNC high)
+    wait 1 pin 9       ; wait HREF high
+    wait 0 pin 10      ; sync: ensure PCLK is low before first sample
+    wait 1 pin 10      ; PCLK high - byte 1
+    in   pins, 8
+    wait 0 pin 10
+    wait 1 pin 10      ; PCLK high - byte 2
+    in   pins, 8
+    wait 0 pin 10
+    wait 1 pin 10      ; PCLK high - byte 3
+    in   pins, 8
+    wait 0 pin 10
+    wait 1 pin 10      ; PCLK high - byte 4
+    in   pins, 8
+    wait 0 pin 10
+    push noblock
+    jmp  pin, 1        ; loop while HREF high (skip sync on continuation)
 
 % c-sdk {
-static inline void picampinos_program_init( PIO pio, uint32_t sm, uint32_t offset, uint32_t in_base ,uint32_t in_pin_num )
+static inline void picampinos_program_init( PIO pio, uint32_t sm, uint32_t offset, uint32_t in_base ,uint32_t in_pin_num, uint32_t href_pin, uint32_t pclk_pin)
 {
     pio_sm_config c = picampinos_program_get_default_config(offset);
 
     sm_config_set_set_pins(&c, in_base, in_pin_num);
     sm_config_set_in_pins(&c, in_base);
- 
-    sm_config_set_in_shift(&c, false, false, 32); // auto push : false
-    sm_config_set_out_shift(&c, false, true, 32); // auto pull : true
+    sm_config_set_jmp_pin(&c, href_pin);
 
-    uint32_t pin_offset;
-    for (pin_offset = 0; pin_offset < in_pin_num; pin_offset++)
+    // RIGHT shift, autopush DISABLED (manual push)
+    sm_config_set_in_shift(&c, true, false, 32); 
+
+    for (uint32_t i = 0; i < in_pin_num; i++)
     {
-        pio_gpio_init(pio, in_base + pin_offset);
+        pio_gpio_init(pio, in_base + i);
     }
+    pio_gpio_init(pio, href_pin);
+    pio_gpio_init(pio, pclk_pin);
 
     pio_sm_set_consecutive_pindirs(pio, sm, in_base, in_pin_num, false);
+    pio_sm_set_consecutive_pindirs(pio, sm, href_pin, 1, false);
+    pio_sm_set_consecutive_pindirs(pio, sm, pclk_pin, 1, false);
 
     sm_config_set_clkdiv(&c, 1);
 

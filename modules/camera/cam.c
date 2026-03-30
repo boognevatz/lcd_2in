@@ -42,6 +42,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+static void handle_half_complete(uint32_t completed_ch);
+static void vsync_raw_irq_handler(void);
+
 // init PIO
 static PIO pio_cam = pio0;
 
@@ -80,6 +83,19 @@ volatile int32_t mcu_temp_x10 = 365;            // default 36.5C until Python up
 // ch_target[0] = CH_A's target bucket, ch_target[1] = CH_B's target bucket
 static volatile uint8_t ch_target[2] = {0, 1};
 
+// --- VSYNC GPIO interrupt support ---
+static volatile bool vsync_end_on_rising = true;  // JPEG mode needs rising edge for frame boundaries
+static bool vsync_raw_irq_handler_installed = false;
+volatile uint32_t jpeg_frame_size = 0;    // Readable frame's size
+static volatile uint32_t vsync_rise_count = 0;
+static volatile uint32_t vsync_fall_count = 0;
+static volatile uint32_t vsync_frame_end_count = 0;
+static volatile int32_t jpeg_last_soi_pos = -1;
+static volatile int32_t jpeg_last_eoi_pos = -1;
+static volatile uint32_t jpeg_last_sample_nonzero = 0;
+static volatile uint32_t jpeg_last_sample_ff = 0;
+static volatile uint32_t jpeg_last_sample_len = 0;
+static uint8_t cam_capture_head[32]; // first 32 bytes of last capture
 uint8_t pin_i2c1_sda = 22; // default on RP2350 touch 2in
 uint8_t pin_i2c1_scl = 23; // default on RP2350 touch 2in
 uint8_t pin_xclk_pwm = 11; // GPIO11 (camera's xclk(24MHz))
@@ -127,22 +143,22 @@ void setup_dma_for_capture()
 
     // Configure CH_A: transfers one half-frame, then chains to CH_B
     dma_channel_config c_a = get_cam_config(pio_cam, sm_cam, DMA_CH_A);
-    channel_config_set_transfer_data_size(&c_a, DMA_SIZE_16);
+    channel_config_set_transfer_data_size(&c_a, DMA_SIZE_32);
     channel_config_set_chain_to(&c_a, DMA_CH_B);
     dma_channel_configure(DMA_CH_A, &c_a,
                           bucket[0] + BUCKET_TAG_SIZE, // write past 20-byte tag
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
-                          HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers
+                          HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers or 19,200 x 32-bit
                           false);                 // don't start yet
 
     // Configure CH_B: transfers one half-frame, then chains to CH_A
     dma_channel_config c_b = get_cam_config(pio_cam, sm_cam, DMA_CH_B);
-    channel_config_set_transfer_data_size(&c_b, DMA_SIZE_16);
+    channel_config_set_transfer_data_size(&c_b, DMA_SIZE_32);
     channel_config_set_chain_to(&c_b, DMA_CH_A);
     dma_channel_configure(DMA_CH_B, &c_b,
                           bucket[1] + BUCKET_TAG_SIZE, // write past 20-byte tag
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
-                          HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers
+                          HALF_FRAME_XFERS,       // 38,400 x 16-bit transfers or 19,200 x 32-bit
                           false);                 // don't start yet
 
     // Reset three-bucket system state
@@ -167,6 +183,13 @@ void setup_dma_for_capture()
     bucket_tx_next_cemented[0] = 0;
     bucket_tx_next_cemented[1] = 1; // CH_B is preconfigured as next target
     bucket_tx_next_cemented[2] = 0;
+
+    // Set up VSYNC GPIO interrupt
+    if (!vsync_raw_irq_handler_installed) {
+        gpio_add_raw_irq_handler(g_cam_pinmap.vsync, vsync_raw_irq_handler);
+        vsync_raw_irq_handler_installed = true;
+    }
+    gpio_set_irq_enabled(g_cam_pinmap.vsync, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
 
     // Enable IRQ on both channels
     dma_channel_set_irq0_enabled(DMA_CH_A, true);
@@ -359,6 +382,96 @@ static void handle_half_complete(uint32_t completed_ch)
     dma_channel_set_write_addr(completed_ch, bucket[chosen] + BUCKET_TAG_SIZE, false);
 }
 
+// --- VSYNC Pad & Trick Handler ---
+static void vsync_handler(uint gpio, uint32_t events) {
+    (void)gpio;
+
+    if (events & GPIO_IRQ_EDGE_RISE) {
+        vsync_rise_count++;
+    }
+    if (events & GPIO_IRQ_EDGE_FALL) {
+        vsync_fall_count++;
+    }
+
+    const bool selected_edge =
+        (vsync_end_on_rising && (events & GPIO_IRQ_EDGE_RISE)) ||
+        (!vsync_end_on_rising && (events & GPIO_IRQ_EDGE_FALL));
+    if (!selected_edge) {
+        return;
+    }
+
+    vsync_frame_end_count++;
+
+    uint32_t active_ch = dma_channel_is_busy(DMA_CH_A) ? DMA_CH_A : DMA_CH_B;
+    if (!dma_channel_is_busy(DMA_CH_A) && !dma_channel_is_busy(DMA_CH_B)) {
+        return;
+    }
+
+    uint32_t remaining = dma_channel_hw_addr(active_ch)->transfer_count;
+    uint32_t written_words = HALF_FRAME_XFERS - remaining;
+    uint32_t written_bytes = written_words * 4;
+
+    uint8_t ch_idx = (active_ch == DMA_CH_A) ? 0 : 1;
+    uint8_t completed = ch_target[ch_idx];
+    bool is_first_bucket = bucket_half_is_upper(bucket_state[completed]);
+
+    if (is_first_bucket && written_bytes < 16) {
+        // Trailing VSYNC from a perfectly filled frame (e.g. RGB565)
+        // that just hardware-chained into this first bucket. Ignore it.
+        return;
+    }
+
+    // It's a valid early frame end (JPEG). Abort the DMA.
+    dma_channel_abort(active_ch);
+
+    if (is_first_bucket) {
+        jpeg_frame_size = written_bytes;
+    } else {
+        jpeg_frame_size = HALF_FRAME_BYTES + written_bytes;
+    }
+
+    // Pad the rest of this bucket with 0x00
+    if (written_bytes < HALF_FRAME_BYTES) {
+        memset(bucket[completed] + BUCKET_TAG_SIZE + written_bytes, 0x00, HALF_FRAME_BYTES - written_bytes);
+    }
+
+    if (is_first_bucket) {
+        uint32_t head_len = (written_bytes < 32) ? written_bytes : 32;
+        if (head_len > 0) {
+            memcpy(cam_capture_head, bucket[completed] + BUCKET_TAG_SIZE, head_len);
+        }
+    }
+
+    // Trick Part 1: Commit the active bucket
+    dma_hw->ints0 = (1u << active_ch);
+    handle_half_complete(active_ch);
+
+    // Trick Part 2: If we aborted the first bucket, we must also commit an empty second bucket
+    if (is_first_bucket) {
+        uint32_t next_ch = (active_ch == DMA_CH_A) ? DMA_CH_B : DMA_CH_A;
+        dma_channel_abort(next_ch);
+
+        uint8_t next_ch_idx = (next_ch == DMA_CH_A) ? 0 : 1;
+        uint8_t next_completed = ch_target[next_ch_idx];
+
+        memset(bucket[next_completed] + BUCKET_TAG_SIZE, 0x00, HALF_FRAME_BYTES);
+        
+        dma_hw->ints0 = (1u << next_ch);
+        handle_half_complete(next_ch);
+    }
+}
+
+static void vsync_raw_irq_handler(void)
+{
+    uint32_t events = gpio_get_irq_event_mask(g_cam_pinmap.vsync);
+    uint32_t edge_events = events & (GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL);
+    if (edge_events == 0) {
+        return;
+    }
+    gpio_acknowledge_irq(g_cam_pinmap.vsync, edge_events);
+    vsync_handler(g_cam_pinmap.vsync, edge_events);
+}
+
 void cam_handler(void)
 {
     uint32_t ints = dma_hw->ints0;
@@ -518,4 +631,81 @@ void set_pwm_freq_kHz(uint32_t freq_khz, uint8_t gpio_num)
     // set PWM start
     pwm_init(pwm0_slice_num, &pwm_slice_config, true);
     pwm_set_gpio_level(gpio_num, (pwm_slice_config.top * 0.50)); // duty:50%
+}
+
+uint32_t cam_get_frame_size(void)
+{
+    return jpeg_frame_size;
+}
+
+void cam_set_vsync_end_on_rising(bool enabled)
+{
+    vsync_end_on_rising = enabled;
+}
+
+bool cam_get_vsync_end_on_rising(void)
+{
+    return vsync_end_on_rising;
+}
+
+void cam_reset_diag_stats(void)
+{
+    vsync_rise_count = 0;
+    vsync_fall_count = 0;
+    vsync_frame_end_count = 0;
+    jpeg_last_soi_pos = -1;
+    jpeg_last_eoi_pos = -1;
+    jpeg_last_sample_nonzero = 0;
+    jpeg_last_sample_ff = 0;
+    jpeg_last_sample_len = 0;
+}
+
+uint32_t cam_get_vsync_rise_count(void)
+{
+    return vsync_rise_count;
+}
+
+uint32_t cam_get_vsync_fall_count(void)
+{
+    return vsync_fall_count;
+}
+
+uint32_t cam_get_vsync_frame_end_count(void)
+{
+    return vsync_frame_end_count;
+}
+
+uint32_t cam_get_last_capture_size(void)
+{
+    return jpeg_frame_size; 
+}
+
+int32_t cam_get_last_soi_pos(void)
+{
+    return jpeg_last_soi_pos;
+}
+
+int32_t cam_get_last_eoi_pos(void)
+{
+    return jpeg_last_eoi_pos;
+}
+
+uint32_t cam_get_last_sample_nonzero(void)
+{
+    return jpeg_last_sample_nonzero;
+}
+
+uint32_t cam_get_last_sample_ff(void)
+{
+    return jpeg_last_sample_ff;
+}
+
+uint32_t cam_get_last_sample_len(void)
+{
+    return jpeg_last_sample_len;
+}
+
+const uint8_t* cam_get_capture_head(void)
+{
+    return cam_capture_head;
 }

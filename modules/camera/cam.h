@@ -39,7 +39,7 @@
 // 3-bucket half-frame DMA chaining
 #define FRAME_BYTES       (CAM_FUL_SIZE * 2)                    // 153,600
 #define HALF_FRAME_BYTES  (FRAME_BYTES / 2)                     // 76,800
-#define HALF_FRAME_XFERS  (HALF_FRAME_BYTES / sizeof(uint16_t)) // 38,400
+#define HALF_FRAME_XFERS  (HALF_FRAME_BYTES / sizeof(uint32_t)) // 19,200
 #define BUCKET_TAG_SIZE       20                                 // 20-byte tag (time_us + bucket tag + tx states + camera hint + isr_time_us)
 #define TAGGED_HALF_FRAME_BYTES (BUCKET_TAG_SIZE + HALF_FRAME_BYTES) // 76,820
 
@@ -126,6 +126,21 @@ void read_cam_data_blocking(uint8_t *buffer, size_t length);
 dma_channel_config get_cam_config(PIO pio, uint32_t sm, uint32_t dma_chan);
 void cam_handler();
 void setup_dma_for_capture();
+
+uint32_t cam_get_frame_size(void);
+void cam_set_vsync_end_on_rising(bool enabled);
+bool cam_get_vsync_end_on_rising(void);
+void cam_reset_diag_stats(void);
+uint32_t cam_get_vsync_rise_count(void);
+uint32_t cam_get_vsync_fall_count(void);
+uint32_t cam_get_vsync_frame_end_count(void);
+uint32_t cam_get_last_capture_size(void);
+int32_t cam_get_last_soi_pos(void);
+int32_t cam_get_last_eoi_pos(void);
+uint32_t cam_get_last_sample_nonzero(void);
+uint32_t cam_get_last_sample_ff(void);
+uint32_t cam_get_last_sample_len(void);
+const uint8_t* cam_get_capture_head(void);
 
 // Camera pin mapping struct for runtime configuration
 typedef struct {

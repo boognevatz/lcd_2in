@@ -1152,6 +1152,56 @@ static mp_obj_t camera_write_registers(mp_obj_t regs_list) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(camera_write_registers_obj, camera_write_registers);
 
+// Get the actual frame size
+static mp_obj_t camera_get_frame_size(void) {
+    return mp_obj_new_int(cam_get_frame_size());
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_get_frame_size_obj, camera_get_frame_size);
+
+// Select which VSYNC edge is treated as frame end (True=rising, False=falling)
+static mp_obj_t camera_set_vsync_end_on_rising(mp_obj_t enabled_obj) {
+    cam_set_vsync_end_on_rising(mp_obj_is_true(enabled_obj));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_vsync_end_on_rising_obj, camera_set_vsync_end_on_rising);
+
+static mp_obj_t camera_get_vsync_end_on_rising(void) {
+    return mp_obj_new_bool(cam_get_vsync_end_on_rising());
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_get_vsync_end_on_rising_obj, camera_get_vsync_end_on_rising);
+
+static mp_obj_t camera_reset_diag_stats(void) {
+    cam_reset_diag_stats();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_reset_diag_stats_obj, camera_reset_diag_stats);
+
+// Returns tuple:
+// (vsync_rise, vsync_fall, frame_end_events, last_capture_bytes, frame_size, soi_pos, eoi_pos, end_on_rising, sample_nonzero, sample_ff, sample_len)
+static mp_obj_t camera_get_diag_stats(void) {
+    mp_obj_t items[11];
+    items[0] = mp_obj_new_int(cam_get_vsync_rise_count());
+    items[1] = mp_obj_new_int(cam_get_vsync_fall_count());
+    items[2] = mp_obj_new_int(cam_get_vsync_frame_end_count());
+    items[3] = mp_obj_new_int(cam_get_last_capture_size());
+    items[4] = mp_obj_new_int(cam_get_frame_size());
+    items[5] = mp_obj_new_int(cam_get_last_soi_pos());
+    items[6] = mp_obj_new_int(cam_get_last_eoi_pos());
+    items[7] = mp_obj_new_bool(cam_get_vsync_end_on_rising());
+    items[8] = mp_obj_new_int(cam_get_last_sample_nonzero());
+    items[9] = mp_obj_new_int(cam_get_last_sample_ff());
+    items[10] = mp_obj_new_int(cam_get_last_sample_len());
+    return mp_obj_new_tuple(11, items);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_get_diag_stats_obj, camera_get_diag_stats);
+
+// Get first 32 bytes of last captured buffer (for data format diagnosis)
+static mp_obj_t camera_capture_head(void) {
+    const uint8_t *head = cam_get_capture_head();
+    return mp_obj_new_bytes(head, 32);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_capture_head_obj, camera_capture_head);
+
 // Define module globals
 static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_init_cam), MP_ROM_PTR(&camera_init_cam_obj) },
@@ -1170,6 +1220,12 @@ static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_write_register), MP_ROM_PTR(&camera_write_register_obj) },
     { MP_ROM_QSTR(MP_QSTR_read_register), MP_ROM_PTR(&camera_read_register_obj) },
     { MP_ROM_QSTR(MP_QSTR_write_registers), MP_ROM_PTR(&camera_write_registers_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_frame_size), MP_ROM_PTR(&camera_get_frame_size_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_vsync_end_on_rising), MP_ROM_PTR(&camera_set_vsync_end_on_rising_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_vsync_end_on_rising), MP_ROM_PTR(&camera_get_vsync_end_on_rising_obj) },
+    { MP_ROM_QSTR(MP_QSTR_reset_diag_stats), MP_ROM_PTR(&camera_reset_diag_stats_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_diag_stats), MP_ROM_PTR(&camera_get_diag_stats_obj) },
+    { MP_ROM_QSTR(MP_QSTR_capture_head), MP_ROM_PTR(&camera_capture_head_obj) },
 };
 static MP_DEFINE_CONST_DICT(camera_module_globals, camera_module_globals_table);
 
