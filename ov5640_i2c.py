@@ -1,6 +1,15 @@
 import time
 import camera
 
+# Registers:
+# |      what         | i2c register |     value   |              explanation      |
+# |-------------------|--------------|-------------|-------------------------------|
+# |     image quality |       0x4407 | 0x08 - 0x40 | x08 - best,    0x40 -   worst |
+# | vertical flipping |       0x3820 | 0x40 - 0x46 | x40 - default, 0x46 - flipped |
+# | horizontal flipping |     0x3821 | 0x20, 0x26 | x20 - default, 0x26 - mirrored |
+# | test strip        |       0x503D | 0x00 - 0x83 | x00 - disabled, x80 - vertical bar | 
+#
+
 # Base registers shared by all modes
 BASE_REGS = [
     (0x3008, 0x82), # SYSTEM_CTROL0: software reset
