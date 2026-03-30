@@ -82,8 +82,8 @@ Connection: close
     </div>
     <div id="i2c-controls" style="margin-top: 10px; padding: 10px; border: 1px solid #555;">
         <strong>I2C Register Tuning:</strong><br>
-        <label>Address: <input type="text" id="reg-address" value="0x4407" size="6"></label>
-        <label style="margin-left: 10px;">Value: <input type="text" id="reg-value" value="0x12" size="4"></label>
+        <label>Address: <input type="text" id="reg-address" value="0x4407" size="6" onkeydown="if(event.key === 'Enter') setI2CRegister()"></label>
+        <label style="margin-left: 10px;">Value: <input type="text" id="reg-value" value="0x12" size="4" onkeydown="if(event.key === 'Enter') setI2CRegister()"></label>
         <button onclick="setI2CRegister()">Set Register</button>
         <div style="margin-top: 5px; font-size: 12px; color: #aaa;">
             (eg. 0x08-0x40, high quality: 0x08-0x10, low quality: 0x20-0x40)
