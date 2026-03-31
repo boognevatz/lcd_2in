@@ -148,9 +148,11 @@
     #canvas {
       image-rendering: pixelated;
       image-rendering: crisp-edges;
-      width: 360px;
-      /* 1.5x native (240x320) */
-      height: 480px;
+      max-width: 100%;
+      max-height: 80vh;
+      width: auto;
+      height: auto;
+      object-fit: contain;
       border-radius: 4px;
       background: #000;
     }
@@ -469,6 +471,7 @@
           <div id="options-row">
             <label><input type="checkbox" id="opt-swap-bytes"> Swap byte order</label>
             <label><input type="checkbox" id="opt-swap-rb"> Swap R/B channels</label>
+            <label><input type="checkbox" id="opt-force-rgb565"> Force RGB565 view</label>
           </div>
         </div>
 
@@ -507,6 +510,7 @@
       const $footer = document.getElementById('footer-status');
       const $optSwap = document.getElementById('opt-swap-bytes');
       const $optRB = document.getElementById('opt-swap-rb');
+      const $optForceRGB = document.getElementById('opt-force-rgb565');
       const ctx = $canvas.getContext('2d');
       ctx.imageSmoothingEnabled = false;
       const W = 240, H = 320;
@@ -726,7 +730,39 @@
           di += 4;
         }
 
+        if ($canvas.width !== W || $canvas.height !== H) {
+          $canvas.width = W;
+          $canvas.height = H;
+        }
         ctx.putImageData(imageData, 0, 0);
+      }
+
+      function decodeJpeg(pixelData, tagSize) {
+        const halfPixels = HALF_PIXEL_BYTES;
+        const jpegData = new Uint8Array(halfPixels * 2);
+        jpegData.set(pixelData.subarray(tagSize, tagSize + halfPixels), 0);
+        jpegData.set(pixelData.subarray(tagSize * 2 + halfPixels, tagSize * 2 + halfPixels * 2), halfPixels);
+
+        let eoiIndex = jpegData.length;
+        for (let i = 0; i < jpegData.length - 1; i++) {
+            if (jpegData[i] === 0xFF && jpegData[i+1] === 0xD9) {
+                eoiIndex = i + 2;
+                break;
+            }
+        }
+
+        const blob = new Blob([jpegData.subarray(0, eoiIndex)], { type: 'image/jpeg' });
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+            if ($canvas.width !== img.naturalWidth || $canvas.height !== img.naturalHeight) {
+                $canvas.width = img.naturalWidth;
+                $canvas.height = img.naturalHeight;
+            }
+            ctx.drawImage(img, 0, 0, $canvas.width, $canvas.height);
+            URL.revokeObjectURL(url);
+        };
+        img.src = url;
       }
 
       // ---- Display a frame ----
@@ -747,16 +783,23 @@
           }
           const pixelData = await readSlice(file, fr.dataOffset, fr.dataOffset + fr.contentLength);
           const tagSize = fr.tagSize || DEFAULT_TAG_SIZE;
-          if (!autoSwapSet) {
-            const analysis = analyzeEndianness(pixelData, tagSize);
-            const preferSwap = analysis.big.variance >= analysis.little.variance;
-            if (analysis.big.nonZero === 0 && analysis.little.nonZero === 0) {
-              showError('Frame data appears empty or non-RGB565. Check file format.');
+          const isJpeg = pixelData[tagSize] === 0xFF && pixelData[tagSize + 1] === 0xD8;
+          const forceRGB = $optForceRGB.checked;
+
+          if (isJpeg && !forceRGB) {
+            decodeJpeg(pixelData, tagSize);
+          } else {
+            if (!autoSwapSet) {
+              const analysis = analyzeEndianness(pixelData, tagSize);
+              const preferSwap = analysis.big.variance >= analysis.little.variance;
+              if (!isJpeg && analysis.big.nonZero === 0 && analysis.little.nonZero === 0) {
+                showError('Frame data appears empty or non-RGB565. Check file format.');
+              }
+              $optSwap.checked = false;
+              autoSwapSet = true;
             }
-            $optSwap.checked = false;
-            autoSwapSet = true;
+            decodeFrame(pixelData, $optSwap.checked, $optRB.checked, tagSize);
           }
-          decodeFrame(pixelData, $optSwap.checked, $optRB.checked, tagSize);
 
           // Extract and display bucket tags
           const upperTag = readBucketTag(pixelData, 0);
@@ -1161,6 +1204,7 @@
       // Options (re-render current frame)
       $optSwap.addEventListener('change', () => showFrame(currentFrame));
       $optRB.addEventListener('change', () => showFrame(currentFrame));
+      $optForceRGB.addEventListener('change', () => showFrame(currentFrame));
 
       // Keyboard navigation
       document.addEventListener('keydown', (e) => {
