@@ -676,13 +676,11 @@ static mp_obj_t camera_stream_start(void) {
     }
     bucket_tx_state[2] = BUCKET_TX_STATE_FREE;
 
-    // Step 4: Set camera hints and activate TX mode.
-    // C is guaranteed idle after convergence.
-    cam_hint_next = 2;
-    cam_hint_next_next = 2;
-    cam_hint_next_next_next = 2;
-    write_lower_mid_hints_header(2, 2, 2);
-    cam_tx_active = true;
+    // Hints and cam_tx_active are set in camera_stream_loop_c() on the
+    // first actual streaming call.  stream_start() may be called during
+    // camera init (ov5640_i2c.py) without a subsequent stream_loop_c(),
+    // so we must NOT activate TX mode or set hints here.
+    write_lower_mid_hints_header(-1, -1, -1);
 
     // Pre-build x_headers for the first frame
     write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
@@ -747,6 +745,16 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 
     // Patch temperature into pre-built x_header from Python's latest reading
     write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
+
+    // Activate TX mode on the first actual streaming call.
+    // Must happen here (not stream_start) because stream_start may be
+    // called during camera init without a subsequent stream_loop_c.
+    if (first_frame) {
+        cam_tx_active = true;
+        cam_hint_next = 2;
+        cam_hint_next_next = 2;
+        cam_hint_next_next_next = 2;
+    }
 
     while (streaming && batch_sent < batch_size) {
         mp_handle_pending(true);
