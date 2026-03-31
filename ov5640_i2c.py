@@ -332,7 +332,10 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
         camera.write_register(0x503D, 0x00)
 
     time.sleep_ms(50)
-    camera.start_cam()
+    if format == "rgb565":
+        camera.start_cam(1)  # CAM_MODE_RGB565
+    else:
+        camera.start_cam(0)  # CAM_MODE_JPEG
     try:
         camera.stream_start() # If it's exposed, clean up stream flags
     except AttributeError:

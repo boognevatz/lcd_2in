@@ -61,3 +61,83 @@ static inline void picampinos_program_init( PIO pio, uint32_t sm, uint32_t offse
 }
 %}
 
+.program picampinos_rgb565
+
+; RGB565 pixel capture with VSYNC/HREF gating, blocking push, pixel countdown.
+;
+; Pin layout (relative to in_base, all 11 pins consecutive):
+;   pin 0-7 : D0-D7 (8-bit data bus)
+;   pin 8   : VSYNC
+;   pin 9   : HREF
+;   pin 10  : PCLK
+;
+; ISR LEFT-shift, NO autopush (manual push every 2 bytes = 1 RGB565 pixel).
+; OUT auto-pull enabled (for preloading X and Y registers from TX FIFO).
+;
+; Y register = total pixels per frame (CAM_FUL_SIZE - 1 = 76,799).
+; X register = countdown copy of Y, reloaded each frame.
+;
+; Push is BLOCKING: PIO stalls when RX FIFO full, ensuring zero data loss
+; during DMA channel transitions. This is the key difference from the JPEG
+; program which uses push noblock and can silently drop bytes.
+;
+; With LEFT shift + DMA_SIZE_16:
+;   camera byte B0 -> ISR[15:8], B1 -> ISR[7:0]
+;   DMA reads lower 16 bits -> memory: addr+0=B1(lo), addr+1=B0(hi)
+;   viewer: (data[1]<<8)|data[0] = (B0<<8)|B1 = correct RGB565 pixel
+
+start0:
+    out     x, 32       ; X <= TX_FIFO(32bit) : reserved, must be zero
+    out     y, 32       ; Y <= TX_FIFO(32bit) : total pixels - 1
+
+start1:
+    wait 0  pin 8       ; wait until VSYNC=0
+    wait 1  pin 8       ; wait until VSYNC=1 (start of frame)
+
+    mov     x, y        ; x = y (reload pixel counter for this frame)
+
+loop1:
+    wait 1  pin 9       ; wait until HREF=1 (valid pixel line)
+
+    wait 1  pin 10      ; PCLK high - sample high byte (R[4:0], G[5:3])
+    in      pins, 8
+    wait 0  pin 10      ; PCLK low
+
+    wait 1  pin 10      ; PCLK high - sample low byte (G[2:0], B[4:0])
+    in      pins, 8
+    wait 0  pin 10      ; PCLK low
+
+    push                ; blocking push: 16-bit RGB565 pixel -> RX FIFO
+
+    jmp     x--, loop1  ; decrement pixel counter, loop until frame complete
+
+    jmp     start1      ; all pixels captured, wait for next VSYNC
+
+% c-sdk {
+static inline void picampinos_rgb565_program_init(PIO pio, uint32_t sm, uint32_t offset, uint32_t in_base, uint32_t in_pin_num)
+{
+    pio_sm_config c = picampinos_rgb565_program_get_default_config(offset);
+
+    sm_config_set_set_pins(&c, in_base, in_pin_num);
+    sm_config_set_in_pins(&c, in_base);
+
+    // LEFT shift, autopush DISABLED (manual blocking push per pixel)
+    sm_config_set_in_shift(&c, false, false, 32);
+    // Auto-pull ENABLED for loading X and Y from TX FIFO
+    sm_config_set_out_shift(&c, false, true, 32);
+
+    for (uint32_t pin_offset = 0; pin_offset < in_pin_num; pin_offset++)
+    {
+        pio_gpio_init(pio, in_base + pin_offset);
+    }
+
+    pio_sm_set_consecutive_pindirs(pio, sm, in_base, in_pin_num, false);
+
+    sm_config_set_clkdiv(&c, 1);
+
+    pio_sm_init(pio, sm, offset, &c);
+
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
+

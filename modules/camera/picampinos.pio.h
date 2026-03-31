@@ -78,3 +78,69 @@ static inline void picampinos_program_init( PIO pio, uint32_t sm, uint32_t offse
 
 #endif
 
+// ------------------- //
+// picampinos_rgb565   //
+// ------------------- //
+
+#define picampinos_rgb565_wrap_target 0
+#define picampinos_rgb565_wrap 14
+#define picampinos_rgb565_pio_version 0
+
+static const uint16_t picampinos_rgb565_program_instructions[] = {
+            //     .wrap_target
+    0x6020, //  0: out    x, 32          ; X <= TX_FIFO : reserved (must be 0)
+    0x6040, //  1: out    y, 32          ; Y <= TX_FIFO : total pixels - 1
+    0x2028, //  2: wait   0 pin, 8       ; wait VSYNC=0
+    0x20a8, //  3: wait   1 pin, 8       ; wait VSYNC=1 (frame start)
+    0xa022, //  4: mov    x, y           ; reload pixel counter
+    0x20a9, //  5: wait   1 pin, 9       ; wait HREF=1 (valid line)
+    0x20aa, //  6: wait   1 pin, 10      ; PCLK high - high byte
+    0x4008, //  7: in     pins, 8        ; sample D0-D7
+    0x202a, //  8: wait   0 pin, 10      ; PCLK low
+    0x20aa, //  9: wait   1 pin, 10      ; PCLK high - low byte
+    0x4008, // 10: in     pins, 8        ; sample D0-D7
+    0x202a, // 11: wait   0 pin, 10      ; PCLK low
+    0x8020, // 12: push   block          ; blocking push (16-bit RGB565 pixel)
+    0x0045, // 13: jmp    x--, 5         ; loop until all pixels captured
+    0x0002, // 14: jmp    2              ; next frame: wait for VSYNC
+            //     .wrap
+};
+
+#if !PICO_NO_HARDWARE
+static const struct pio_program picampinos_rgb565_program = {
+    .instructions = picampinos_rgb565_program_instructions,
+    .length = 15,
+    .origin = -1,
+    .pio_version = picampinos_rgb565_pio_version,
+#if PICO_PIO_VERSION > 0
+    .used_gpio_ranges = 0x0
+#endif
+};
+
+static inline pio_sm_config picampinos_rgb565_program_get_default_config(uint offset) {
+    pio_sm_config c = pio_get_default_sm_config();
+    sm_config_set_wrap(&c, offset + picampinos_rgb565_wrap_target, offset + picampinos_rgb565_wrap);
+    return c;
+}
+
+static inline void picampinos_rgb565_program_init(PIO pio, uint32_t sm, uint32_t offset, uint32_t in_base, uint32_t in_pin_num)
+{
+    pio_sm_config c = picampinos_rgb565_program_get_default_config(offset);
+    sm_config_set_set_pins(&c, in_base, in_pin_num);
+    sm_config_set_in_pins(&c, in_base);
+    // LEFT shift, autopush DISABLED (manual blocking push per pixel)
+    sm_config_set_in_shift(&c, false, false, 32);
+    // Auto-pull ENABLED for loading X and Y from TX FIFO
+    sm_config_set_out_shift(&c, false, true, 32);
+    for (uint32_t pin_offset = 0; pin_offset < in_pin_num; pin_offset++)
+    {
+        pio_gpio_init(pio, in_base + pin_offset);
+    }
+    pio_sm_set_consecutive_pindirs(pio, sm, in_base, in_pin_num, false);
+    sm_config_set_clkdiv(&c, 1);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+#endif
+

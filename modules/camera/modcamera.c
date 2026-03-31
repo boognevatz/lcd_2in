@@ -29,12 +29,17 @@ static mp_obj_t camera_set_pwm_pin(mp_obj_t pwm_obj) {
 static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_pwm_pin_obj, camera_set_pwm_pin);
 
 
-// Wrapper for start_cam()
-static mp_obj_t camera_start_cam() {
-    start_cam();
+// Wrapper for start_cam(mode)
+// mode: 0 = JPEG (default), 1 = RGB565
+static mp_obj_t camera_start_cam(size_t n_args, const mp_obj_t *args) {
+    uint8_t mode = CAM_MODE_JPEG; // default
+    if (n_args >= 1) {
+        mode = (uint8_t)mp_obj_get_int(args[0]);
+    }
+    start_cam(mode);
     return mp_const_none;
 }
-static MP_DEFINE_CONST_FUN_OBJ_0(camera_start_cam_obj, camera_start_cam);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(camera_start_cam_obj, 0, 1, camera_start_cam);
 
 
 // Wrapper for ov5640_set_data_order()

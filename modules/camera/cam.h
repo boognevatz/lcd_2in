@@ -39,9 +39,15 @@
 // 3-bucket half-frame DMA chaining
 #define FRAME_BYTES       (CAM_FUL_SIZE * 2)                    // 153,600
 #define HALF_FRAME_BYTES  (FRAME_BYTES / 2)                     // 76,800
-#define HALF_FRAME_XFERS  (HALF_FRAME_BYTES / sizeof(uint32_t)) // 19,200
+#define HALF_FRAME_XFERS_32BIT  (HALF_FRAME_BYTES / sizeof(uint32_t)) // 19,200 (JPEG: 4 bytes/word)
+#define HALF_FRAME_XFERS_16BIT  (HALF_FRAME_BYTES / sizeof(uint16_t)) // 38,400 (RGB565: 2 bytes/word)
+#define HALF_FRAME_XFERS        HALF_FRAME_XFERS_32BIT                // default (backward compat)
 #define BUCKET_TAG_SIZE       20                                 // 20-byte tag (time_us + bucket tag + tx states + camera hint + isr_time_us)
 #define TAGGED_HALF_FRAME_BYTES (BUCKET_TAG_SIZE + HALF_FRAME_BYTES) // 76,820
+
+// Camera capture mode
+#define CAM_MODE_JPEG    0
+#define CAM_MODE_RGB565  1
 
 extern uint8_t *bucket[3];              // 3 half-frame buckets
 
@@ -106,6 +112,9 @@ extern volatile int8_t   cam_hint_next_next;
 extern volatile int8_t   cam_hint_next_next_next;
 extern volatile bool     cam_tx_active;           // true while TX is streaming
 extern volatile int32_t  mcu_temp_x10;          // MCU temperature x10 (365 = 36.5C)
+extern volatile uint8_t  cam_capture_mode;        // CAM_MODE_JPEG or CAM_MODE_RGB565
+extern volatile uint32_t cam_half_frame_xfers;    // active transfer count (19,200 or 38,400)
+extern volatile uint8_t  cam_dma_word_bytes;      // bytes per DMA word (4 or 2)
 
 #define USE_100BASE_FX (false)
 
@@ -120,7 +129,7 @@ void set_pwm_pin(uint8_t pwm);
 
 // high layer APIs
 void init_cam();
-void start_cam();
+void start_cam(uint8_t mode);
 void free_cam();
 void set_pwm_freq_kHz(uint32_t freq_khz, uint8_t gpio_num);
 void read_cam_data_blocking(uint8_t *buffer, size_t length);
