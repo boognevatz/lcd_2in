@@ -1,0 +1,1185 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stream Viewer — RGB565 Multipart</title>
+  <style>
+    :root {
+      --bg: #0c1017;
+      --surface: #151c28;
+      --border: #263040;
+      --accent: #3b82f6;
+      --accent2: #22d3ee;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --danger: #ef4444;
+      --radius: 8px;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      height: 100%;
+    }
+
+    body {
+      min-height: 100%;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* ---- Drop zone / file picker ---- */
+    #drop-zone {
+      margin: 32px auto 0;
+      width: min(560px, 90vw);
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 40px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      background: var(--surface);
+    }
+
+    #drop-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(59, 130, 246, .08);
+    }
+
+    #drop-zone h2 {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: var(--text);
+    }
+
+    #drop-zone p {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    #file-input {
+      display: none;
+    }
+
+    /* ---- Progress ---- */
+    #progress-wrap {
+      display: none;
+      margin: 24px auto 0;
+      width: min(560px, 90vw);
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      text-align: center;
+    }
+
+    #progress-bar-outer {
+      width: 100%;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+      margin-top: 12px;
+    }
+
+    #progress-bar-inner {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--accent2));
+      border-radius: 3px;
+      transition: width .15s;
+    }
+
+    #progress-text {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    /* ---- Viewer (hidden until loaded) ---- */
+    #viewer {
+      display: none;
+      margin: 24px auto 0;
+      width: min(900px, 95vw);
+    }
+
+    #main-row {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      justify-content: center;
+    }
+
+    #viewer-left-column {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    #viewer-card {
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--surface);
+    }
+
+    /* Canvas wrapper */
+    #canvas-wrap {
+      display: flex;
+      justify-content: center;
+      background: #000;
+      padding: 12px;
+      position: relative;
+    }
+
+    #canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      width: 360px;
+      /* 1.5x native (240x320) */
+      height: 480px;
+      border-radius: 4px;
+      background: #000;
+    }
+
+    /* ---- Controls ---- */
+    #controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      background: var(--surface);
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
+    }
+
+    .nav-btn {
+      background: var(--border);
+      color: var(--text);
+      border: none;
+      border-radius: 6px;
+      width: 42px;
+      height: 36px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background .15s, transform .1s;
+      user-select: none;
+      flex-shrink: 0;
+    }
+
+    .nav-btn:hover {
+      background: var(--accent);
+    }
+
+    .nav-btn:active {
+      transform: scale(.93);
+    }
+
+    .nav-btn:disabled {
+      opacity: .3;
+      cursor: default;
+      background: var(--border);
+      transform: none;
+    }
+
+    #frame-input {
+      width: 72px;
+      text-align: center;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 14px;
+      padding: 6px 4px;
+      outline: none;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #frame-input:focus {
+      border-color: var(--accent);
+    }
+
+    #frame-total {
+      font-size: 14px;
+      color: var(--muted);
+      min-width: 60px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Options row */
+    #options-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 18px;
+      background: var(--surface);
+      padding: 8px 16px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    #options-row label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+    }
+
+    #options-row input[type=checkbox] {
+      accent-color: var(--accent);
+    }
+
+    /* ---- Metadata panel ---- */
+    #meta-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-size: 12px;
+      min-width: 260px;
+      max-width: 360px;
+    }
+
+    .meta-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, .04);
+    }
+
+    .meta-group-light {
+      position: relative;
+      background: rgba(148, 163, 184, .16);
+      border: 1px solid rgba(148, 163, 184, .32);
+      border-radius: 6px;
+      padding: 30px 8px 8px;
+    }
+
+    .meta-group-light .meta-row:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+
+    .meta-copy-btn {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      height: 24px;
+      min-width: 24px;
+      padding: 0 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid rgba(148, 163, 184, .35);
+      border-radius: 5px;
+      background: rgba(21, 28, 40, .85);
+      color: #cbd5e1;
+      cursor: pointer;
+      transition: background .15s, border-color .15s, color .15s;
+    }
+
+    .meta-copy-btn:hover {
+      background: rgba(59, 130, 246, .22);
+      border-color: rgba(59, 130, 246, .6);
+      color: #e2e8f0;
+    }
+
+    .meta-copy-btn.copied {
+      background: rgba(34, 197, 94, .2);
+      border-color: rgba(34, 197, 94, .6);
+      color: #dcfce7;
+      padding: 0 8px;
+    }
+
+    .meta-copy-btn svg {
+      width: 14px;
+      height: 14px;
+      fill: currentColor;
+    }
+
+    .meta-copy-label {
+      display: none;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1;
+    }
+
+    .meta-copy-btn.copied svg {
+      display: none;
+    }
+
+    .meta-copy-btn.copied .meta-copy-label {
+      display: inline;
+    }
+
+    .meta-key {
+      color: var(--muted);
+      text-transform: capitalize;
+    }
+
+    .meta-val {
+      color: var(--text);
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      font-size: 11px;
+      text-align: left;
+      word-break: break-all;
+      white-space: pre-line;
+    }
+
+    /* ---- Footer ---- */
+    #footer {
+      margin-top: auto;
+      padding: 16px;
+      width: 100%;
+      text-align: center;
+      font-size: 12px;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    #footer .accent {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    /* ---- Error ---- */
+    #error-msg {
+      display: none;
+      margin: 16px auto 0;
+      width: min(560px, 90vw);
+      background: rgba(239, 68, 68, .1);
+      border: 1px solid var(--danger);
+      border-radius: var(--radius);
+      padding: 14px 20px;
+      color: var(--danger);
+      font-size: 13px;
+    }
+
+    /* Keyboard hint */
+    #kbd-hint {
+      margin-top: 6px;
+      text-align: center;
+      font-size: 11px;
+      color: var(--muted);
+      opacity: .6;
+    }
+
+    kbd {
+      background: var(--border);
+      border-radius: 3px;
+      padding: 1px 5px;
+      font-size: 10px;
+      font-family: inherit;
+    }
+
+    /* Responsive */
+    @media (max-width: 700px) {
+      #main-row {
+        flex-direction: column;
+        align-items: center;
+      }
+
+      #meta-panel {
+        width: 100%;
+        max-width: 520px;
+      }
+    }
+
+    @media (max-width: 520px) {
+      #canvas {
+        width: 240px;
+        height: 320px;
+      }
+    }
+
+    @media (min-width: 900px) {
+      #canvas {
+        width: 480px;
+        height: 640px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- File picker -->
+  <div id="drop-zone">
+    <h2>Load Multipart RGB565 Stream</h2>
+    <p>Click to browse or drag-and-drop the <strong>.raw</strong> multipart file<br>
+      <span style="font-size:11px;opacity:.7">(e.g. streamc2.raw — headers + RGB565 pixel data interleaved)</span>
+    </p>
+    <input type="file" id="file-input" accept=".raw,.bin,.dat,.txt">
+  </div>
+
+  <!-- Progress -->
+  <div id="progress-wrap">
+    <div id="progress-text">Indexing frames…</div>
+    <div id="progress-bar-outer">
+      <div id="progress-bar-inner"></div>
+    </div>
+  </div>
+
+  <!-- Error -->
+  <div id="error-msg"></div>
+
+  <!-- Viewer -->
+  <div id="viewer">
+    <div id="main-row">
+      <div id="viewer-left-column">
+        <div id="viewer-card">
+          <div id="canvas-wrap">
+            <canvas id="canvas" width="240" height="320"></canvas>
+          </div>
+
+          <div id="controls">
+            <button class="nav-btn" id="btn-first" title="First frame (Home)">&#x23EE;</button>
+            <button class="nav-btn" id="btn-prev10" title="Back 10 frames (PgUp)">&laquo;</button>
+            <button class="nav-btn" id="btn-prev" title="Previous frame (&larr;)">&lsaquo;</button>
+            <input type="number" id="frame-input" min="1" value="1">
+            <span id="frame-total">/ 0</span>
+            <button class="nav-btn" id="btn-next" title="Next frame (&rarr;)">&rsaquo;</button>
+            <button class="nav-btn" id="btn-next10" title="Forward 10 frames (PgDn)">&raquo;</button>
+            <button class="nav-btn" id="btn-last" title="Last frame (End)">&#x23ED;</button>
+          </div>
+
+          <div id="options-row">
+            <label><input type="checkbox" id="opt-swap-bytes"> Swap byte order</label>
+            <label><input type="checkbox" id="opt-swap-rb"> Swap R/B channels</label>
+          </div>
+        </div>
+
+        <div id="kbd-hint">
+          <kbd>&larr;</kbd> <kbd>&rarr;</kbd> prev/next &nbsp;
+          <kbd>PgUp</kbd> <kbd>PgDn</kbd> &pm;10 &nbsp;
+          <kbd>Home</kbd> <kbd>End</kbd> first/last
+        </div>
+      </div>
+
+      <div id="meta-panel"></div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <div id="footer">
+    <span id="footer-status">No file loaded</span>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      // ---- DOM refs ----
+      const $dropZone = document.getElementById('drop-zone');
+      const $fileInput = document.getElementById('file-input');
+      const $progress = document.getElementById('progress-wrap');
+      const $progText = document.getElementById('progress-text');
+      const $progBar = document.getElementById('progress-bar-inner');
+      const $errorMsg = document.getElementById('error-msg');
+      const $viewer = document.getElementById('viewer');
+      const $canvas = document.getElementById('canvas');
+      const $frameInput = document.getElementById('frame-input');
+      const $frameTotal = document.getElementById('frame-total');
+      const $metaPanel = document.getElementById('meta-panel');
+      const $footer = document.getElementById('footer-status');
+      const $optSwap = document.getElementById('opt-swap-bytes');
+      const $optRB = document.getElementById('opt-swap-rb');
+      const ctx = $canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+      const W = 240, H = 320;
+      const DEFAULT_TAG_SIZE = 20;
+      const BASE_PIXEL_BYTES = W * H * 2;
+      const PIXEL_BYTES = BASE_PIXEL_BYTES + (DEFAULT_TAG_SIZE * 2); // 153640 (2x20-byte tags + pixel data)
+      const MIN_PIXEL_BYTES = BASE_PIXEL_BYTES + 8; // 2x4-byte tags
+      const HALF_PIXEL_BYTES = W * (H / 2) * 2; // 76800
+
+      // ---- State ----
+      let file = null;
+      let frames = [];      // [{dataOffset, contentLength, headers}]
+      let currentFrame = 0; // 0-indexed
+      let rendering = false;
+      let autoSwapSet = false;
+      let copyResetTimer = null;
+
+      // ---- Helpers ----
+      function showError(msg) {
+        $errorMsg.textContent = msg;
+        $errorMsg.style.display = 'block';
+      }
+      function hideError() {
+        $errorMsg.style.display = 'none';
+      }
+
+      async function readSlice(f, start, end) {
+        return new Uint8Array(await f.slice(start, end).arrayBuffer());
+      }
+
+      async function copyText(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          return;
+        }
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        ta.style.pointerEvents = 'none';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+
+      // ---- Index builder ----
+      // Scans the multipart file to find each frame's data offset.
+      // Each frame: [optional \r\n]--frame\r\n<headers>\r\n\r\n<contentLength bytes>
+      function guessTagSize(contentLength) {
+        const extra = contentLength - BASE_PIXEL_BYTES;
+        if (extra % 2 !== 0) return DEFAULT_TAG_SIZE;
+        const tag = extra / 2;
+        if (tag === 20 || tag === 16 || tag === 12 || tag === 8 || tag === 4) return tag;
+        return DEFAULT_TAG_SIZE;
+      }
+
+      async function buildIndex(f) {
+        const result = [];
+        let offset = 0;
+        const fileSize = f.size;
+        const HDR_BUF = 2048; // more than enough for any header block
+
+        while (offset < fileSize) {
+          const end = Math.min(offset + HDR_BUF, fileSize);
+          const chunk = await readSlice(f, offset, end);
+
+          // Find end-of-headers (\r\n\r\n or \n\n)
+          let sep = -1;
+          let sepLen = 0;
+          for (let i = 0; i <= chunk.length - 4; i++) {
+            if (chunk[i] === 0x0D && chunk[i + 1] === 0x0A &&
+              chunk[i + 2] === 0x0D && chunk[i + 3] === 0x0A) {
+              sep = i;
+              sepLen = 4;
+              break;
+            }
+          }
+          if (sep === -1) {
+            for (let i = 0; i <= chunk.length - 2; i++) {
+              if (chunk[i] === 0x0A && chunk[i + 1] === 0x0A) {
+                sep = i;
+                sepLen = 2;
+                break;
+              }
+            }
+          }
+          if (sep === -1) break; // no more frames
+
+          // Decode header text and verify boundary marker
+          const headerText = new TextDecoder('ascii', { fatal: false }).decode(chunk.subarray(0, sep));
+          if (!headerText.includes('--frame')) break;
+
+          // Parse Content-Length (fallback to known constant)
+          const clMatch = headerText.match(/Content-Length:\s*(\d+)/);
+          const contentLength = clMatch ? parseInt(clMatch[1], 10) : PIXEL_BYTES;
+          const tagSize = guessTagSize(contentLength);
+
+          const dataOffset = offset + sep + sepLen;
+
+          // Validate we won't read past the file
+          if (dataOffset + contentLength > fileSize + 1) break;
+
+          result.push({ dataOffset, contentLength, headers: headerText, tagSize });
+
+          // Advance past pixel data
+          offset = dataOffset + contentLength;
+
+          // Yield to UI periodically
+          if (result.length % 200 === 0) {
+            const pct = Math.min(99, (offset / fileSize) * 100);
+            $progText.textContent = `Indexing… ${result.length} frames found`;
+            $progBar.style.width = pct.toFixed(1) + '%';
+            await new Promise(r => setTimeout(r, 0));
+          }
+        }
+
+        return result;
+      }
+
+      // ---- RGB565 decode ----
+      function analyzeEndianness(pixelData, tagSize) {
+        // Sample from upper half only (skip tag at start)
+        const halfPixels = W * (H / 2);
+        const samples = Math.min(2000, halfPixels);
+        let step = Math.max(1, Math.floor(halfPixels / samples));
+
+        function score(useSwap) {
+          let sum = 0;
+          let sumSq = 0;
+          let nonZero = 0;
+          let taken = 0;
+          for (let i = 0; i < halfPixels; i += step) {
+            const b = tagSize + i * 2;
+            if (b + 1 >= pixelData.length) break;
+            let v;
+            if (useSwap) {
+              v = (pixelData[b] << 8) | pixelData[b + 1];
+            } else {
+              v = (pixelData[b + 1] << 8) | pixelData[b];
+            }
+            const r = (v >> 11) & 0x1F;
+            const g = (v >> 5) & 0x3F;
+            const b5 = v & 0x1F;
+            const rr = (r << 3) | (r >> 2);
+            const gg = (g << 2) | (g >> 4);
+            const bb = (b5 << 3) | (b5 >> 2);
+            const y = 0.299 * rr + 0.587 * gg + 0.114 * bb;
+            if (y > 1) nonZero++;
+            sum += y;
+            sumSq += y * y;
+            taken++;
+          }
+          if (taken === 0) return { variance: 0, nonZero: 0 };
+          const mean = sum / taken;
+          const variance = (sumSq / taken) - (mean * mean);
+          return { variance, nonZero };
+        }
+
+        const big = score(true);
+        const little = score(false);
+        return { big, little };
+      }
+      function decodeFrame(pixelData, swapBytes, swapRB, tagSize) {
+        const imageData = ctx.createImageData(W, H);
+        if (!pixelData || pixelData.length < (BASE_PIXEL_BYTES + tagSize * 2)) {
+          console.error('decodeFrame: invalid pixelData length', pixelData ? pixelData.length : pixelData);
+          ctx.clearRect(0, 0, W, H);
+          return;
+        }
+        const out = imageData.data;
+        const halfPixels = W * (H / 2);
+
+        // Upper half: skip tag, read 76800 bytes of pixel data
+        let si = tagSize;
+        let di = 0;
+        for (let i = 0; i < halfPixels; i++) {
+          if (si + 1 >= pixelData.length) break;
+          let v;
+          if (swapBytes) {
+            v = (pixelData[si] << 8) | pixelData[si + 1];
+          } else {
+            v = (pixelData[si + 1] << 8) | pixelData[si];
+          }
+          let r5 = (v >> 11) & 0x1F;
+          let g6 = (v >> 5) & 0x3F;
+          let b5 = v & 0x1F;
+          if (swapRB) { const tmp = r5; r5 = b5; b5 = tmp; }
+          out[di] = (r5 << 3) | (r5 >> 2);
+          out[di + 1] = (g6 << 2) | (g6 >> 4);
+          out[di + 2] = (b5 << 3) | (b5 >> 2);
+          out[di + 3] = 255;
+          si += 2;
+          di += 4;
+        }
+
+        // Lower half: skip another tag, read 76800 bytes of pixel data
+        si += tagSize;
+        for (let i = 0; i < halfPixels; i++) {
+          if (si + 1 >= pixelData.length) break;
+          let v;
+          if (swapBytes) {
+            v = (pixelData[si] << 8) | pixelData[si + 1];
+          } else {
+            v = (pixelData[si + 1] << 8) | pixelData[si];
+          }
+          let r5 = (v >> 11) & 0x1F;
+          let g6 = (v >> 5) & 0x3F;
+          let b5 = v & 0x1F;
+          if (swapRB) { const tmp = r5; r5 = b5; b5 = tmp; }
+          out[di] = (r5 << 3) | (r5 >> 2);
+          out[di + 1] = (g6 << 2) | (g6 >> 4);
+          out[di + 2] = (b5 << 3) | (b5 >> 2);
+          out[di + 3] = 255;
+          si += 2;
+          di += 4;
+        }
+
+        ctx.putImageData(imageData, 0, 0);
+      }
+
+      // ---- Display a frame ----
+      async function showFrame(idx) {
+        if (!file || frames.length === 0) return;
+        idx = Math.max(0, Math.min(idx, frames.length - 1));
+        currentFrame = idx;
+
+        if (rendering) return;
+        rendering = true;
+
+        try {
+          const fr = frames[idx];
+          if (!fr || fr.contentLength < PIXEL_BYTES) {
+            console.error('showFrame: invalid frame data at index', idx, fr);
+            showError('Frame ' + (idx + 1) + ' has invalid or missing pixel data.');
+            return;
+          }
+          const pixelData = await readSlice(file, fr.dataOffset, fr.dataOffset + fr.contentLength);
+          const tagSize = fr.tagSize || DEFAULT_TAG_SIZE;
+          if (!autoSwapSet) {
+            const analysis = analyzeEndianness(pixelData, tagSize);
+            const preferSwap = analysis.big.variance >= analysis.little.variance;
+            if (analysis.big.nonZero === 0 && analysis.little.nonZero === 0) {
+              showError('Frame data appears empty or non-RGB565. Check file format.');
+            }
+            $optSwap.checked = false;
+            autoSwapSet = true;
+          }
+          decodeFrame(pixelData, $optSwap.checked, $optRB.checked, tagSize);
+
+          // Extract and display bucket tags
+          const upperTag = readBucketTag(pixelData, 0);
+          const lowerTag = readBucketTag(pixelData, tagSize + HALF_PIXEL_BYTES);
+          renderMetadata(fr.headers, upperTag, lowerTag);
+
+          updateUI();
+        } catch (err) {
+          console.error('showFrame error:', err);
+          showError('Failed to display frame: ' + err.message);
+        } finally {
+          rendering = false;
+        }
+      }
+
+      // ---- Parse & display metadata ----
+      function renderMetadata(headerText, upperTag, lowerTag) {
+        const lines = headerText.split(/\r?\n/);
+        const map = new Map();
+        for (const line of lines) {
+          if (line.startsWith('--')) continue;
+          const colon = line.indexOf(':');
+          if (colon === -1) continue;
+          const key = line.substring(0, colon).trim();
+          const val = line.substring(colon + 1).trim();
+          map.set(key, val);
+        }
+
+        const temp = map.get('X-Temperature') || 'N/A';
+        const extTemp = map.get('X-Ext-Temp') || 'N/A';
+        const baro = map.get('X-Barometer') || 'N/A';
+        const bucketsPrevMid = map.get('X-Buckets-prev-mid') || 'N/A';
+        const prevUpperEndTime = formatHeaderTime(map.get('X-Buckets-Prev-Upper-End-time') || 'N/A');
+        const bucketsPrevEnd = map.get('X-Buckets-prev-end') || 'N/A';
+        const prevEndTime = formatHeaderTime(map.get('X-Buckets-Prev-End-time') || 'N/A');
+        const buckets = map.get('X-Buckets') || 'N/A';
+        const bucketsTx = map.get('X-Buckets-tx') || 'N/A';
+        const lowerMidHints = map.get('X-Buckets-lower-mid-hints') || 'N/A';
+        const upperStartTime = formatHeaderTime(map.get('X-Buckets-Upper-Start-time') || 'N/A');
+        
+        let bucketsCounterStr = 'N/A';
+        const rawCamCounter = map.get('X-Buckets-halfframe-counter');
+        if (rawCamCounter) {
+          const digits = rawCamCounter.replace(/\D/g, '');
+          if (digits) {
+            const n = parseInt(digits, 10);
+            if (!Number.isNaN(n)) {
+              const frame = Math.floor(n / 2);
+              const half = (n % 2 === 0) ? 'U' : 'L';
+              bucketsCounterStr = frame + half;
+            }
+          }
+        }
+        
+        const prevUpperStartTime = formatHeaderTime(map.get('X-Buckets-Prev-Upper-Start-time') || 'N/A');
+        const prevLowerMidTime = formatHeaderTime(map.get('X-Buckets-Prev-Lower-Mid-time') || 'N/A');
+        const prevLowerStartTime = formatHeaderTime(map.get('X-Buckets-Prev-Lower-Start-time') || 'N/A');
+        
+        const bucketsPrevUpperStart = map.get('X-Buckets-prev-upper-start') || 'N/A';
+        const bucketsPrevLowerStart = map.get('X-Buckets-prev-lower-start') || 'N/A';
+        
+        const bucketsPrevUpperStartValue = prevUpperStartTime + '\n' + bucketsPrevUpperStart;
+        const bucketsPrevLowerStartValue = prevLowerStartTime + '\n' + bucketsPrevLowerStart;
+        
+        const bucketsPrevLowerMid = map.get('X-Buckets-prev-lower-mid') || 'N/A';
+        const bucketsPrevMidValue = prevUpperEndTime + '\n' + bucketsPrevMid;
+        const lowerMidHintsValue = prevLowerMidTime + '\n' + lowerMidHints + '\n' + bucketsPrevLowerMid;
+        const bucketsPrevEndValue = prevEndTime + '\n' + bucketsPrevEnd;
+
+        const rows = [
+          ['Temperature', temp],
+          ['Ext temp', extTemp],
+          ['Barometer', baro],
+          ['PREV Buckets Upper start: ', bucketsPrevUpperStartValue],
+          ['PREV Buckets Upper End', bucketsPrevMidValue],
+          ['PREV Buckets Lower start: ', bucketsPrevLowerStartValue],
+          ['PREV Buckets Lower Mid hints', lowerMidHintsValue],
+          ['PREV Buckets End', bucketsPrevEndValue],
+          ['Buckets Upper Start', upperStartTime + ' (cam=' + bucketsCounterStr + ')\n' + buckets],
+          ['Buckets Upper Start state', bucketsTx],
+          ['Upper tag', formatBucketTag(upperTag)],
+          ['Lower tag', formatBucketTag(lowerTag)]
+        ];
+
+        let html = '';
+        let lightGroupOpen = false;
+        for (let i = 0; i < rows.length; i++) {
+          const [label, value] = rows[i];
+          if (i === 3) {
+            html += '<div class="meta-group-light">'
+              + '<button type="button" class="meta-copy-btn" id="meta-copy-btn" '
+              + 'title="Copy grouped metadata" aria-label="Copy grouped metadata">'
+              + '<svg viewBox="0 0 24 24" aria-hidden="true">'
+              + '<path d="M16 1H6a2 2 0 0 0-2 2v12h2V3h10V1Zm3 4H10a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16h-9V7h9v14Z"/>'
+              + '</svg><span class="meta-copy-label">Copied!</span></button>';
+            lightGroupOpen = true;
+          }
+          html += '<div class="meta-row"><div class="meta-key">' +
+            escHtml(label) + '</div><div class="meta-val">' +
+            escHtml(value) + '</div></div>';
+          if (lightGroupOpen && i === rows.length - 1) html += '</div>';
+        }
+
+        $metaPanel.innerHTML = html || '<div class="meta-row" style="grid-column:1/-1;text-align:center"><span class="meta-key">No metadata</span></div>';
+
+        const copyBtn = document.getElementById('meta-copy-btn');
+        if (copyBtn) {
+          const copyPayload = rows.slice(3)
+            .map(([label, value]) => label + '\n' + value)
+            .join('\n');
+          copyBtn.addEventListener('click', async () => {
+            try {
+              await copyText(copyPayload);
+              if (copyResetTimer) clearTimeout(copyResetTimer);
+              copyBtn.classList.add('copied');
+              copyBtn.title = 'Copied!';
+              copyBtn.setAttribute('aria-label', 'Copied!');
+              copyResetTimer = setTimeout(() => {
+                copyBtn.classList.remove('copied');
+                copyBtn.title = 'Copy grouped metadata';
+                copyBtn.setAttribute('aria-label', 'Copy grouped metadata');
+                copyResetTimer = null;
+              }, 3000);
+            } catch (err) {
+              showError('Failed to copy grouped metadata: ' + err.message);
+            }
+          });
+        }
+      }
+
+      function escHtml(s) {
+        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      }
+
+      function readU32(data, offset) {
+        return data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24);
+      }
+
+      // Read a 20-byte tag (time_us + bucket tag + tx states + camera hint + isr_time_us)
+      function readBucketTag(data, offset) {
+        return {
+          time: readU32(data, offset),
+          tag: readU32(data, offset + 4),
+          tx: readU32(data, offset + 8),
+          hint: readU32(data, offset + 12),
+          isr_time: readU32(data, offset + 16)
+        };
+      }
+
+      function formatBits(value, width) {
+        const bits = (value >>> 0).toString(2).padStart(width, '0');
+        return bits.replace(/(.{4})/g, '$1 ').trim();
+      }
+
+      function formatGrouped(value) {
+        const s = (value >>> 0).toString(10);
+        return s.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+      }
+
+      function formatHeaderTime(value) {
+        if (!value) return value;
+        const digits = value.replace(/\D/g, '');
+        if (!digits) return value;
+        const n = parseInt(digits, 10);
+        if (Number.isNaN(n)) return value;
+        return formatGrouped(n);
+      }
+
+
+      function formatTxState(value) {
+        switch (value) {
+          case 1: return 'TXP';
+          case 2: return 'PD';
+          case 3: return 'TX_REC';
+          case 4: return 'TX';
+          case 5: return 'QUEUED';
+          default: return 'FREE';
+        }
+      }
+
+      function formatTxStates(value) {
+        const a = formatTxState(value & 0xff);
+        const b = formatTxState((value >> 8) & 0xff);
+        const c = formatTxState((value >> 16) & 0xff);
+        return 'A=' + a + ' B=' + b + ' C=' + c;
+      }
+
+      // Format the camera hint tag stamped by ISR and TX
+      // bits 5:0 = capture hints, bits 11:6 = transmit hints
+      function formatCamHintTag(value, isrTime, txTime) {
+        const names = ['A', 'B', 'C', '-'];
+        const hint_isr1 = value & 3;
+        const hint_isr2 = (value >> 2) & 3;
+        const hint_isr3 = (value >> 4) & 3;
+        let s = 'camera_hints_by_isr_time=' + formatGrouped(isrTime) + '\n' +
+                'camera_hints_by_isr=' + names[hint_isr1] + ',' + names[hint_isr2] + ',' + names[hint_isr3];
+        
+        const hint_tx1 = (value >> 6) & 3;
+        const hint_tx2 = (value >> 8) & 3;
+        const hint_tx3 = (value >> 10) & 3;
+        s += '\ncamera_hints_by_tx_time=' + formatGrouped(txTime) +
+             '\ncamera_hints_by_tx=' + names[hint_tx1] + ',' + names[hint_tx2] + ',' + names[hint_tx3];
+             
+        return s;
+      }
+
+      // Format a 32-bit bucket tag for display
+      // bits 31-3 = frame number, bit 2 = upper(1)/lower(0), bit 1 = dirty, bit 0 = valid
+      function formatBucketTag(tagInfo) {
+        if (!tagInfo) return 'N/A';
+        const tag = tagInfo.tag >>> 0;
+        const frame = (tag >>> 3);
+        const isUpper = (tag & 0x04) !== 0;
+        const isDirty = (tag & 0x02) !== 0;
+        const isValid = (tag & 0x01) !== 0;
+        const isrTime = tagInfo.isr_time >>> 0;
+        const txTime = tagInfo.time >>> 0;
+        return formatTxStates(tagInfo.tx >>> 0)
+          + '\n' + 'frame=' + frame
+          + ' ' + (isUpper ? 'UPPER' : 'LOWER')
+          + ' dirty=' + (isDirty ? 'Y' : 'N')
+          + ' valid=' + (isValid ? 'Y' : 'N')
+          + '\n' + formatBits(tag >>> 0, 32)
+          + '\n' + formatCamHintTag(tagInfo.hint >>> 0, isrTime, txTime);
+      }
+
+      // ---- UI updates ----
+      function updateUI() {
+        $viewer.style.display = 'block';
+        const n = currentFrame;
+        $frameInput.value = n + 1;
+        $frameInput.max = frames.length;
+        $frameTotal.textContent = '/ ' + frames.length;
+        $footer.innerHTML = 'Frame <span class="accent">' + (n + 1) +
+          '</span> of <span class="accent">' + frames.length +
+          '</span> &mdash; ' + escHtml(file.name) +
+          ' (' + formatBytes(file.size) + ')';
+
+        // Metadata (bucket tags are set by showFrame, not here)
+        if (!rendering) renderMetadata(frames[n].headers);
+
+        // Button states
+        document.getElementById('btn-first').disabled = (n === 0);
+        document.getElementById('btn-prev').disabled = (n === 0);
+        document.getElementById('btn-prev10').disabled = (n === 0);
+        document.getElementById('btn-next').disabled = (n >= frames.length - 1);
+        document.getElementById('btn-next10').disabled = (n >= frames.length - 1);
+        document.getElementById('btn-last').disabled = (n >= frames.length - 1);
+      }
+
+
+      function formatBytes(b) {
+        if (b < 1024) return b + ' B';
+        if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+        if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
+        return (b / 1073741824).toFixed(2) + ' GB';
+      }
+
+      // ---- Navigation ----
+      function goTo(idx) { showFrame(idx); }
+      function goPrev() { goTo(currentFrame - 1); }
+      function goNext() { goTo(currentFrame + 1); }
+      function goPrev10() { goTo(currentFrame - 10); }
+      function goNext10() { goTo(currentFrame + 10); }
+      function goFirst() { goTo(0); }
+      function goLast() { goTo(frames.length - 1); }
+
+      // ---- File loading ----
+      async function handleFile(f) {
+        hideError();
+        file = f;
+        frames = [];
+        currentFrame = 0;
+
+        // Basic size check
+        if (f.size < MIN_PIXEL_BYTES) {
+          showError('File is too small (' + formatBytes(f.size) +
+            ') to contain even one RGB565 frame (need at least ' +
+            formatBytes(MIN_PIXEL_BYTES) + '). Did you select the headers-only .txt file instead of the .raw stream file?');
+          return;
+        }
+
+        // Show progress
+        $dropZone.style.display = 'none';
+        $viewer.style.display = 'none';
+        $progress.style.display = 'block';
+        $progText.textContent = 'Indexing frames…';
+        $progBar.style.width = '0%';
+
+        const t0 = performance.now();
+
+        try {
+          frames = await buildIndex(f);
+        } catch (err) {
+          $progress.style.display = 'none';
+          $dropZone.style.display = '';
+          showError('Failed to parse file: ' + err.message);
+          return;
+        }
+
+        const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+
+        if (frames.length === 0) {
+          // Fallback: raw stream (no headers) -> contiguous frames
+          let rawTagSize = null;
+          for (const tag of [12, 8, 4]) {
+            const size = BASE_PIXEL_BYTES + tag * 2;
+            if (f.size % size === 0) {
+              rawTagSize = tag;
+              break;
+            }
+          }
+          const rawSize = BASE_PIXEL_BYTES + (rawTagSize || DEFAULT_TAG_SIZE) * 2;
+          const rawCount = Math.floor(f.size / rawSize);
+          if (rawCount === 0) {
+            $progress.style.display = 'none';
+            $dropZone.style.display = '';
+            showError('No frames found. Make sure this is a multipart stream file with "--frame" boundaries or a raw RGB565 stream.');
+            return;
+          }
+          frames = Array.from({ length: rawCount }, (_, i) => ({
+            dataOffset: i * rawSize,
+            contentLength: rawSize,
+            headers: 'Raw stream (no headers)',
+            tagSize: rawTagSize || DEFAULT_TAG_SIZE
+          }));
+          $progText.textContent = rawCount + ' raw frames detected';
+        }
+
+        // Validate first frame data doesn't exceed file
+        const last = frames[frames.length - 1];
+        if (last.dataOffset + last.contentLength > f.size) {
+          frames.pop(); // remove incomplete last frame
+        }
+
+        $progBar.style.width = '100%';
+        $progText.textContent = frames.length + ' frames indexed in ' + elapsed + 's';
+
+        await new Promise(r => setTimeout(r, 400)); // brief pause to show result
+
+        $progress.style.display = 'none';
+        $viewer.style.display = 'block';
+
+        // Draw a visible placeholder so canvas presence is obvious
+        ctx.clearRect(0, 0, W, H);
+        ctx.fillStyle = '#111827';
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = '#e2e8f0';
+        ctx.font = '14px sans-serif';
+        ctx.fillText('Loading frame...', 8, 20);
+
+        // Show first frame
+        await showFrame(0);
+      }
+
+      // ---- Event wiring ----
+
+      // File input
+      $dropZone.addEventListener('click', () => $fileInput.click());
+      $fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length) handleFile(e.target.files[0]);
+      });
+
+      // Drag-and-drop
+      $dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        $dropZone.classList.add('drag-over');
+      });
+      $dropZone.addEventListener('dragleave', () => {
+        $dropZone.classList.remove('drag-over');
+      });
+      $dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        $dropZone.classList.remove('drag-over');
+        if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+      });
+
+      // Navigation buttons
+      document.getElementById('btn-first').addEventListener('click', goFirst);
+      document.getElementById('btn-prev10').addEventListener('click', goPrev10);
+      document.getElementById('btn-prev').addEventListener('click', goPrev);
+      document.getElementById('btn-next').addEventListener('click', goNext);
+      document.getElementById('btn-next10').addEventListener('click', goNext10);
+      document.getElementById('btn-last').addEventListener('click', goLast);
+
+      // Frame input (jump to frame)
+      $frameInput.addEventListener('change', () => {
+        const v = parseInt($frameInput.value, 10);
+        if (!isNaN(v) && v >= 1 && v <= frames.length) {
+          goTo(v - 1);
+        } else {
+          $frameInput.value = currentFrame + 1;
+        }
+      });
+      $frameInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.target.blur();
+          e.target.dispatchEvent(new Event('change'));
+        }
+      });
+
+      // Options (re-render current frame)
+      $optSwap.addEventListener('change', () => showFrame(currentFrame));
+      $optRB.addEventListener('change', () => showFrame(currentFrame));
+
+      // Keyboard navigation
+      document.addEventListener('keydown', (e) => {
+        if (!frames.length) return;
+        // Don't capture when typing in the frame input
+        if (document.activeElement === $frameInput) return;
+
+        switch (e.key) {
+          case 'ArrowLeft': e.preventDefault(); goPrev(); break;
+          case 'ArrowRight': e.preventDefault(); goNext(); break;
+          case 'PageUp': e.preventDefault(); goPrev10(); break;
+          case 'PageDown': e.preventDefault(); goNext10(); break;
+          case 'Home': e.preventDefault(); goFirst(); break;
+          case 'End': e.preventDefault(); goLast(); break;
+        }
+      });
+
+    })();
+  </script>
+</body>
+
+</html>
