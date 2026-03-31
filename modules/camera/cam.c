@@ -77,6 +77,7 @@ volatile uint8_t bucket_tx_next_cemented[3] = {0, 0, 0};
 volatile int8_t cam_hint_next = -1;
 volatile int8_t cam_hint_next_next = -1;
 volatile int8_t cam_hint_next_next_next = -1;
+volatile bool cam_tx_active = false;             // true while TX is streaming
 volatile int32_t mcu_temp_x10 = 365;            // default 36.5C until Python updates
 
 // Internal ISR tracking: which bucket each DMA channel targets
@@ -172,6 +173,7 @@ void setup_dma_for_capture()
     cam_hint_next_next = -1;
     cam_hint_next_next_next = -1;
     cam_counter = 0;
+    cam_tx_active = false;
     ch_target[0] = 0;       // CH_A starts at bucket 0
     ch_target[1] = 1;       // CH_B starts at bucket 1
 
@@ -345,6 +347,11 @@ static void handle_half_complete(uint32_t completed_ch)
 
     if (used_hint) {
         // chosen is already resolved from hints.
+    } else if (!cam_tx_active) {
+        // TX not streaming: restrict camera to buckets 0,1 (A,B) only.
+        // Each channel stays on its own bucket (A=upper, B=lower).
+        // Bucket C remains idle, ready for immediate use at stream start.
+        chosen = ch_idx;
     } else if (cand_a != completed && !is_protected(cand_a)) {
         // Natural next is available and not the just-completed bucket
         chosen = cand_a;

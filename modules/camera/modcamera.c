@@ -439,7 +439,8 @@ static uint32_t t_frame_start;
 
 #define REPORT_INTERVAL 50
 
-static uint8_t pick_preferred_bucket(uint8_t x, uint8_t y)
+// TODO: will be used when TX pair selection is ported to camera-hints-aware logic
+static uint8_t __attribute__((unused)) pick_preferred_bucket(uint8_t x, uint8_t y)
 {
     uint32_t sx = bucket_state[x];
     uint32_t sy = bucket_state[y];
@@ -596,44 +597,10 @@ static mp_obj_t camera_stream_start(void) {
     first_frame = true;
     frame_count = 0;
 
-    // Startup TX pair selection is state-driven (camera may already be running).
-    int8_t dirty_idx = -1;
-    int8_t cement_idx = -1;
-    for (int i = 0; i < 3; i++) {
-        uint32_t s = bucket_state[i];
-        if (dirty_idx < 0 && bucket_is_dirty(s)) {
-            dirty_idx = i;
-        }
-        if (cement_idx < 0 && bucket_tx_next_cemented[i] != 0) {
-            cement_idx = i;
-        }
-    }
-
-    if (dirty_idx >= 0 && bucket_half_is_upper(bucket_state[dirty_idx])) {
-        // If camera is writing an upper half, start TX from that bucket.
-        tx_first = (uint8_t)dirty_idx;
-        if (cement_idx >= 0 && cement_idx != dirty_idx) {
-            tx_second = (uint8_t)cement_idx;
-        } else {
-            uint8_t r1 = (tx_first + 1) % 3;
-            uint8_t r2 = (tx_first + 2) % 3;
-            tx_second = pick_preferred_bucket(r1, r2);
-        }
-    } else if (dirty_idx >= 0) {
-        // Dirty lower: send a preferred non-dirty bucket first, dirty bucket second.
-        uint8_t r1 = ((uint8_t)dirty_idx + 1) % 3;
-        uint8_t r2 = ((uint8_t)dirty_idx + 2) % 3;
-        tx_first = pick_preferred_bucket(r1, r2);
-        tx_second = (uint8_t)dirty_idx;
-    } else {
-        // No dirty bucket visible: pick best two buckets by priority.
-        uint8_t best = pick_preferred_bucket(0, 1);
-        best = pick_preferred_bucket(best, 2);
-        uint8_t rem1 = (best + 1) % 3;
-        uint8_t rem2 = (best + 2) % 3;
-        tx_first = best;
-        tx_second = pick_preferred_bucket(rem1, rem2);
-    }
+    // With A,B-only ISR rotation (when TX inactive), startup pair is always A,B.
+    // Bucket A always has upper halves, B always has lower halves, C is idle.
+    tx_first = 0;
+    tx_second = 1;
 
     for (int i = 0; i < 3; i++) {
         prev_mid[i] = 0;
@@ -661,20 +628,61 @@ static mp_obj_t camera_stream_start(void) {
     last_sent_half_frame = 0;
     wait_upper_bucket = -1;
 
-    // Declare TX intent for startup pair
+    // Step 1: Ensure ISR is in A,B-only mode with no stale hints.
+    // This forces chosen=ch_idx so the camera converges onto buckets 0,1.
+    cam_tx_active = false;
+    cam_hint_next = -1;
+    cam_hint_next_next = -1;
+    cam_hint_next_next_next = -1;
     bucket_tx_state[0] = BUCKET_TX_STATE_FREE;
     bucket_tx_state[1] = BUCKET_TX_STATE_FREE;
     bucket_tx_state[2] = BUCKET_TX_STATE_FREE;
-    
-    // At startup, no data exists yet, so both are QUEUED (waiting for camera)
-    // When camera catches up, ISR will upgrade them to TX_REC, then TXP/PD.
-    bucket_tx_state[tx_first] = BUCKET_TX_STATE_QUEUED;
-    bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
-    bucket_tx_min_counter[tx_first] = cam_counter;
-    bucket_tx_min_counter[tx_second] = cam_counter;
-    
-    // Initialize the 50% hints header to dashes (no 50% event yet)
-    write_lower_mid_hints_header(-1, -1, -1);
+
+    // Step 2: Wait for camera to converge onto A,B.
+    // 4 half-frames guarantees both DMA channels have fired at least twice,
+    // so ch_target is [0,1] and A has upper, B has lower.
+    {
+        uint32_t wait_target = cam_counter + 4;
+        while (cam_counter < wait_target) {
+            mp_handle_pending(true);
+        }
+    }
+
+    // Step 3: Snapshot bucket state (now guaranteed A=upper, B=lower, C=idle)
+    {
+        uint32_t s0 = bucket_state[0];
+        uint32_t s1 = bucket_state[1];
+
+        if (bucket_is_dirty(s0)) {
+            bucket_tx_state[0] = BUCKET_TX_STATE_TX_REC;
+            bucket_tx_min_counter[0] = cam_counter;
+        } else if (bucket_is_complete(s0)) {
+            bucket_tx_state[0] = BUCKET_TX_STATE_TXP;
+        } else {
+            bucket_tx_state[0] = BUCKET_TX_STATE_TX;
+        }
+
+        if (bucket_is_dirty(s1)) {
+            bucket_tx_state[1] = BUCKET_TX_STATE_QUEUED;
+            bucket_tx_min_counter[1] = cam_counter;
+        } else if (bucket_is_complete(s1) &&
+                   bucket_tx_state[0] == BUCKET_TX_STATE_TXP &&
+                   (s0 >> BUCKET_FRAME_SHIFT) == (s1 >> BUCKET_FRAME_SHIFT)) {
+            bucket_tx_state[1] = BUCKET_TX_STATE_PD;
+        } else {
+            bucket_tx_state[1] = BUCKET_TX_STATE_QUEUED;
+            bucket_tx_min_counter[1] = cam_counter;
+        }
+    }
+    bucket_tx_state[2] = BUCKET_TX_STATE_FREE;
+
+    // Step 4: Set camera hints and activate TX mode.
+    // C is guaranteed idle after convergence.
+    cam_hint_next = 2;
+    cam_hint_next_next = 2;
+    cam_hint_next_next_next = 2;
+    write_lower_mid_hints_header(2, 2, 2);
+    cam_tx_active = true;
 
     // Pre-build x_headers for the first frame
     write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
@@ -1088,7 +1096,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         write_u32_grouped(&x_header_prev_lower_start_time[X_HEADER_PREV_LOWER_START_TIME_OFFSET], prev_lower_start_time_us);
     }
 
-    // On disconnect, release all protection
+    // On disconnect, release all protection and revert to A,B-only rotation
     if (!streaming) {
         bucket_tx_state[0] = BUCKET_TX_STATE_FREE;
         bucket_tx_state[1] = BUCKET_TX_STATE_FREE;
@@ -1096,6 +1104,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         cam_hint_next = -1;
         cam_hint_next_next = -1;
         cam_hint_next_next_next = -1;
+        cam_tx_active = false;
     }
 
     return mp_obj_new_int(batch_sent);

@@ -104,6 +104,7 @@ extern volatile uint8_t  bucket_tx_next_cemented[3];
 extern volatile int8_t   cam_hint_next;
 extern volatile int8_t   cam_hint_next_next;
 extern volatile int8_t   cam_hint_next_next_next;
+extern volatile bool     cam_tx_active;           // true while TX is streaming
 extern volatile int32_t  mcu_temp_x10;          // MCU temperature x10 (365 = 36.5C)
 
 #define USE_100BASE_FX (false)
