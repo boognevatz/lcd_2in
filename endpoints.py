@@ -11,6 +11,7 @@ import gc
 import tempsensor
 import barometer
 import json
+import ov5640_i2c
 
 # DEBUG flag - set from main module
 DEBUG = False
@@ -53,6 +54,7 @@ Connection: close
         .btn-led { background: #555; color: #fff; border: none; }
         .btn-led:disabled { opacity: 0.4; cursor: not-allowed; }
         .btn-led.active { background: #c90; }
+        .btn-stream-mode { background: #555; color: #fff; border: none; }
         #color-format-options { margin-top: 10px; }
         #color-format-options label { display: block; margin: 5px 0; }
     </style>
@@ -76,6 +78,13 @@ Connection: close
         <button class="btn-led" onclick="sendLedCommand(100)">LED 100%</button>
     </div>
     <div id="controls">
+        <strong>Direct Stream:</strong>
+        <button class="btn-stream-mode" onclick="switchStream('/streamc')">VGA JPEG</button>
+        <button class="btn-stream-mode" onclick="switchStream('/streamc_rgb565')">RGB565</button>
+        <button class="btn-stream-mode" onclick="switchStream('/streamc_720p')">720p JPEG</button>
+    </div>
+    <div id="controls">
+        <strong>Runtime Switch:</strong>
         <button class="btn-res" onclick="setCameraFormat('jpeg', 'vga')">VGA JPEG</button>
         <button class="btn-res" onclick="setCameraFormat('jpeg', '720p')">720p JPEG</button>
         <button class="btn-res" onclick="setCameraFormat('rgb565', 'vga')">RGB565</button>
@@ -118,6 +127,7 @@ Connection: close
         let abortController = null;
         let streamEnabled = true;
         let commandPending = null;  // URL to fetch after stream stops
+        let streamUrl = '/streamc';  // Current stream endpoint URL
 
         function displayImage(arrayBuffer) {
             const data = new Uint8Array(arrayBuffer);
@@ -415,6 +425,34 @@ Connection: close
             }
         }
 
+        async function switchStream(url) {
+            streamUrl = url;
+            const wasStreaming = streamEnabled;
+
+            // Stop current stream
+            if (abortController) {
+                streamEnabled = false;
+                abortController.abort();
+            }
+
+            // Wait for MCU to close the stream socket
+            await new Promise(r => setTimeout(r, 600));
+
+            // Highlight active button
+            document.querySelectorAll('.btn-stream-mode').forEach(b => {
+                b.style.background = b.getAttribute('onclick').includes(url) ? '#c90' : '#555';
+            });
+
+            // Restart stream on new endpoint
+            if (wasStreaming) {
+                streamEnabled = true;
+                const sbtn = document.getElementById('btn-stream');
+                sbtn.textContent = 'Stop Stream';
+                sbtn.classList.remove('stopped');
+                startStream();
+            }
+        }
+
         async function startStream() {
             if (!streamEnabled) return;
 
@@ -435,7 +473,7 @@ Connection: close
 
             try {
                 document.getElementById('status').textContent = 'Connecting...';
-                const response = await fetch('/streamc', { signal: abortController.signal });
+                const response = await fetch(streamUrl, { signal: abortController.signal });
                 document.getElementById('status').textContent = 'Streaming';
 
                 const reader = response.body.getReader();
@@ -694,13 +732,11 @@ def handle_stream(cl, s, create_server_socket_fn):
     return s, "continue"
 
 
-def handle_streamc(cl, s, create_server_socket_fn):
-    """Handle /streamc endpoint - C streaming with optional temperature and barometer data
+def _streamc_common(cl, s, create_server_socket_fn):
+    """Common C streaming logic shared by all /streamc* endpoints.
     
-    This handler manages the entire streaming lifecycle including
-    socket recreation on exit. Returns 'streaming' to indicate the
-    caller should continue to the next connection without sending
-    a response.
+    Caller must set the camera format BEFORE calling this.
+    Manages the entire streaming lifecycle including socket recreation on exit.
     """
     # Gather optional sensor data for headers
     baro_header = b""
@@ -800,6 +836,29 @@ def handle_streamc(cl, s, create_server_socket_fn):
     gc.collect()
     s = create_server_socket_fn()
     return s, "continue"
+
+
+def handle_streamc_vga(cl, s, create_server_socket_fn):
+    """Handle /streamc_vga endpoint - VGA JPEG streaming"""
+    ov5640_i2c.set_format("jpeg", "vga")
+    return _streamc_common(cl, s, create_server_socket_fn)
+
+
+def handle_streamc(cl, s, create_server_socket_fn):
+    """Handle /streamc endpoint - alias for /streamc_vga"""
+    return _streamc_common(cl, s, create_server_socket_fn)
+
+
+def handle_streamc_rgb565(cl, s, create_server_socket_fn):
+    """Handle /streamc_rgb565 endpoint - RGB565 240x320 streaming"""
+    ov5640_i2c.set_format("rgb565")
+    return _streamc_common(cl, s, create_server_socket_fn)
+
+
+def handle_streamc_720p(cl, s, create_server_socket_fn):
+    """Handle /streamc_720p endpoint - 720p JPEG streaming"""
+    ov5640_i2c.set_format("jpeg", "720p")
+    return _streamc_common(cl, s, create_server_socket_fn)
 
 
 # ============== DISPATCHER ==============
@@ -903,6 +962,15 @@ def handle_request(path, cl, s, create_server_socket_fn, set_head_led_brightness
         return None, new_s, True
     elif path == '/streamc':
         new_s, _ = handle_streamc(cl, s, create_server_socket_fn)
+        return None, new_s, True
+    elif path == '/streamc_vga':
+        new_s, _ = handle_streamc_vga(cl, s, create_server_socket_fn)
+        return None, new_s, True
+    elif path == '/streamc_rgb565':
+        new_s, _ = handle_streamc_rgb565(cl, s, create_server_socket_fn)
+        return None, new_s, True
+    elif path == '/streamc_720p':
+        new_s, _ = handle_streamc_720p(cl, s, create_server_socket_fn)
         return None, new_s, True
     elif path == "/":
         return handle_root(), s, False
