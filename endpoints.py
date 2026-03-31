@@ -82,8 +82,9 @@ Connection: close
     </div>
     <div id="i2c-controls" style="margin-top: 10px; padding: 10px; border: 1px solid #555;">
         <strong>I2C Register Tuning:</strong><br>
-        <label>Address: <input type="text" id="reg-address" value="0x4407" size="6" onkeydown="if(event.key === 'Enter') setI2CRegister()"></label>
+        <label>Address: <input type="text" id="reg-address" value="0x4407" size="6" onkeydown="if(event.key === 'Enter') readI2CRegister()"></label>
         <label style="margin-left: 10px;">Value: <input type="text" id="reg-value" value="0x12" size="4" onkeydown="if(event.key === 'Enter') setI2CRegister()"></label>
+        <button onclick="readI2CRegister()">Read Register</button>
         <button onclick="setI2CRegister()">Set Register</button>
         <div style="margin-top: 5px; font-size: 12px; color: #aaa;">
             (eg. 0x08-0x40, high quality: 0x08-0x10, low quality: 0x20-0x40)
@@ -285,6 +286,47 @@ Connection: close
             btns.forEach(b => { if (b.textContent === 'LED ' + percent + '%') b.classList.add('active'); });
 
             // Restart stream if it was running before
+            if (wasStreaming) {
+                streamEnabled = true;
+                const sbtn = document.getElementById('btn-stream');
+                sbtn.textContent = 'Stop Stream';
+                sbtn.classList.remove('stopped');
+                startStream();
+            }
+        }
+
+        async function readI2CRegister() {
+            const addr = document.getElementById('reg-address').value;
+            const btn = document.querySelector('button[onclick="readI2CRegister()"]');
+            
+            if (btn) btn.disabled = true;
+            const wasStreaming = streamEnabled;
+
+            if (abortController) {
+                streamEnabled = false;
+                abortController.abort();
+            }
+
+            await new Promise(r => setTimeout(r, 600));
+
+            try {
+                document.getElementById('status').textContent = 'Reading I2C...';
+                const response = await fetch(`/readi2cregister?address=${addr}`);
+                const text = await response.text();
+                if (response.ok) {
+                    document.getElementById('reg-value').value = text;
+                    document.getElementById('status').textContent = `I2C Read OK`;
+                } else {
+                    document.getElementById('status').textContent = `I2C Read Error: ${text}`;
+                }
+            } catch (err) {
+                document.getElementById('status').textContent = 'I2C Read failed: ' + err.message;
+            }
+
+            await new Promise(r => setTimeout(r, 600));
+
+            if (btn) btn.disabled = false;
+
             if (wasStreaming) {
                 streamEnabled = true;
                 const sbtn = document.getElementById('btn-stream');
@@ -792,6 +834,29 @@ def handle_set_format(path):
     return response
 
 
+def handle_readi2cregister(path):
+    """Handle /readi2cregister?address=0x... endpoint"""
+    try:
+        if '?' in path:
+            query = path.split('?')[1]
+            params = dict(p.split('=') for p in query.split('&') if '=' in p)
+            addr_str = params.get('address', '0x00')
+            address = int(addr_str, 16)
+            
+            import camera
+            val = camera.read_register(address)
+            body = f"0x{val:02x}"
+        else:
+            body = "Missing query parameters"
+            return f"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: {len(body)}\r\n\r\n{body}".encode()
+    except Exception as e:
+        body = f"Error: {e}"
+        return f"HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: {len(body)}\r\n\r\n{body}".encode()
+        
+    response = f"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: {len(body)}\r\n\r\n{body}".encode()
+    return response
+
+
 def handle_seti2cregister(path):
     """Handle /seti2cregister?address=0x...&value=0x... endpoint"""
     try:
@@ -843,6 +908,8 @@ def handle_request(path, cl, s, create_server_socket_fn, set_head_led_brightness
         return handle_root(), s, False
     elif path.startswith('/set_format/'):
         return handle_set_format(path), s, False
+    elif path.startswith('/readi2cregister'):
+        return handle_readi2cregister(path), s, False
     elif path.startswith('/seti2cregister'):
         return handle_seti2cregister(path), s, False
     elif path.startswith('/headled/'):
