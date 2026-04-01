@@ -694,43 +694,6 @@ static mp_obj_t camera_stream_start(void) {
     // so we must NOT activate TX mode or set hints here.
     write_lower_mid_hints_header(-1, -1, -1);
 
-    // Pre-build x_headers for the first frame
-    write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
-    x_header_buckets[X_HEADER_TX1_OFFSET] = bucket_name[tx_first];
-    x_header_buckets[X_HEADER_TX2_OFFSET] = bucket_name[tx_second];
-    write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_A_OFFSET], bucket_state[0], bucket_tx_next_cemented[0] != 0);
-    write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_B_OFFSET], bucket_state[1], bucket_tx_next_cemented[1] != 0);
-    write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_C_OFFSET], bucket_state[2], bucket_tx_next_cemented[2] != 0);
-    // prev-mid and prev-end: explicitly zero out with empty dashes
-    write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_A_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_B_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_C_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_A_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_B_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_C_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_upper_start[X_HEADER_PREV_UPPER_START_A_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_upper_start[X_HEADER_PREV_UPPER_START_B_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_upper_start[X_HEADER_PREV_UPPER_START_C_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_lower_start[X_HEADER_PREV_LOWER_START_A_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_lower_start[X_HEADER_PREV_LOWER_START_B_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_lower_start[X_HEADER_PREV_LOWER_START_C_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_A_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_B_OFFSET], 0, false);
-    write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_C_OFFSET], 0, false);
-    write_u32_grouped(&x_header_prev_upper_end_time[X_HEADER_PREV_UPPER_END_TIME_OFFSET], prev_upper_end_time_us);
-    write_u32_grouped(&x_header_prev_end_time[X_HEADER_PREV_END_TIME_OFFSET], prev_end_time_us);
-    write_u32_grouped(&x_header_upper_start_time[X_HEADER_UPPER_START_TIME_OFFSET], upper_start_time_us);
-    write_u32_grouped(&x_header_buckets_halfframe_counter[X_HEADER_BUCKETS_COUNTER_OFFSET], buckets_time_counter);
-    write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], bucket_tx_state[0]);
-    write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], bucket_tx_state[1]);
-    write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_C_OFFSET], bucket_tx_state[2]);
-    // x_header_lower_mid_hints is already built (initialized at startup or from apply_50_percent_protection)
-    write_u32_grouped(&x_header_prev_upper_start_time[X_HEADER_PREV_UPPER_START_TIME_OFFSET], prev_upper_start_time_us);
-    write_u32_grouped(&x_header_prev_lower_mid_time[X_HEADER_PREV_LOWER_MID_TIME_OFFSET], prev_lower_mid_time_us);
-    write_u32_grouped(&x_header_prev_lower_start_time[X_HEADER_PREV_LOWER_START_TIME_OFFSET], prev_lower_start_time_us);
-    write_u32_grouped(&x_header_speed_cam[X_HEADER_SPEED_CAM_OFFSET], speed_cam_us);
-    write_u32_grouped(&x_header_speed_tx[X_HEADER_SPEED_TX_OFFSET], speed_tx_us);
-
     t_frame_start = mp_hal_ticks_us();
 
     return mp_const_none;
@@ -757,9 +720,6 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
     bool streaming = true;
     int errcode;
 
-    // Patch temperature into pre-built x_header from Python's latest reading
-    write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
-
     // Activate TX mode on the first actual streaming call.
     // Must happen here (not stream_start) because stream_start may be
     // called during camera init without a subsequent stream_loop_c.
@@ -773,17 +733,168 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
     while (streaming && batch_sent < batch_size) {
         mp_handle_pending(true);
 
-        if (wait_upper_bucket >= 0) {
-            while (true) {
-                uint32_t s = bucket_state[wait_upper_bucket];
-                if (bucket_is_dirty(s) && bucket_half_is_upper(s) &&
-                    bucket_get_halfframe(s) > last_sent_half_frame) {
-                    break;
-                }
-                mp_handle_pending(true);
-            }
+        uint8_t just_finished = first_frame ? 2 : tx_second;
+        uint32_t snap[3];
+        uint8_t snap_cement[3];
+        for (;;) {
+            uint8_t cand_a = (just_finished + 1) % 3;
+            uint8_t cand_b = (just_finished + 2) % 3;
+
             wait_upper_bucket = -1;
+
+            // Snapshot all 3 states, decide order, set tx_wants -- keep tight.
+            snap[0] = bucket_state[0];
+            snap[1] = bucket_state[1];
+            snap[2] = bucket_state[2];
+            snap_cement[0] = bucket_tx_next_cemented[0];
+            snap_cement[1] = bucket_tx_next_cemented[1];
+            snap_cement[2] = bucket_tx_next_cemented[2];
+            upper_start_time_us = mp_hal_ticks_us();
+            buckets_time_counter = cam_counter;
+
+            // Order: Upper half goes first (spec rule).
+            bool a_upper = bucket_is_valid(snap[cand_a]) && bucket_half_is_upper(snap[cand_a]);
+            bool b_upper = bucket_is_valid(snap[cand_b]) && bucket_half_is_upper(snap[cand_b]);
+
+            if (a_upper && !b_upper) {
+                tx_first = cand_a;
+                tx_second = cand_b;
+            } else if (b_upper && !a_upper) {
+                tx_first = cand_b;
+                tx_second = cand_a;
+            } else {
+                // Tiebreaker: higher frame number first.
+                uint32_t fa = bucket_get_halfframe(snap[cand_a]);
+                uint32_t fb = bucket_get_halfframe(snap[cand_b]);
+                if (fb > fa) {
+                    tx_first = cand_b;
+                    tx_second = cand_a;
+                } else {
+                    tx_first = cand_a;
+                    tx_second = cand_b;
+                }
+            }
+
+            uint32_t hfa = bucket_get_halfframe(snap[cand_a]);
+            uint32_t hfb = bucket_get_halfframe(snap[cand_b]);
+            bool a_dirty_lower = bucket_is_dirty(snap[cand_a]) && !bucket_half_is_upper(snap[cand_a]);
+            bool b_dirty_lower = bucket_is_dirty(snap[cand_b]) && !bucket_half_is_upper(snap[cand_b]);
+            if (a_dirty_lower && hfb <= last_sent_half_frame) {
+                wait_upper_bucket = cand_b;
+            } else if (b_dirty_lower && hfa <= last_sent_half_frame) {
+                wait_upper_bucket = cand_a;
+            }
+
+            if (wait_upper_bucket >= 0) {
+                while (true) {
+                    uint32_t s = bucket_state[wait_upper_bucket];
+                    if (bucket_is_dirty(s) && bucket_half_is_upper(s) &&
+                        bucket_get_halfframe(s) > last_sent_half_frame) {
+                        break;
+                    }
+                    mp_handle_pending(true);
+                }
+                continue;
+            }
+
+            if (bucket_is_dirty(snap[tx_first])) {
+                bucket_tx_state[tx_first] = BUCKET_TX_STATE_TX_REC;
+                bucket_tx_min_counter[tx_first] = cam_counter;
+            } else if (bucket_is_complete(snap[tx_first])) {
+                bucket_tx_state[tx_first] = BUCKET_TX_STATE_TXP;
+            } else {
+                bucket_tx_state[tx_first] = BUCKET_TX_STATE_TX;
+            }
+
+            if (bucket_is_dirty(snap[tx_second])) {
+                bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
+                bucket_tx_min_counter[tx_second] = cam_counter;
+            } else if (bucket_is_complete(snap[tx_second]) &&
+                       bucket_tx_state[tx_first] == BUCKET_TX_STATE_TXP &&
+                       (snap[tx_first] >> BUCKET_FRAME_SHIFT) ==
+                       (snap[tx_second] >> BUCKET_FRAME_SHIFT)) {
+                // Only protect tx_second when tx_first is already complete
+                // AND both belong to the same frame. If tx_first is still
+                // being written (TX_REC), or tx_second holds stale data from
+                // an older frame, leave it QUEUED - the ISR's QUEUED->PD
+                // upgrade handles protection at the right time.
+                bucket_tx_state[tx_second] = BUCKET_TX_STATE_PD;
+            } else {
+                bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
+                bucket_tx_min_counter[tx_second] = cam_counter;
+            }
+
+            // Release the departing bucket that was just finished.
+            bucket_tx_state[just_finished] = BUCKET_TX_STATE_FREE;
+            break;
         }
+
+        // Camera-slower wait: if cam takes longer per half-frame than TX,
+        // or if it's the very first frame, wait for tx_first to finish being written.
+        bool should_wait = (frame_count <= 1) ||
+            (speed_cam_us > speed_tx_us && speed_cam_us != 0 && speed_tx_us != 0);
+        if (should_wait) {
+            uint32_t ws = bucket_state[tx_first];
+            if (bucket_is_dirty(ws)) {
+                uint32_t wait_start = mp_hal_ticks_us();
+                // Fallback timeout for the first frame when speed stats are 0.
+                uint32_t timeout_us = (speed_cam_us != 0) ? (speed_cam_us * 2) : 500000;
+                bool waited = false;
+                while (bucket_is_dirty(bucket_state[tx_first])) {
+                    waited = true;
+                    if ((mp_hal_ticks_us() - wait_start) > timeout_us) {
+                        break;
+                    }
+                }
+                if (waited) {
+                    // Update snapshots so headers reflect the post-wait clean state.
+                    snap[0] = bucket_state[0];
+                    snap[1] = bucket_state[1];
+                    snap[2] = bucket_state[2];
+                    snap_cement[0] = bucket_tx_next_cemented[0];
+                    snap_cement[1] = bucket_tx_next_cemented[1];
+                    snap_cement[2] = bucket_tx_next_cemented[2];
+                    upper_start_time_us = mp_hal_ticks_us();
+                    buckets_time_counter = cam_counter;
+                }
+            }
+        }
+
+        // Build x_headers for the frame about to be sent.
+        write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
+        x_header_buckets[X_HEADER_TX1_OFFSET] = bucket_name[tx_first];
+        x_header_buckets[X_HEADER_TX2_OFFSET] = bucket_name[tx_second];
+        write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_A_OFFSET], snap[0], snap_cement[0] != 0);
+        write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_B_OFFSET], snap[1], snap_cement[1] != 0);
+        write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_C_OFFSET], snap[2], snap_cement[2] != 0);
+        write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_A_OFFSET], prev_mid[0], prev_mid_cement[0] != 0);
+        write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_B_OFFSET], prev_mid[1], prev_mid_cement[1] != 0);
+        write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_C_OFFSET], prev_mid[2], prev_mid_cement[2] != 0);
+        write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_A_OFFSET], prev_lower_mid[0], prev_lower_mid_cement[0] != 0);
+        write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_B_OFFSET], prev_lower_mid[1], prev_lower_mid_cement[1] != 0);
+        write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_C_OFFSET], prev_lower_mid[2], prev_lower_mid_cement[2] != 0);
+        write_bucket_slot(&x_header_buckets_prev_upper_start[X_HEADER_PREV_UPPER_START_A_OFFSET], prev_upper_start[0], prev_upper_start_cement[0] != 0);
+        write_bucket_slot(&x_header_buckets_prev_upper_start[X_HEADER_PREV_UPPER_START_B_OFFSET], prev_upper_start[1], prev_upper_start_cement[1] != 0);
+        write_bucket_slot(&x_header_buckets_prev_upper_start[X_HEADER_PREV_UPPER_START_C_OFFSET], prev_upper_start[2], prev_upper_start_cement[2] != 0);
+        write_bucket_slot(&x_header_buckets_prev_lower_start[X_HEADER_PREV_LOWER_START_A_OFFSET], prev_lower_start[0], prev_lower_start_cement[0] != 0);
+        write_bucket_slot(&x_header_buckets_prev_lower_start[X_HEADER_PREV_LOWER_START_B_OFFSET], prev_lower_start[1], prev_lower_start_cement[1] != 0);
+        write_bucket_slot(&x_header_buckets_prev_lower_start[X_HEADER_PREV_LOWER_START_C_OFFSET], prev_lower_start[2], prev_lower_start_cement[2] != 0);
+        write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_A_OFFSET], prev_end[0], prev_end_cement[0] != 0);
+        write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_B_OFFSET], prev_end[1], prev_end_cement[1] != 0);
+        write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_C_OFFSET], prev_end[2], prev_end_cement[2] != 0);
+        write_u32_grouped(&x_header_prev_upper_end_time[X_HEADER_PREV_UPPER_END_TIME_OFFSET], prev_upper_end_time_us);
+        write_u32_grouped(&x_header_prev_end_time[X_HEADER_PREV_END_TIME_OFFSET], prev_end_time_us);
+        write_u32_grouped(&x_header_upper_start_time[X_HEADER_UPPER_START_TIME_OFFSET], upper_start_time_us);
+        write_u32_grouped(&x_header_buckets_halfframe_counter[X_HEADER_BUCKETS_COUNTER_OFFSET], buckets_time_counter);
+        write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], bucket_tx_state[0]);
+        write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], bucket_tx_state[1]);
+        write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_C_OFFSET], bucket_tx_state[2]);
+        // x_header_lower_mid_hints already built by apply_50_percent_protection.
+        write_u32_grouped(&x_header_prev_upper_start_time[X_HEADER_PREV_UPPER_START_TIME_OFFSET], prev_upper_start_time_us);
+        write_u32_grouped(&x_header_prev_lower_mid_time[X_HEADER_PREV_LOWER_MID_TIME_OFFSET], prev_lower_mid_time_us);
+        write_u32_grouped(&x_header_prev_lower_start_time[X_HEADER_PREV_LOWER_START_TIME_OFFSET], prev_lower_start_time_us);
+        write_u32_grouped(&x_header_speed_cam[X_HEADER_SPEED_CAM_OFFSET], speed_cam_us);
+        write_u32_grouped(&x_header_speed_tx[X_HEADER_SPEED_TX_OFFSET], speed_tx_us);
 
         uint32_t t_send_start = mp_hal_ticks_us();
 
@@ -1011,137 +1122,6 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         }
 
         t_frame_start = t_now;
-
-        // --- Select next pair ---
-        uint8_t just_finished = tx_second;
-        uint8_t cand_a = (just_finished + 1) % 3;
-        uint8_t cand_b = (just_finished + 2) % 3;
-
-        // Snapshot all 3 states, decide order, set tx_wants -- keep tight.
-        uint32_t snap[3];
-        uint8_t snap_cement[3];
-        snap[0] = bucket_state[0];
-        snap[1] = bucket_state[1];
-        snap[2] = bucket_state[2];
-        snap_cement[0] = bucket_tx_next_cemented[0];
-        snap_cement[1] = bucket_tx_next_cemented[1];
-        snap_cement[2] = bucket_tx_next_cemented[2];
-        upper_start_time_us = mp_hal_ticks_us();
-        buckets_time_counter = cam_counter;
-
-        // Order: Upper half goes first (spec rule).
-        bool a_upper = bucket_is_valid(snap[cand_a]) && bucket_half_is_upper(snap[cand_a]);
-        bool b_upper = bucket_is_valid(snap[cand_b]) && bucket_half_is_upper(snap[cand_b]);
-
-        if (a_upper && !b_upper) {
-            tx_first = cand_a;
-            tx_second = cand_b;
-        } else if (b_upper && !a_upper) {
-            tx_first = cand_b;
-            tx_second = cand_a;
-        } else {
-            // Tiebreaker: higher frame number first.
-            uint32_t fa = bucket_get_halfframe(snap[cand_a]);
-            uint32_t fb = bucket_get_halfframe(snap[cand_b]);
-            if (fb > fa) {
-                tx_first = cand_b;
-                tx_second = cand_a;
-            } else {
-                tx_first = cand_a;
-                tx_second = cand_b;
-            }
-        }
-
-        uint32_t hfa = bucket_get_halfframe(snap[cand_a]);
-        uint32_t hfb = bucket_get_halfframe(snap[cand_b]);
-        bool a_dirty_lower = bucket_is_dirty(snap[cand_a]) && !bucket_half_is_upper(snap[cand_a]);
-        bool b_dirty_lower = bucket_is_dirty(snap[cand_b]) && !bucket_half_is_upper(snap[cand_b]);
-        if (a_dirty_lower && hfb <= last_sent_half_frame) {
-            wait_upper_bucket = cand_b;
-        } else if (b_dirty_lower && hfa <= last_sent_half_frame) {
-            wait_upper_bucket = cand_a;
-        }
-        
-        if (bucket_is_dirty(snap[tx_first])) {
-            bucket_tx_state[tx_first] = BUCKET_TX_STATE_TX_REC;
-            bucket_tx_min_counter[tx_first] = cam_counter;
-        } else if (bucket_is_complete(snap[tx_first])) {
-            bucket_tx_state[tx_first] = BUCKET_TX_STATE_TXP;
-        } else {
-            bucket_tx_state[tx_first] = BUCKET_TX_STATE_TX;
-        }
-
-        if (bucket_is_dirty(snap[tx_second])) {
-            bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
-            bucket_tx_min_counter[tx_second] = cam_counter;
-        } else if (bucket_is_complete(snap[tx_second]) &&
-                   bucket_tx_state[tx_first] == BUCKET_TX_STATE_TXP &&
-                   (snap[tx_first] >> BUCKET_FRAME_SHIFT) ==
-                   (snap[tx_second] >> BUCKET_FRAME_SHIFT)) {
-            // Only protect tx_second when tx_first is already complete
-            // AND both belong to the same frame. If tx_first is still
-            // being written (TX_REC), or tx_second holds stale data from
-            // an older frame, leave it QUEUED — the ISR's QUEUED→PD
-            // upgrade handles protection at the right time.
-            bucket_tx_state[tx_second] = BUCKET_TX_STATE_PD;
-        } else {
-            bucket_tx_state[tx_second] = BUCKET_TX_STATE_QUEUED;
-            bucket_tx_min_counter[tx_second] = cam_counter;
-        }
-        
-        // Release the departing bucket that was just finished
-        bucket_tx_state[just_finished] = BUCKET_TX_STATE_FREE;
-
-        // Camera-slower wait: if cam takes longer per half-frame than TX,
-        // wait for tx_first to finish being written before sending garbage.
-        if (speed_cam_us > speed_tx_us && speed_cam_us != 0 && speed_tx_us != 0) {
-            uint32_t ws = bucket_state[tx_first];
-            if (bucket_is_dirty(ws)) {
-                uint32_t wait_start = mp_hal_ticks_us();
-                uint32_t timeout_us = speed_cam_us * 2;  // generous bound
-                while (bucket_is_dirty(bucket_state[tx_first])) {
-                    if ((mp_hal_ticks_us() - wait_start) > timeout_us) {
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Pre-build x_headers for next frame (uses snap[] from ordering decision)
-        write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
-        x_header_buckets[X_HEADER_TX1_OFFSET] = bucket_name[tx_first];
-        x_header_buckets[X_HEADER_TX2_OFFSET] = bucket_name[tx_second];
-        write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_A_OFFSET], snap[0], snap_cement[0] != 0);
-        write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_B_OFFSET], snap[1], snap_cement[1] != 0);
-        write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_C_OFFSET], snap[2], snap_cement[2] != 0);
-        write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_A_OFFSET], prev_mid[0], prev_mid_cement[0] != 0);
-        write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_B_OFFSET], prev_mid[1], prev_mid_cement[1] != 0);
-        write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_C_OFFSET], prev_mid[2], prev_mid_cement[2] != 0);
-        write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_A_OFFSET], prev_lower_mid[0], prev_lower_mid_cement[0] != 0);
-        write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_B_OFFSET], prev_lower_mid[1], prev_lower_mid_cement[1] != 0);
-        write_bucket_slot(&x_header_buckets_prev_lower_mid[X_HEADER_PREV_LOWER_MID_C_OFFSET], prev_lower_mid[2], prev_lower_mid_cement[2] != 0);
-        write_bucket_slot(&x_header_buckets_prev_upper_start[X_HEADER_PREV_UPPER_START_A_OFFSET], prev_upper_start[0], prev_upper_start_cement[0] != 0);
-        write_bucket_slot(&x_header_buckets_prev_upper_start[X_HEADER_PREV_UPPER_START_B_OFFSET], prev_upper_start[1], prev_upper_start_cement[1] != 0);
-        write_bucket_slot(&x_header_buckets_prev_upper_start[X_HEADER_PREV_UPPER_START_C_OFFSET], prev_upper_start[2], prev_upper_start_cement[2] != 0);
-        write_bucket_slot(&x_header_buckets_prev_lower_start[X_HEADER_PREV_LOWER_START_A_OFFSET], prev_lower_start[0], prev_lower_start_cement[0] != 0);
-        write_bucket_slot(&x_header_buckets_prev_lower_start[X_HEADER_PREV_LOWER_START_B_OFFSET], prev_lower_start[1], prev_lower_start_cement[1] != 0);
-        write_bucket_slot(&x_header_buckets_prev_lower_start[X_HEADER_PREV_LOWER_START_C_OFFSET], prev_lower_start[2], prev_lower_start_cement[2] != 0);
-        write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_A_OFFSET], prev_end[0], prev_end_cement[0] != 0);
-        write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_B_OFFSET], prev_end[1], prev_end_cement[1] != 0);
-        write_bucket_slot(&x_header_buckets_prev_end[X_HEADER_END_C_OFFSET], prev_end[2], prev_end_cement[2] != 0);
-        write_u32_grouped(&x_header_prev_upper_end_time[X_HEADER_PREV_UPPER_END_TIME_OFFSET], prev_upper_end_time_us);
-        write_u32_grouped(&x_header_prev_end_time[X_HEADER_PREV_END_TIME_OFFSET], prev_end_time_us);
-        write_u32_grouped(&x_header_upper_start_time[X_HEADER_UPPER_START_TIME_OFFSET], upper_start_time_us);
-        write_u32_grouped(&x_header_buckets_halfframe_counter[X_HEADER_BUCKETS_COUNTER_OFFSET], buckets_time_counter);
-        write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], bucket_tx_state[0]);
-        write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], bucket_tx_state[1]);
-        write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_C_OFFSET], bucket_tx_state[2]);
-        // x_header_lower_mid_hints already built by apply_50_percent_protection
-        write_u32_grouped(&x_header_prev_upper_start_time[X_HEADER_PREV_UPPER_START_TIME_OFFSET], prev_upper_start_time_us);
-        write_u32_grouped(&x_header_prev_lower_mid_time[X_HEADER_PREV_LOWER_MID_TIME_OFFSET], prev_lower_mid_time_us);
-        write_u32_grouped(&x_header_prev_lower_start_time[X_HEADER_PREV_LOWER_START_TIME_OFFSET], prev_lower_start_time_us);
-        write_u32_grouped(&x_header_speed_cam[X_HEADER_SPEED_CAM_OFFSET], speed_cam_us);
-        write_u32_grouped(&x_header_speed_tx[X_HEADER_SPEED_TX_OFFSET], speed_tx_us);
     }
 
     // On disconnect, release all protection and revert to A,B-only rotation
