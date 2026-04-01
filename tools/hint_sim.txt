@@ -1,0 +1,17 @@
+# One case per line.
+# Format:
+# Buckets: (<A>,<B>,<C>), TX: (<upper>,<lower>) => <H1>,<H2>,<H3>
+#
+# Prefixes:
+#   ~  dirty
+#   ^  cemented
+#   +  dirty and cemented
+#   -  empty
+
+Buckets:  (5U,5L,+6U), TX: (5U,5L) => A,B,C
+Buckets: (~7U,^5L,6L), TX: (6L,7U) => C,C,C
+Buckets: (11U,+11L,10L), TX: (10L,11U) => C,A,A
+Buckets: (~7U,^5L,6L), TX: (6L,5L) => C,C,C
+Buckets: (~9U,^7L,8L), TX: (8L,9U) => C,C,C
+Buckets: (+13U,11L,12L), TX: (12L,13U) => B,C,A
+Buckets: (~13L,^11L,13U), TX: (12L,13U) => C,A,A
