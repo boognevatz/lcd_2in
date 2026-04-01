@@ -99,6 +99,9 @@ static volatile int32_t jpeg_last_eoi_pos = -1;
 static volatile uint32_t jpeg_last_sample_nonzero = 0;
 static volatile uint32_t jpeg_last_sample_ff = 0;
 static volatile uint32_t jpeg_last_sample_len = 0;
+volatile uint32_t speed_cam_us = 0;
+static volatile bool speed_cam_valid_data = true;
+static uint32_t last_half_complete_time_us = 0;
 static uint8_t cam_capture_head[32]; // first 32 bytes of last capture
 uint8_t pin_i2c1_sda = 22; // default on RP2350 touch 2in
 uint8_t pin_i2c1_scl = 23; // default on RP2350 touch 2in
@@ -284,7 +287,13 @@ static void handle_half_complete(uint32_t completed_ch)
     }
 
     // --- Stamp ISR completion timestamp (5th uint32_t, bytes 16-19) ---
-    ((uint32_t *)bucket[completed])[4] = time_us_32();
+    uint32_t now_us = time_us_32();
+    ((uint32_t *)bucket[completed])[4] = now_us;
+    if (speed_cam_valid_data && last_half_complete_time_us != 0) {
+        speed_cam_us = now_us - last_half_complete_time_us;
+    }
+    speed_cam_valid_data = true; // reset for next call
+    last_half_complete_time_us = now_us;
 
     // --- Advance camera counter ---
     cam_counter++;
@@ -483,6 +492,7 @@ static void vsync_handler(uint gpio, uint32_t events) {
         memset(bucket[next_completed] + BUCKET_TAG_SIZE, 0x00, HALF_FRAME_BYTES);
         
         dma_hw->ints0 = (1u << next_ch);
+        speed_cam_valid_data = false; // Synthetic commit, do not measure speed
         handle_half_complete(next_ch);
     }
 

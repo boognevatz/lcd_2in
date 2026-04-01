@@ -115,6 +115,7 @@ extern volatile int32_t  mcu_temp_x10;          // MCU temperature x10 (365 = 36
 extern volatile uint8_t  cam_capture_mode;        // CAM_MODE_JPEG or CAM_MODE_RGB565
 extern volatile uint32_t cam_half_frame_xfers;    // active transfer count (19,200 or 38,400)
 extern volatile uint8_t  cam_dma_word_bytes;      // bytes per DMA word (4 or 2)
+extern volatile uint32_t speed_cam_us;             // ISR-measured half-frame duration (us)
 
 #define USE_100BASE_FX (false)
 
