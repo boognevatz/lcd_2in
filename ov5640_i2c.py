@@ -253,8 +253,9 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
         elif resolution == "720p":
             # 720p (1280x720) config 
             camera.write_register(0x3820, 0x41) 
-            camera.write_register(0x3814, 0x11) # X_INC (subsample x2)
-            camera.write_register(0x3815, 0x11) # Y_INC
+            camera.write_register(0x3814, 0x31) # X_INC (subsample x2)
+            camera.write_register(0x3815, 0x31) # Y_INC
+            camera.write_register(0x3824, 0x04) # PCLK ratio=4 (safe for 720p)
 
             # 16:9 2592x1458 window (cropped vertically)
             camera.write_register(0x3800, 0x00)
@@ -281,8 +282,8 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
             camera.write_register(0x380e, 0x04) # VTS
             camera.write_register(0x380f, 0x80)
 
-            # HEAVY COMPRESSION to avoid >150KB RAM overflow
-            camera.write_register(0x4407, 0x40)
+            # Better compression now that X_INC is fixed and subsampling properly reduces frame size
+            camera.write_register(0x4407, 0x10)
 
     elif format == "rgb565":
         # === RGB565 Base settings (240x320 portrait) ===
