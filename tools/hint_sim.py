@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from dataclasses import dataclass
 
 
@@ -34,6 +35,16 @@ class BucketState:
 class SentHalf:
     frame: int
     half: str
+
+
+def get_sent_keys(sent_pair: list[SentHalf]) -> set[tuple[int, str]]:
+    return {(item.frame, item.half) for item in sent_pair}
+
+
+def get_last_sent_frame(sent_pair: list[SentHalf]) -> int:
+    if not sent_pair:
+        return -1
+    return max(item.frame for item in sent_pair)
 
 
 @dataclass(frozen=True)
@@ -79,6 +90,9 @@ def parse_sent_pair(text: str) -> list[SentHalf]:
     if len(parts) != 2:
         raise ValueError("TX input must contain exactly 2 entries")
 
+    if all(token in ("-", "none", "NONE") for token in parts):
+        return []
+
     parsed: list[SentHalf] = []
     for token in parts:
         match = re.fullmatch(r"(?P<frame>\d+)(?P<half>[UL])", token)
@@ -89,8 +103,8 @@ def parse_sent_pair(text: str) -> list[SentHalf]:
 
 
 def classify_bucket(bucket: BucketState, sent_pair: list[SentHalf]) -> BucketMeaning:
-    sent_keys = {(item.frame, item.half) for item in sent_pair}
-    last_sent_frame = max(item.frame for item in sent_pair)
+    sent_keys = get_sent_keys(sent_pair)
+    last_sent_frame = get_last_sent_frame(sent_pair)
 
     if bucket.empty:
         return BucketMeaning(bucket, False, False, False, "empty")
@@ -152,7 +166,7 @@ def detect_next_upper_next_lower_hints(
         return None
 
     lower_bucket = dirty_cemented_lowers[0]
-    sent_keys = {(item.frame, item.half) for item in sent_pair}
+    sent_keys = get_sent_keys(sent_pair)
 
     same_frame_complete_upper = None
     for bucket in buckets:
@@ -182,7 +196,7 @@ def detect_next_upper_next_lower_hints(
 def detect_unusable_dirty_cemented_upper_hints(
     buckets: list[BucketState], sent_pair: list[SentHalf]
 ) -> tuple[str, str, str] | None:
-    sent_keys = {(item.frame, item.half) for item in sent_pair}
+    sent_keys = get_sent_keys(sent_pair)
     dirty_cemented_uppers = [
         bucket for bucket in buckets if bucket.dirty and bucket.cemented and bucket.half == "U"
     ]
@@ -209,7 +223,7 @@ def detect_unusable_dirty_cemented_upper_hints(
 def detect_dirty_lower_with_cemented_lower_hints(
     buckets: list[BucketState], sent_pair: list[SentHalf]
 ) -> tuple[str, str, str] | None:
-    sent_keys = {(item.frame, item.half) for item in sent_pair}
+    sent_keys = get_sent_keys(sent_pair)
     dirty_lowers = [bucket for bucket in buckets if bucket.dirty and bucket.half == "L"]
     cemented_lowers = [bucket for bucket in buckets if bucket.cemented and bucket.half == "L"]
 
@@ -237,8 +251,32 @@ def detect_dirty_lower_with_cemented_lower_hints(
     return matching_upper.name, dirty_lower.name, dirty_lower.name
 
 
+def detect_startup_complete_pair_hints(
+    buckets: list[BucketState], sent_pair: list[SentHalf]
+) -> tuple[str, str, str] | None:
+    if sent_pair:
+        return None
+
+    uppers = [bucket for bucket in buckets if not bucket.empty and bucket.half == "U" and not bucket.dirty]
+    lowers = [bucket for bucket in buckets if not bucket.empty and bucket.half == "L" and not bucket.dirty]
+
+    if len(uppers) != 1 or len(lowers) != 1:
+        return None
+    if uppers[0].frame != lowers[0].frame:
+        return None
+
+    for bucket in buckets:
+        if bucket.name not in (uppers[0].name, lowers[0].name):
+            return bucket.name, bucket.name, bucket.name
+    return None
+
+
 def compute_hints(buckets: list[BucketState], sent_pair: list[SentHalf]) -> tuple[str, str, str]:
     meanings = [classify_bucket(bucket, sent_pair) for bucket in buckets]
+
+    startup_pair_hints = detect_startup_complete_pair_hints(buckets, sent_pair)
+    if startup_pair_hints is not None:
+        return startup_pair_hints
 
     idle_bucket = detect_forming_pair_idle_bucket(buckets)
     if idle_bucket is not None:
@@ -359,15 +397,32 @@ def run_case_file(path: str, verbose: bool) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Simulate camera hints from bucket state.")
     parser.add_argument("--buckets", help='Comma-separated buckets, e.g. "5U,5L,+6U"')
-    parser.add_argument("--sent", help='Comma-separated TX halves, e.g. "5U,5L"')
+    parser.add_argument(
+        "--sent",
+        help='Comma-separated TX halves, e.g. "5U,5L" or "-,-". Use quotes or `--sent=-,-`.',
+    )
     parser.add_argument("--expected", help='Expected hints, e.g. "A,B,C"')
     parser.add_argument("--cases", help="Read cases from a file")
     parser.add_argument("--verbose", action="store_true", help="Show semantic reasoning")
     return parser
 
 
+def normalize_argv(argv: list[str]) -> list[str]:
+    normalized: list[str] = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--sent" and i + 1 < len(argv) and argv[i + 1] == "-,-":
+            normalized.append("--sent=-,-")
+            i += 2
+            continue
+        normalized.append(arg)
+        i += 1
+    return normalized
+
+
 def main() -> int:
-    args = build_parser().parse_args()
+    args = build_parser().parse_args(normalize_argv(sys.argv[1:]))
 
     if args.cases:
         return run_case_file(args.cases, args.verbose)

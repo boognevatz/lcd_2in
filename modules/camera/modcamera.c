@@ -512,20 +512,63 @@ static uint8_t __attribute__((unused)) pick_preferred_bucket(uint8_t x, uint8_t 
 static void apply_50_percent_protection(uint8_t bucket_tx_now)
 {
     uint8_t sending = bucket_tx_now;
-    
+    uint32_t sent_upper_hf = last_sent_half_frame;
+     
     // 50% mark: free the SENDING bucket so camera can reuse it.
     bucket_tx_state[sending] = BUCKET_TX_STATE_FREE;
 
     // 1. Find the most recently completed (dirty) half-frame that is NEWER than what we just sent
     int d_idx = -1;
     uint32_t max_hf = last_sent_half_frame; 
+    int dirty_upper_idx = -1;
+    int dirty_upper_count = 0;
+    int cemented_idx = -1;
+    int cemented_count = 0;
+    int dirty_cemented_upper_idx = -1;
+    int dirty_cemented_lower_idx = -1;
+    int dirty_lower_idx = -1;
+    int dirty_lower_count = 0;
+    int cemented_lower_idx = -1;
+    int cemented_lower_count = 0;
+    int sent_upper_idx = -1;
     for (int i = 0; i < 3; i++) {
-        if (bucket_is_dirty(bucket_state[i])) {
-            uint32_t hf = bucket_get_halfframe(bucket_state[i]);
+        uint32_t s = bucket_state[i];
+        bool dirty = bucket_is_dirty(s);
+        bool upper = bucket_half_is_upper(s);
+        bool cemented = bucket_tx_next_cemented[i] != 0;
+
+        if (dirty) {
+            uint32_t hf = bucket_get_halfframe(s);
             if (hf > max_hf) {
                 max_hf = hf;
                 d_idx = i;
             }
+        }
+
+        if (dirty && upper) {
+            dirty_upper_idx = i;
+            dirty_upper_count++;
+        }
+        if (cemented) {
+            cemented_idx = i;
+            cemented_count++;
+        }
+        if (dirty && cemented && upper) {
+            dirty_cemented_upper_idx = i;
+        }
+        if (dirty && cemented && !upper) {
+            dirty_cemented_lower_idx = i;
+        }
+        if (dirty && !upper) {
+            dirty_lower_idx = i;
+            dirty_lower_count++;
+        }
+        if (cemented && !upper) {
+            cemented_lower_idx = i;
+            cemented_lower_count++;
+        }
+        if (bucket_is_valid(s) && !dirty && upper && bucket_get_halfframe(s) == sent_upper_hf) {
+            sent_upper_idx = i;
         }
     }
 
@@ -540,8 +583,59 @@ static void apply_50_percent_protection(uint8_t bucket_tx_now)
 
     int8_t hint1 = -1, hint2 = -1, hint3 = -1;
 
+    // Semantic rules derived from the Python simulator.
+    if (dirty_upper_count == 1 && cemented_count == 1 && dirty_upper_idx != cemented_idx) {
+        int third = 3 - dirty_upper_idx - cemented_idx;
+        hint1 = third;
+        hint2 = third;
+        hint3 = third;
+    } else if (dirty_cemented_lower_idx >= 0 && sent_upper_idx >= 0) {
+        uint32_t lower_s = bucket_state[dirty_cemented_lower_idx];
+        uint32_t upper_s = bucket_state[sent_upper_idx];
+        if ((lower_s >> BUCKET_FRAME_SHIFT) == (upper_s >> BUCKET_FRAME_SHIFT)) {
+            int third = 3 - dirty_cemented_lower_idx - sent_upper_idx;
+            hint1 = third;
+            hint2 = sent_upper_idx;
+            hint3 = sent_upper_idx;
+        }
+    } else if (dirty_cemented_upper_idx >= 0 && sent_upper_idx == dirty_cemented_upper_idx) {
+        int other_a = (dirty_cemented_upper_idx + 1) % 3;
+        int other_b = (dirty_cemented_upper_idx + 2) % 3;
+        uint32_t sa = bucket_state[other_a];
+        uint32_t sb = bucket_state[other_b];
+        int first = other_a;
+        int second = other_b;
+        uint32_t fa = bucket_is_valid(sa) ? (sa >> BUCKET_FRAME_SHIFT) : UINT32_MAX;
+        uint32_t fb = bucket_is_valid(sb) ? (sb >> BUCKET_FRAME_SHIFT) : UINT32_MAX;
+        bool a_lower = bucket_half_is_upper(sa) == false;
+        bool b_lower = bucket_half_is_upper(sb) == false;
+        if (fb < fa || (fb == fa && b_lower && !a_lower)) {
+            first = other_b;
+            second = other_a;
+        }
+        hint1 = first;
+        hint2 = second;
+        hint3 = dirty_cemented_upper_idx;
+    } else if (dirty_lower_count == 1 && cemented_lower_count == 1 &&
+               dirty_lower_idx != cemented_lower_idx && sent_upper_idx >= 0) {
+        uint32_t dirty_lower_s = bucket_state[dirty_lower_idx];
+        uint32_t upper_s = bucket_state[sent_upper_idx];
+        if ((dirty_lower_s >> BUCKET_FRAME_SHIFT) == (upper_s >> BUCKET_FRAME_SHIFT)) {
+            hint1 = sent_upper_idx;
+            hint2 = dirty_lower_idx;
+            hint3 = dirty_lower_idx;
+        }
+    } else if (dirty_cemented_upper_idx >= 0 && sent_upper_idx >= 0 &&
+               dirty_cemented_upper_idx != sent_upper_idx && dirty_cemented_upper_idx != sending) {
+        hint1 = sent_upper_idx;
+        hint2 = sending;
+        hint3 = dirty_cemented_upper_idx;
+    }
+
     // Apply the state-machine rules
-    if (d_idx >= 0 && c_idx >= 0) {
+    if (hint1 >= 0) {
+        // Semantic rule already resolved the hint sequence.
+    } else if (d_idx >= 0 && c_idx >= 0) {
         bool d_is_upper = bucket_half_is_upper(bucket_state[d_idx]);
         
         if (d_is_upper) {
