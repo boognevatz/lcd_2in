@@ -141,12 +141,18 @@ static char x_header_buckets_prev_lower_start[] = "X-Buckets-prev-lower-start:  
 #define X_HEADER_PREV_LOWER_START_B_OFFSET 40
 #define X_HEADER_PREV_LOWER_START_C_OFFSET 53
 
-static char x_header_buckets[] = "X-Buckets: A,A,           -,           -,           -\r\n";
-#define X_HEADER_TX1_OFFSET 11
-#define X_HEADER_TX2_OFFSET 13
-#define X_HEADER_BUCKET_A_OFFSET 15
-#define X_HEADER_BUCKET_B_OFFSET 28
-#define X_HEADER_BUCKET_C_OFFSET 41
+static char x_header_buckets_decision[] = "X-Buckets-decision: A,A,           -,           -,           -\r\n";
+#define X_HEADER_TX1_OFFSET 20
+#define X_HEADER_TX2_OFFSET 22
+#define X_HEADER_BUCKET_A_OFFSET 24
+#define X_HEADER_BUCKET_B_OFFSET 37
+#define X_HEADER_BUCKET_C_OFFSET 50
+static char x_header_buckets_after_wait[] = "X-Buckets-after-wait: A,A,           -,           -,           -\r\n";
+#define X_HEADER_AFTER_WAIT_TX1_OFFSET 22
+#define X_HEADER_AFTER_WAIT_TX2_OFFSET 24
+#define X_HEADER_AFTER_WAIT_BUCKET_A_OFFSET 26
+#define X_HEADER_AFTER_WAIT_BUCKET_B_OFFSET 39
+#define X_HEADER_AFTER_WAIT_BUCKET_C_OFFSET 52
 static char x_header_upper_start_time[] = "X-Buckets-Upper-Start-time: 0000000000000\r\n";
 #define X_HEADER_UPPER_START_TIME_OFFSET 28
 
@@ -719,7 +725,7 @@ static tx_pair_mode_t tx_get_pair_mode(void) {
     return TX_PAIR_MODE_CAMERA_FASTER;
 }
 
-static void tx_pick_pair_common(
+static bool tx_pick_pair_common(
     const uint32_t snap[3], uint8_t just_finished,
     uint8_t *tx_first_out, uint8_t *tx_second_out, int8_t *wait_upper_bucket_out
 ) {
@@ -760,16 +766,18 @@ static void tx_pick_pair_common(
     } else if (b_dirty_lower && hfa <= last_sent_half_frame) {
         *wait_upper_bucket_out = cand_a;
     }
+
+    return true;
 }
 
-static void tx_pick_pair_camera_faster(
+static bool tx_pick_pair_camera_faster(
     const uint32_t snap[3], uint8_t just_finished,
     uint8_t *tx_first_out, uint8_t *tx_second_out, int8_t *wait_upper_bucket_out
 ) {
-    tx_pick_pair_common(snap, just_finished, tx_first_out, tx_second_out, wait_upper_bucket_out);
+    return tx_pick_pair_common(snap, just_finished, tx_first_out, tx_second_out, wait_upper_bucket_out);
 }
 
-static void tx_pick_pair_warmup(
+static bool tx_pick_pair_warmup(
     const uint32_t snap[3], uint8_t just_finished,
     uint8_t *tx_first_out, uint8_t *tx_second_out, int8_t *wait_upper_bucket_out
 ) {
@@ -779,13 +787,74 @@ static void tx_pick_pair_warmup(
     *tx_first_out = 0;
     *tx_second_out = 1;
     *wait_upper_bucket_out = -1;
+
+    return true;
 }
 
-static void tx_pick_pair_camera_slower(
-    const uint32_t snap[3], uint8_t just_finished,
+static bool tx_pick_pair_camera_slower(
+    const uint32_t snap[3], const uint8_t snap_cement[3],
     uint8_t *tx_first_out, uint8_t *tx_second_out, int8_t *wait_upper_bucket_out
 ) {
-    tx_pick_pair_common(snap, just_finished, tx_first_out, tx_second_out, wait_upper_bucket_out);
+    (void)wait_upper_bucket_out;
+
+    int32_t dirty_upper_frame = -1;
+    for (int i = 0; i < 3; i++) {
+        if (!bucket_is_valid(snap[i]) || !bucket_is_dirty(snap[i]) || !bucket_half_is_upper(snap[i])) {
+            continue;
+        }
+
+        int32_t frame = (int32_t)(snap[i] >> BUCKET_FRAME_SHIFT);
+        if (frame > dirty_upper_frame) {
+            dirty_upper_frame = frame;
+        }
+    }
+
+    int best_upper = -1;
+    int best_lower = -1;
+    uint32_t best_frame = 0;
+    bool have_pair = false;
+
+    for (int i = 0; i < 3; i++) {
+        if (!bucket_is_valid(snap[i]) || !bucket_half_is_upper(snap[i])) {
+            continue;
+        }
+
+        uint32_t upper_frame = snap[i] >> BUCKET_FRAME_SHIFT;
+        if (snap_cement[i]) {
+            upper_frame += 1;
+        }
+
+        for (int j = 0; j < 3; j++) {
+            if (i == j || !bucket_is_valid(snap[j]) || bucket_half_is_upper(snap[j])) {
+                continue;
+            }
+
+            uint32_t lower_frame = snap[j] >> BUCKET_FRAME_SHIFT;
+            if (snap_cement[j] && dirty_upper_frame >= 0) {
+                lower_frame = (uint32_t)dirty_upper_frame;
+            }
+
+            if (upper_frame != lower_frame) {
+                continue;
+            }
+
+            if (!have_pair || upper_frame > best_frame) {
+                best_upper = i;
+                best_lower = j;
+                best_frame = upper_frame;
+                have_pair = true;
+            }
+        }
+    }
+
+    if (!have_pair) {
+        return false;
+    }
+
+    *tx_first_out = (uint8_t)best_upper;
+    *tx_second_out = (uint8_t)best_lower;
+    *wait_upper_bucket_out = -1;
+    return true;
 }
 
 
@@ -923,7 +992,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         uint8_t just_finished = first_frame ? 2 : tx_second;
         tx_pair_mode_t pair_mode = tx_get_pair_mode();
         uint32_t snap[3];
+        uint32_t decision_snap[3];
         uint8_t snap_cement[3];
+        uint8_t decision_snap_cement[3];
         for (;;) {
             // Snapshot all 3 states, decide order, set tx_wants -- keep tight.
             snap[0] = bucket_state[0];
@@ -935,16 +1006,34 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             upper_start_time_us = mp_hal_ticks_us();
             buckets_time_counter = cam_counter;
 
+            bool have_choice;
             if (pair_mode == TX_PAIR_MODE_WARMUP) {
                 tx_force_camera_hints(2, 2, 2);
-                tx_pick_pair_warmup(
+                have_choice = tx_pick_pair_warmup(
                     snap, just_finished, &tx_first, &tx_second, &wait_upper_bucket);
             } else if (pair_mode == TX_PAIR_MODE_CAMERA_SLOWER) {
-                tx_pick_pair_camera_slower(
-                    snap, just_finished, &tx_first, &tx_second, &wait_upper_bucket);
+                have_choice = tx_pick_pair_camera_slower(
+                    snap, snap_cement, &tx_first, &tx_second, &wait_upper_bucket);
             } else {
-                tx_pick_pair_camera_faster(
+                have_choice = tx_pick_pair_camera_faster(
                     snap, just_finished, &tx_first, &tx_second, &wait_upper_bucket);
+            }
+
+            if (!have_choice) {
+                mp_handle_pending(true);
+                continue;
+            }
+
+            decision_snap[0] = snap[0];
+            decision_snap[1] = snap[1];
+            decision_snap[2] = snap[2];
+            decision_snap_cement[0] = snap_cement[0];
+            decision_snap_cement[1] = snap_cement[1];
+            decision_snap_cement[2] = snap_cement[2];
+
+            if (pair_mode == TX_PAIR_MODE_CAMERA_SLOWER) {
+                uint8_t hint_bucket = 3 - tx_first - tx_second;
+                tx_force_camera_hints(hint_bucket, hint_bucket, hint_bucket);
             }
 
             if (wait_upper_bucket >= 0) {
@@ -1024,11 +1113,16 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 
         // Build x_headers for the frame about to be sent.
         write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
-        x_header_buckets[X_HEADER_TX1_OFFSET] = bucket_name[tx_first];
-        x_header_buckets[X_HEADER_TX2_OFFSET] = bucket_name[tx_second];
-        write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_A_OFFSET], snap[0], snap_cement[0] != 0);
-        write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_B_OFFSET], snap[1], snap_cement[1] != 0);
-        write_bucket_slot(&x_header_buckets[X_HEADER_BUCKET_C_OFFSET], snap[2], snap_cement[2] != 0);
+        x_header_buckets_decision[X_HEADER_TX1_OFFSET] = bucket_name[tx_first];
+        x_header_buckets_decision[X_HEADER_TX2_OFFSET] = bucket_name[tx_second];
+        write_bucket_slot(&x_header_buckets_decision[X_HEADER_BUCKET_A_OFFSET], decision_snap[0], decision_snap_cement[0] != 0);
+        write_bucket_slot(&x_header_buckets_decision[X_HEADER_BUCKET_B_OFFSET], decision_snap[1], decision_snap_cement[1] != 0);
+        write_bucket_slot(&x_header_buckets_decision[X_HEADER_BUCKET_C_OFFSET], decision_snap[2], decision_snap_cement[2] != 0);
+        x_header_buckets_after_wait[X_HEADER_AFTER_WAIT_TX1_OFFSET] = bucket_name[tx_first];
+        x_header_buckets_after_wait[X_HEADER_AFTER_WAIT_TX2_OFFSET] = bucket_name[tx_second];
+        write_bucket_slot(&x_header_buckets_after_wait[X_HEADER_AFTER_WAIT_BUCKET_A_OFFSET], snap[0], snap_cement[0] != 0);
+        write_bucket_slot(&x_header_buckets_after_wait[X_HEADER_AFTER_WAIT_BUCKET_B_OFFSET], snap[1], snap_cement[1] != 0);
+        write_bucket_slot(&x_header_buckets_after_wait[X_HEADER_AFTER_WAIT_BUCKET_C_OFFSET], snap[2], snap_cement[2] != 0);
         write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_A_OFFSET], prev_mid[0], prev_mid_cement[0] != 0);
         write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_B_OFFSET], prev_mid[1], prev_mid_cement[1] != 0);
         write_bucket_slot(&x_header_buckets_prev_mid[X_HEADER_MID_C_OFFSET], prev_mid[2], prev_mid_cement[2] != 0);
@@ -1103,7 +1197,10 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_prev_end_time, sizeof(x_header_prev_end_time) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
-        ret = mp_stream_write_exactly(socket_obj, x_header_buckets, sizeof(x_header_buckets) - 1, &errcode);
+        ret = mp_stream_write_exactly(socket_obj, x_header_buckets_decision, sizeof(x_header_buckets_decision) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_buckets_after_wait, sizeof(x_header_buckets_after_wait) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
         ret = mp_stream_write_exactly(socket_obj, x_header_upper_start_time, sizeof(x_header_upper_start_time) - 1, &errcode);
