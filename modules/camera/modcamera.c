@@ -6,6 +6,11 @@
 #include "py/runtime.h"
 #include "py/stream.h"
 #include "py/mphal.h"
+#include "py/objstr.h"
+
+
+#define FW_VERSION "jpeg-2026.04"
+static const MP_DEFINE_STR_OBJ(camera_fw_version_obj, FW_VERSION);
 
 
 // Wrapper for init_cam()
@@ -892,6 +897,7 @@ static bool tx_pick_pair_camera_slower(
 }
 
 
+
 /********************************************************************************
 function:   Initialize stream state. Call once before the batched stream loop.
             Resets all static state, declares TX intent for startup pair A+B,
@@ -1551,6 +1557,7 @@ static MP_DEFINE_CONST_FUN_OBJ_0(camera_capture_head_obj, camera_capture_head);
 
 // Define module globals
 static const mp_rom_map_elem_t camera_module_globals_table[] = {
+    { MP_ROM_QSTR(MP_QSTR_FW_VERSION), MP_ROM_PTR(&camera_fw_version_obj) },
     { MP_ROM_QSTR(MP_QSTR_init_cam), MP_ROM_PTR(&camera_init_cam_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_i2c_pins), MP_ROM_PTR(&camera_set_i2c_pins_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_pwm_pin), MP_ROM_PTR(&camera_set_pwm_pin_obj) },
