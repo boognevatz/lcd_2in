@@ -1,0 +1,8 @@
+# One case per line.
+# Format:
+# Mode: <camera-slower|camera-faster>, Buckets: <A>,<B>,<C>[, Sent: <u>,<l>][, Prev: <A>,<B>], TX: <A - nU, B - nL>
+
+Mode: camera-slower, Buckets: ~7U,^5L,6L,   TX: A - 7U, B - 7L
+Mode: camera-slower, Buckets: ~11U,^9L,10L, TX: A - 11U, B - 11L
+Mode: camera-slower, Buckets: 8U,^8L,~9U, TX: C - 9U, B - 9L
+
