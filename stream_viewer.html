@@ -868,11 +868,16 @@
         const bucketsPrevMidValue = prevUpperEndTime + '\n' + bucketsPrevMid;
         const lowerMidHintsValue = prevLowerMidTime + '\n' + lowerMidHints + '\n' + bucketsPrevLowerMid;
         const bucketsPrevEndValue = prevEndTime + '\n' + bucketsPrevEnd;
+        
+        const speedCam = formatHeaderTime(map.get('X-Speed-Cam') || 'N/A');
+        const speedTx = formatHeaderTime(map.get('X-Speed-TX') || 'N/A');
 
         const rows = [
           ['Temperature', temp],
           ['Ext temp', extTemp],
           ['Barometer', baro],
+          ['Cam Speed', speedCam],
+          ['TX Speed', speedTx],
           ['PREV Buckets Upper start: ', bucketsPrevUpperStartValue],
           ['PREV Buckets Upper End', bucketsPrevMidValue],
           ['PREV Buckets Lower start: ', bucketsPrevLowerStartValue],
@@ -888,7 +893,7 @@
         let lightGroupOpen = false;
         for (let i = 0; i < rows.length; i++) {
           const [label, value] = rows[i];
-          if (i === 3) {
+          if (i === 5) {
             html += '<div class="meta-group-light">'
               + '<button type="button" class="meta-copy-btn" id="meta-copy-btn" '
               + 'title="Copy grouped metadata" aria-label="Copy grouped metadata">'
@@ -907,7 +912,7 @@
 
         const copyBtn = document.getElementById('meta-copy-btn');
         if (copyBtn) {
-          const copyPayload = rows.slice(3)
+          const copyPayload = rows.slice(5)
             .map(([label, value]) => label + '\n' + value)
             .join('\n');
           copyBtn.addEventListener('click', async () => {
