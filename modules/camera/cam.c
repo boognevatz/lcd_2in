@@ -51,7 +51,7 @@ static PIO pio_cam = pio0;
 // statemachine's pointer
 static uint32_t sm_cam; // CAMERA's state machines
 
-// 3 half-frame buckets (76,820 bytes each: 20-byte tag + 76,800 pixel data)
+// 3 half-frame buckets (102,420 bytes each: 20-byte tag + 102,400 transmitted bytes)
 static uint8_t bucket_mem_0[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
 static uint8_t bucket_mem_1[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
 static uint8_t bucket_mem_2[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
@@ -462,12 +462,12 @@ static void vsync_handler(uint gpio, uint32_t events) {
     if (is_first_bucket) {
         jpeg_frame_size = written_bytes;
     } else {
-        jpeg_frame_size = HALF_FRAME_BYTES + written_bytes;
+        jpeg_frame_size = CAPTURE_HALF_FRAME_BYTES + written_bytes;
     }
 
-    // Pad the rest of this bucket with 0x00
-    if (written_bytes < HALF_FRAME_BYTES) {
-        memset(bucket[completed] + BUCKET_TAG_SIZE + written_bytes, 0x00, HALF_FRAME_BYTES - written_bytes);
+    // Pad the rest of the transmitted half-frame with 0x00.
+    if (written_bytes < TX_HALF_FRAME_BYTES) {
+        memset(bucket[completed] + BUCKET_TAG_SIZE + written_bytes, 0x00, TX_HALF_FRAME_BYTES - written_bytes);
     }
 
     if (is_first_bucket) {
@@ -489,7 +489,7 @@ static void vsync_handler(uint gpio, uint32_t events) {
         uint8_t next_ch_idx = (next_ch == DMA_CH_A) ? 0 : 1;
         uint8_t next_completed = ch_target[next_ch_idx];
 
-        memset(bucket[next_completed] + BUCKET_TAG_SIZE, 0x00, HALF_FRAME_BYTES);
+        memset(bucket[next_completed] + BUCKET_TAG_SIZE, 0x00, TX_HALF_FRAME_BYTES);
         
         dma_hw->ints0 = (1u << next_ch);
         speed_cam_valid_data = false; // Synthetic commit, do not measure speed

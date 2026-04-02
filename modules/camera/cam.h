@@ -37,13 +37,14 @@
 #define CAM_FUL_SIZE (LCD_2IN_HEIGHT * LCD_2IN_WIDTH)                 
 
 // 3-bucket half-frame DMA chaining
-#define FRAME_BYTES       (CAM_FUL_SIZE * 2)                    // 153,600
-#define HALF_FRAME_BYTES  (FRAME_BYTES / 2)                     // 76,800
-#define HALF_FRAME_XFERS_32BIT  (HALF_FRAME_BYTES / sizeof(uint32_t)) // 19,200 (JPEG: 4 bytes/word)
-#define HALF_FRAME_XFERS_16BIT  (HALF_FRAME_BYTES / sizeof(uint16_t)) // 38,400 (RGB565: 2 bytes/word)
+#define FRAME_BYTES       (CAM_FUL_SIZE * 2)                    // 153,600 real image bytes
+#define CAPTURE_HALF_FRAME_BYTES  (FRAME_BYTES / 2)             // 76,800 captured bytes per half
+#define TX_HALF_FRAME_BYTES       (100 * 1024)                  // 102,400 transmitted bytes per half
+#define HALF_FRAME_XFERS_32BIT  (CAPTURE_HALF_FRAME_BYTES / sizeof(uint32_t)) // 19,200 (JPEG: 4 bytes/word)
+#define HALF_FRAME_XFERS_16BIT  (CAPTURE_HALF_FRAME_BYTES / sizeof(uint16_t)) // 38,400 (RGB565: 2 bytes/word)
 #define HALF_FRAME_XFERS        HALF_FRAME_XFERS_32BIT                // default (backward compat)
 #define BUCKET_TAG_SIZE       20                                 // 20-byte tag (time_us + bucket tag + tx states + camera hint + isr_time_us)
-#define TAGGED_HALF_FRAME_BYTES (BUCKET_TAG_SIZE + HALF_FRAME_BYTES) // 76,820
+#define TAGGED_HALF_FRAME_BYTES (BUCKET_TAG_SIZE + TX_HALF_FRAME_BYTES) // 102,420
 
 // Camera capture mode
 #define CAM_MODE_JPEG    0

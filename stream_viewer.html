@@ -689,6 +689,7 @@
         }
         const out = imageData.data;
         const halfPixels = W * (H / 2);
+        const transmittedHalfBytes = Math.max(HALF_PIXEL_BYTES, Math.floor((pixelData.length - 2 * tagSize) / 2));
 
         // Upper half: skip tag, read 76800 bytes of pixel data
         let si = tagSize;
@@ -713,8 +714,8 @@
           di += 4;
         }
 
-        // Lower half: skip another tag, read 76800 bytes of pixel data
-        si += tagSize;
+        // Lower half: skip padded upper payload and another tag, then read 76800 bytes of pixel data
+        si = tagSize + transmittedHalfBytes + tagSize;
         for (let i = 0; i < halfPixels; i++) {
           if (si + 1 >= pixelData.length) break;
           let v;
@@ -744,9 +745,13 @@
 
       function decodeJpeg(pixelData, tagSize) {
         const halfPixels = HALF_PIXEL_BYTES;
+        const transmittedHalfBytes = Math.max(halfPixels, Math.floor((pixelData.length - 2 * tagSize) / 2));
         const jpegData = new Uint8Array(halfPixels * 2);
         jpegData.set(pixelData.subarray(tagSize, tagSize + halfPixels), 0);
-        jpegData.set(pixelData.subarray(tagSize * 2 + halfPixels, tagSize * 2 + halfPixels * 2), halfPixels);
+        jpegData.set(
+          pixelData.subarray(tagSize + transmittedHalfBytes + tagSize, tagSize + transmittedHalfBytes + tagSize + halfPixels),
+          halfPixels
+        );
 
         let eoiIndex = jpegData.length;
         for (let i = 0; i < jpegData.length - 1; i++) {
@@ -808,7 +813,7 @@
 
           // Extract and display bucket tags
           const upperTag = pixelData.length >= tagSize ? readBucketTag(pixelData, 0) : null;
-          const lowerTagOffset = tagSize + HALF_PIXEL_BYTES;
+          const lowerTagOffset = tagSize + Math.max(HALF_PIXEL_BYTES, Math.floor((pixelData.length - 2 * tagSize) / 2));
           const lowerTag = pixelData.length >= lowerTagOffset + tagSize ? readBucketTag(pixelData, lowerTagOffset) : null;
           renderMetadata(fr.headers, upperTag, lowerTag);
 
