@@ -51,7 +51,7 @@ static PIO pio_cam = pio0;
 // statemachine's pointer
 static uint32_t sm_cam; // CAMERA's state machines
 
-// 3 half-frame buckets (133,140 bytes each: 20-byte tag + 133,120 transmitted bytes)
+// 3 half-frame buckets (133,140 bytes each: 20-byte tag + 133,120 captured/transmitted bytes)
 static uint8_t bucket_mem_0[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
 static uint8_t bucket_mem_1[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
 static uint8_t bucket_mem_2[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
@@ -462,7 +462,7 @@ static void vsync_handler(uint gpio, uint32_t events) {
     if (is_first_bucket) {
         jpeg_frame_size = written_bytes;
     } else {
-        jpeg_frame_size = CAPTURE_HALF_FRAME_BYTES + written_bytes;
+        jpeg_frame_size = JPEG_CAPTURE_HALF_FRAME_BYTES + written_bytes;
     }
 
     // Pad the rest of the transmitted half-frame with 0x00.
@@ -597,10 +597,10 @@ void start_cam(uint8_t mode)
     // Set mode globals BEFORE setup_dma_for_capture() uses them
     cam_capture_mode = mode;
     if (mode == CAM_MODE_RGB565) {
-        cam_half_frame_xfers = HALF_FRAME_XFERS_16BIT;  // 38,400
+        cam_half_frame_xfers = HALF_FRAME_XFERS_16BIT;  // 38,400 RGB565 half-words
         cam_dma_word_bytes = 2;
     } else {
-        cam_half_frame_xfers = HALF_FRAME_XFERS_32BIT;  // 19,200
+        cam_half_frame_xfers = HALF_FRAME_XFERS_32BIT;  // 33,280 JPEG words
         cam_dma_word_bytes = 4;
     }
 

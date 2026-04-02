@@ -32,16 +32,17 @@
 #include "LCD_2in.h"
 #include "py/obj.h"
 
-// camera buffer size
-// 240x320, RGB565 picture needs 240x320x2 bytes of buffers.
-#define CAM_FUL_SIZE (LCD_2IN_HEIGHT * LCD_2IN_WIDTH)                 
+// RGB565 frame geometry is tied to the LCD-sized 240x320 pipeline.
+#define CAM_FUL_SIZE (LCD_2IN_HEIGHT * LCD_2IN_WIDTH)
+#define RGB565_FRAME_BYTES       (CAM_FUL_SIZE * 2)                    // 153,600 real RGB565 image bytes
+#define RGB565_CAPTURE_HALF_FRAME_BYTES  (RGB565_FRAME_BYTES / 2)      // 76,800 captured bytes per half
 
-// 3-bucket half-frame DMA chaining
-#define FRAME_BYTES       (CAM_FUL_SIZE * 2)                    // 153,600 real image bytes
-#define CAPTURE_HALF_FRAME_BYTES  (FRAME_BYTES / 2)             // 76,800 captured bytes per half
-#define TX_HALF_FRAME_BYTES       (130 * 1024)                  // 133,120 transmitted bytes per half
-#define HALF_FRAME_XFERS_32BIT  (CAPTURE_HALF_FRAME_BYTES / sizeof(uint32_t)) // 19,200 (JPEG: 4 bytes/word)
-#define HALF_FRAME_XFERS_16BIT  (CAPTURE_HALF_FRAME_BYTES / sizeof(uint16_t)) // 38,400 (RGB565: 2 bytes/word)
+// JPEG streaming uses a larger real capture budget so 720p frames can span bigger halves.
+#define JPEG_CAPTURE_HALF_FRAME_BYTES  (130 * 1024)                    // 133,120 captured bytes per half
+#define TX_HALF_FRAME_BYTES            JPEG_CAPTURE_HALF_FRAME_BYTES    // transmitted bytes per half
+
+#define HALF_FRAME_XFERS_32BIT  (JPEG_CAPTURE_HALF_FRAME_BYTES / sizeof(uint32_t)) // 33,280 (JPEG: 4 bytes/word)
+#define HALF_FRAME_XFERS_16BIT  (RGB565_CAPTURE_HALF_FRAME_BYTES / sizeof(uint16_t)) // 38,400 (RGB565: 2 bytes/word)
 #define HALF_FRAME_XFERS        HALF_FRAME_XFERS_32BIT                // default (backward compat)
 #define BUCKET_TAG_SIZE       20                                 // 20-byte tag (time_us + bucket tag + tx states + camera hint + isr_time_us)
 #define TAGGED_HALF_FRAME_BYTES (BUCKET_TAG_SIZE + TX_HALF_FRAME_BYTES) // 133,140
@@ -114,7 +115,7 @@ extern volatile int8_t   cam_hint_next_next_next;
 extern volatile bool     cam_tx_active;           // true while TX is streaming
 extern volatile int32_t  mcu_temp_x10;          // MCU temperature x10 (365 = 36.5C)
 extern volatile uint8_t  cam_capture_mode;        // CAM_MODE_JPEG or CAM_MODE_RGB565
-extern volatile uint32_t cam_half_frame_xfers;    // active transfer count (19,200 or 38,400)
+extern volatile uint32_t cam_half_frame_xfers;    // active transfer count (33,280 JPEG or 38,400 RGB565)
 extern volatile uint8_t  cam_dma_word_bytes;      // bytes per DMA word (4 or 2)
 extern volatile uint32_t speed_cam_us;             // ISR-measured half-frame duration (us)
 
