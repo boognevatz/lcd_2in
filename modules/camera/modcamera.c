@@ -293,6 +293,14 @@ static void write_lower_mid_hints_header(int8_t h1, int8_t h2, int8_t h3)
         (h3 >= 0 && h3 < 3) ? bucket_name[h3] : '-';
 }
 
+static void tx_force_camera_hints(int8_t h1, int8_t h2, int8_t h3)
+{
+    cam_hint_next = h1;
+    cam_hint_next_next = h2;
+    cam_hint_next_next_next = h3;
+    write_lower_mid_hints_header(h1, h2, h3);
+}
+
 static inline uint32_t pack_tx_states(void)
 {
     return (uint32_t)(bucket_tx_state[0] & 0xff) |
@@ -448,6 +456,12 @@ static uint32_t accum_total_us;
 static uint32_t accum_count;
 static uint32_t t_frame_start;
 static uint32_t speed_tx_us = 0;
+
+typedef enum {
+    TX_PAIR_MODE_WARMUP = 0,
+    TX_PAIR_MODE_CAMERA_FASTER,
+    TX_PAIR_MODE_CAMERA_SLOWER,
+} tx_pair_mode_t;
 
 #define REPORT_INTERVAL 50
 
@@ -693,9 +707,16 @@ static mp_obj_t camera_free_cam(void) {
      }
      static MP_DEFINE_CONST_FUN_OBJ_0(camera_free_cam_obj, camera_free_cam);
 
-static bool tx_is_camera_slower_mode(void) {
-    return (frame_count <= 1) ||
-        (speed_cam_us > speed_tx_us && speed_cam_us != 0 && speed_tx_us != 0);
+static tx_pair_mode_t tx_get_pair_mode(void) {
+    if (frame_count < 3) {
+        return TX_PAIR_MODE_WARMUP;
+    }
+
+    if (speed_cam_us > speed_tx_us && speed_cam_us != 0 && speed_tx_us != 0) {
+        return TX_PAIR_MODE_CAMERA_SLOWER;
+    }
+
+    return TX_PAIR_MODE_CAMERA_FASTER;
 }
 
 static void tx_pick_pair_common(
@@ -746,6 +767,18 @@ static void tx_pick_pair_camera_faster(
     uint8_t *tx_first_out, uint8_t *tx_second_out, int8_t *wait_upper_bucket_out
 ) {
     tx_pick_pair_common(snap, just_finished, tx_first_out, tx_second_out, wait_upper_bucket_out);
+}
+
+static void tx_pick_pair_warmup(
+    const uint32_t snap[3], uint8_t just_finished,
+    uint8_t *tx_first_out, uint8_t *tx_second_out, int8_t *wait_upper_bucket_out
+) {
+    (void)snap;
+    (void)just_finished;
+
+    *tx_first_out = 0;
+    *tx_second_out = 1;
+    *wait_upper_bucket_out = -1;
 }
 
 static void tx_pick_pair_camera_slower(
@@ -881,16 +914,14 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
     // called during camera init without a subsequent stream_loop_c.
     if (first_frame) {
         cam_tx_active = true;
-        cam_hint_next = 2;
-        cam_hint_next_next = 2;
-        cam_hint_next_next_next = 2;
+        tx_force_camera_hints(2, 2, 2);
     }
 
     while (streaming && batch_sent < batch_size) {
         mp_handle_pending(true);
 
         uint8_t just_finished = first_frame ? 2 : tx_second;
-        bool camera_slower = tx_is_camera_slower_mode();
+        tx_pair_mode_t pair_mode = tx_get_pair_mode();
         uint32_t snap[3];
         uint8_t snap_cement[3];
         for (;;) {
@@ -904,7 +935,11 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             upper_start_time_us = mp_hal_ticks_us();
             buckets_time_counter = cam_counter;
 
-            if (camera_slower) {
+            if (pair_mode == TX_PAIR_MODE_WARMUP) {
+                tx_force_camera_hints(2, 2, 2);
+                tx_pick_pair_warmup(
+                    snap, just_finished, &tx_first, &tx_second, &wait_upper_bucket);
+            } else if (pair_mode == TX_PAIR_MODE_CAMERA_SLOWER) {
                 tx_pick_pair_camera_slower(
                     snap, just_finished, &tx_first, &tx_second, &wait_upper_bucket);
             } else {
@@ -958,8 +993,8 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 
         // Camera-slower wait: if cam takes longer per half-frame than TX,
         // or if it's the very first frame, wait for tx_first to finish being written.
-        bool should_wait = (frame_count <= 1) ||
-            (speed_cam_us > speed_tx_us && speed_cam_us != 0 && speed_tx_us != 0);
+        bool should_wait = (pair_mode == TX_PAIR_MODE_WARMUP) ||
+            (pair_mode == TX_PAIR_MODE_CAMERA_SLOWER);
         if (should_wait) {
             uint32_t ws = bucket_state[tx_first];
             if (bucket_is_dirty(ws)) {
@@ -1195,6 +1230,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         prev_lower_mid_cement[2] = bucket_tx_next_cemented[2];
         prev_lower_mid_time_us = mp_hal_ticks_us();
         apply_50_percent_protection(tx_second);
+        if (pair_mode == TX_PAIR_MODE_WARMUP) {
+            tx_force_camera_hints(2, 2, 2);
+        }
 
         // Phase 2: send remaining 50%
         ret = mp_stream_write_exactly(
