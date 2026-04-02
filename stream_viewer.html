@@ -613,9 +613,14 @@
           const dataOffset = offset + sep + sepLen;
 
           // Validate we won't read past the file
-          if (dataOffset + contentLength > fileSize + 1) break;
+          let actualLength = contentLength;
+          let isPartial = false;
+          if (dataOffset + contentLength > fileSize + 1) {
+            actualLength = fileSize - dataOffset;
+            isPartial = true;
+          }
 
-          result.push({ dataOffset, contentLength, headers: headerText, tagSize });
+          result.push({ dataOffset, contentLength: actualLength, headers: headerText, tagSize, isPartial });
 
           // Advance past pixel data
           offset = dataOffset + contentLength;
@@ -677,8 +682,8 @@
       }
       function decodeFrame(pixelData, swapBytes, swapRB, tagSize) {
         const imageData = ctx.createImageData(W, H);
-        if (!pixelData || pixelData.length < (BASE_PIXEL_BYTES + tagSize * 2)) {
-          console.error('decodeFrame: invalid pixelData length', pixelData ? pixelData.length : pixelData);
+        if (!pixelData) {
+          console.error('decodeFrame: invalid pixelData', pixelData);
           ctx.clearRect(0, 0, W, H);
           return;
         }
@@ -776,7 +781,7 @@
 
         try {
           const fr = frames[idx];
-          if (!fr || fr.contentLength < PIXEL_BYTES) {
+          if (!fr || (fr.contentLength < PIXEL_BYTES && !fr.isPartial)) {
             console.error('showFrame: invalid frame data at index', idx, fr);
             showError('Frame ' + (idx + 1) + ' has invalid or missing pixel data.');
             return;
@@ -802,8 +807,9 @@
           }
 
           // Extract and display bucket tags
-          const upperTag = readBucketTag(pixelData, 0);
-          const lowerTag = readBucketTag(pixelData, tagSize + HALF_PIXEL_BYTES);
+          const upperTag = pixelData.length >= tagSize ? readBucketTag(pixelData, 0) : null;
+          const lowerTagOffset = tagSize + HALF_PIXEL_BYTES;
+          const lowerTag = pixelData.length >= lowerTagOffset + tagSize ? readBucketTag(pixelData, lowerTagOffset) : null;
           renderMetadata(fr.headers, upperTag, lowerTag);
 
           updateUI();
@@ -1088,10 +1094,10 @@
         currentFrame = 0;
 
         // Basic size check
-        if (f.size < MIN_PIXEL_BYTES) {
+        if (f.size < HALF_PIXEL_BYTES) {
           showError('File is too small (' + formatBytes(f.size) +
-            ') to contain even one RGB565 frame (need at least ' +
-            formatBytes(MIN_PIXEL_BYTES) + '). Did you select the headers-only .txt file instead of the .raw stream file?');
+            ') to contain even half a RGB565 frame (need at least ' +
+            formatBytes(HALF_PIXEL_BYTES) + '). Did you select the headers-only .txt file instead of the .raw stream file?');
           return;
         }
 
@@ -1143,9 +1149,11 @@
         }
 
         // Validate first frame data doesn't exceed file
-        const last = frames[frames.length - 1];
-        if (last.dataOffset + last.contentLength > f.size) {
-          frames.pop(); // remove incomplete last frame
+        if (frames.length > 0) {
+          const last = frames[frames.length - 1];
+          if (last.dataOffset + last.contentLength > f.size + 1) {
+            frames.pop(); // remove incomplete last frame
+          }
         }
 
         $progBar.style.width = '100%';
