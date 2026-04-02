@@ -92,11 +92,11 @@ static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_xclk_pin_obj, camera_set_xclk_pin);
 static const char boundary_prefix_first[] =
     "--frame\r\n"
     "Content-Type: application/octet-stream\r\n"
-    "Content-Length: 00204840\r\n";
+    "Content-Length: 00266280\r\n";
 static const char boundary_prefix_subsequent[] =
     "\r\n--frame\r\n"
     "Content-Type: application/octet-stream\r\n"
-    "Content-Length: 00204840\r\n";
+    "Content-Length: 00266280\r\n";
 
 // Bucket name lookup: index 0->'A', 1->'B', 2->'C'
 static const char bucket_name[] = "ABC";
@@ -523,7 +523,7 @@ static uint8_t __attribute__((unused)) pick_preferred_bucket(uint8_t x, uint8_t 
 
 
 // 50% transfer mark within the lower half-frame send.
-#define FIFTY_PERCENT_BYTES (TAGGED_HALF_FRAME_BYTES / 2)  // 51,210 with 100 kB payload halves
+#define FIFTY_PERCENT_BYTES (TAGGED_HALF_FRAME_BYTES / 2)  // 66,570 with 130 kB payload halves
 
 // ******************************************************************************
 // function:   Apply the 50%-mark camera-direction rule-set.

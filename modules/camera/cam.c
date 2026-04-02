@@ -51,7 +51,7 @@ static PIO pio_cam = pio0;
 // statemachine's pointer
 static uint32_t sm_cam; // CAMERA's state machines
 
-// 3 half-frame buckets (102,420 bytes each: 20-byte tag + 102,400 transmitted bytes)
+// 3 half-frame buckets (133,140 bytes each: 20-byte tag + 133,120 transmitted bytes)
 static uint8_t bucket_mem_0[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
 static uint8_t bucket_mem_1[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
 static uint8_t bucket_mem_2[TAGGED_HALF_FRAME_BYTES] __attribute__((aligned(4)));
