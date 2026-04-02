@@ -873,11 +873,9 @@
         const speedTx = formatHeaderTime(map.get('X-Speed-TX') || 'N/A');
 
         const rows = [
-          ['Temperature', temp],
+          [{ k: 'Temperature', v: temp }, { k: 'Barometer', v: baro }],
           ['Ext temp', extTemp],
-          ['Barometer', baro],
-          ['Cam Speed', speedCam],
-          ['TX Speed', speedTx],
+          [{ k: 'Cam Speed', v: speedCam }, { k: 'TX Speed', v: speedTx }],
           ['PREV Buckets Upper start: ', bucketsPrevUpperStartValue],
           ['PREV Buckets Upper End', bucketsPrevMidValue],
           ['PREV Buckets Lower start: ', bucketsPrevLowerStartValue],
@@ -892,8 +890,8 @@
         let html = '';
         let lightGroupOpen = false;
         for (let i = 0; i < rows.length; i++) {
-          const [label, value] = rows[i];
-          if (i === 5) {
+          const rowData = rows[i];
+          if (i === 3) {
             html += '<div class="meta-group-light">'
               + '<button type="button" class="meta-copy-btn" id="meta-copy-btn" '
               + 'title="Copy grouped metadata" aria-label="Copy grouped metadata">'
@@ -902,9 +900,19 @@
               + '</svg><span class="meta-copy-label">Copied!</span></button>';
             lightGroupOpen = true;
           }
-          html += '<div class="meta-row"><div class="meta-key">' +
-            escHtml(label) + '</div><div class="meta-val">' +
-            escHtml(value) + '</div></div>';
+          if (Array.isArray(rowData) && rowData.length === 2 && rowData[0].k) {
+            html += '<div class="meta-row" style="flex-direction:row; gap:16px;">' +
+              '<div style="flex:1; display:flex; flex-direction:column; gap:4px;"><div class="meta-key">' +
+              escHtml(rowData[0].k) + '</div><div class="meta-val">' + escHtml(rowData[0].v) + '</div></div>' +
+              '<div style="flex:1; display:flex; flex-direction:column; gap:4px;"><div class="meta-key">' +
+              escHtml(rowData[1].k) + '</div><div class="meta-val">' + escHtml(rowData[1].v) + '</div></div>' +
+              '</div>';
+          } else {
+            const [label, value] = rowData;
+            html += '<div class="meta-row"><div class="meta-key">' +
+              escHtml(label) + '</div><div class="meta-val">' +
+              escHtml(value) + '</div></div>';
+          }
           if (lightGroupOpen && i === rows.length - 1) html += '</div>';
         }
 
@@ -912,7 +920,7 @@
 
         const copyBtn = document.getElementById('meta-copy-btn');
         if (copyBtn) {
-          const copyPayload = rows.slice(5)
+          const copyPayload = rows.slice(3)
             .map(([label, value]) => label + '\n' + value)
             .join('\n');
           copyBtn.addEventListener('click', async () => {
