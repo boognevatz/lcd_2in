@@ -192,6 +192,9 @@ static char x_header_speed_cam[] = "X-Speed-Cam: 0000000000000\r\n";
 static char x_header_speed_tx[] = "X-Speed-TX: 0000000000000\r\n";
 #define X_HEADER_SPEED_TX_OFFSET 12
 
+static char x_header_tx_vs_camera[] = "X-TX-VS-CAMERA: camera-slower\r\n";
+#define X_HEADER_TX_VS_CAMERA_OFFSET 16
+
 static const char x_header_terminator[] = "\r\n";
 
 
@@ -305,6 +308,17 @@ static void tx_force_camera_hints(int8_t h1, int8_t h2, int8_t h3)
     cam_hint_next_next = h2;
     cam_hint_next_next_next = h3;
     write_lower_mid_hints_header(h1, h2, h3);
+}
+
+static void tx_prepend_camera_hint(int8_t bucket)
+{
+    int8_t h1 = cam_hint_next;
+    int8_t h2 = cam_hint_next_next;
+
+    cam_hint_next = bucket;
+    cam_hint_next_next = h1;
+    cam_hint_next_next_next = h2;
+    write_lower_mid_hints_header(cam_hint_next, cam_hint_next_next, cam_hint_next_next_next);
 }
 
 static inline uint32_t pack_tx_states(void)
@@ -723,6 +737,26 @@ static tx_pair_mode_t tx_get_pair_mode(void) {
     }
 
     return TX_PAIR_MODE_CAMERA_FASTER;
+}
+
+static void write_tx_vs_camera_header(tx_pair_mode_t pair_mode)
+{
+    const char *mode_text = "camera-faster";
+    if (pair_mode == TX_PAIR_MODE_WARMUP) {
+        mode_text = "warmup";
+    } else if (pair_mode == TX_PAIR_MODE_CAMERA_SLOWER) {
+        mode_text = "camera-slower";
+    }
+
+    size_t i = 0;
+    while (mode_text[i] != '\0') {
+        x_header_tx_vs_camera[X_HEADER_TX_VS_CAMERA_OFFSET + i] = mode_text[i];
+        i++;
+    }
+    while (X_HEADER_TX_VS_CAMERA_OFFSET + i < sizeof(x_header_tx_vs_camera) - 2) {
+        x_header_tx_vs_camera[X_HEADER_TX_VS_CAMERA_OFFSET + i] = ' ';
+        i++;
+    }
 }
 
 static bool tx_pick_pair_common(
@@ -1151,6 +1185,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         write_u32_grouped(&x_header_prev_lower_start_time[X_HEADER_PREV_LOWER_START_TIME_OFFSET], prev_lower_start_time_us);
         write_u32_grouped(&x_header_speed_cam[X_HEADER_SPEED_CAM_OFFSET], speed_cam_us);
         write_u32_grouped(&x_header_speed_tx[X_HEADER_SPEED_TX_OFFSET], speed_tx_us);
+        write_tx_vs_camera_header(pair_mode);
 
         uint32_t t_send_start = mp_hal_ticks_us();
 
@@ -1233,6 +1268,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_speed_tx, sizeof(x_header_speed_tx) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
+        ret = mp_stream_write_exactly(socket_obj, x_header_tx_vs_camera, sizeof(x_header_tx_vs_camera) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
         ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
@@ -1267,6 +1305,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 
         // Release first bucket -- camera can now overwrite it
         bucket_tx_state[tx_first] = BUCKET_TX_STATE_FREE;
+        if (pair_mode == TX_PAIR_MODE_CAMERA_SLOWER) {
+            tx_prepend_camera_hint((int8_t)tx_first);
+        }
 
         // Upgrade second bucket: it is no longer the queued partner (QUEUED/PD),
         // it is now actively being sent. If it was QUEUED (still writing), it
