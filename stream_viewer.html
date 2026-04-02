@@ -879,12 +879,14 @@
         const speedCam = formatHeaderTime(map.get('X-Speed-Cam') || 'N/A');
         const speedTx = formatHeaderTime(map.get('X-Speed-TX') || 'N/A');
         const txVsCamera = map.get('X-TX-VS-CAMERA') || 'N/A';
+        const memFree = map.get('X-MemFree') || 'N/A';
 
         const rows = [
           [{ k: 'Temperature', v: temp }, { k: 'Barometer', v: baro }],
           ['Ext temp', extTemp],
           [{ k: 'Cam Speed', v: speedCam }, { k: 'TX Speed', v: speedTx }],
           ['TX vs Camera', txVsCamera],
+          ['Mem Free', memFree],
           ['PREV Buckets Upper start: ', bucketsPrevUpperStartValue],
           ['PREV Buckets Upper End', bucketsPrevMidValue],
           ['PREV Buckets Lower start: ', bucketsPrevLowerStartValue],

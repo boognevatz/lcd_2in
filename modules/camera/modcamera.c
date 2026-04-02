@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "ov5640.h"
 #include "py/obj.h"
+#include "py/gc.h"
 #include "py/runtime.h"
 #include "py/stream.h"
 #include "py/mphal.h"
@@ -199,6 +200,9 @@ static char x_header_speed_tx[] = "X-Speed-TX: 0000000000000\r\n";
 
 static char x_header_tx_vs_camera[] = "X-TX-VS-CAMERA: camera-slower\r\n";
 #define X_HEADER_TX_VS_CAMERA_OFFSET 16
+
+static char x_header_mem_free[] = "X-MemFree: 0000000000000\r\n";
+#define X_HEADER_MEM_FREE_OFFSET 11
 
 static const char x_header_terminator[] = "\r\n";
 
@@ -1192,6 +1196,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         write_u32_grouped(&x_header_speed_cam[X_HEADER_SPEED_CAM_OFFSET], speed_cam_us);
         write_u32_grouped(&x_header_speed_tx[X_HEADER_SPEED_TX_OFFSET], speed_tx_us);
         write_tx_vs_camera_header(pair_mode);
+        gc_info_t gc_info_state;
+        gc_info(&gc_info_state);
+        write_u32_grouped(&x_header_mem_free[X_HEADER_MEM_FREE_OFFSET], gc_info_state.free);
 
         uint32_t t_send_start = mp_hal_ticks_us();
 
@@ -1275,6 +1282,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
         ret = mp_stream_write_exactly(socket_obj, x_header_tx_vs_camera, sizeof(x_header_tx_vs_camera) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_mem_free, sizeof(x_header_mem_free) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
         ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
