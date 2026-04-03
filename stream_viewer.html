@@ -744,13 +744,15 @@
       }
 
       function decodeJpeg(pixelData, tagSize) {
-        const halfPixels = HALF_PIXEL_BYTES;
-        const transmittedHalfBytes = Math.max(halfPixels, Math.floor((pixelData.length - 2 * tagSize) / 2));
-        const jpegData = new Uint8Array(halfPixels * 2);
-        jpegData.set(pixelData.subarray(tagSize, tagSize + halfPixels), 0);
+        const transmittedHalfBytes = Math.floor((pixelData.length - 2 * tagSize) / 2);
+        const jpegData = new Uint8Array(transmittedHalfBytes * 2);
+        
+        // Extract full transmitted bucket 1
+        jpegData.set(pixelData.subarray(tagSize, tagSize + transmittedHalfBytes), 0);
+        // Extract full transmitted bucket 2
         jpegData.set(
-          pixelData.subarray(tagSize + transmittedHalfBytes + tagSize, tagSize + transmittedHalfBytes + tagSize + halfPixels),
-          halfPixels
+          pixelData.subarray(tagSize + transmittedHalfBytes + tagSize, tagSize + transmittedHalfBytes + tagSize + transmittedHalfBytes),
+          transmittedHalfBytes
         );
 
         let eoiIndex = jpegData.length;
