@@ -32,8 +32,8 @@ static const uint16_t picampinos_program_instructions[] = {
     0x20aa, // 11: wait   1 pin, 10
     0x4008, // 12: in     pins, 8
     0x202a, // 13: wait   0 pin, 10
-    0x8000, // 14: push   noblock
-    0x00c1, // 15: jmp    pin, 1
+    0x8020, // 14: push   block
+    0x00c2, // 15: jmp    pin, 2
             //     .wrap
 };
 
@@ -78,9 +78,9 @@ static inline void picampinos_program_init( PIO pio, uint32_t sm, uint32_t offse
 
 #endif
 
-// ------------------- //
-// picampinos_rgb565   //
-// ------------------- //
+// ----------------- //
+// picampinos_rgb565 //
+// ----------------- //
 
 #define picampinos_rgb565_wrap_target 0
 #define picampinos_rgb565_wrap 14
@@ -88,21 +88,21 @@ static inline void picampinos_program_init( PIO pio, uint32_t sm, uint32_t offse
 
 static const uint16_t picampinos_rgb565_program_instructions[] = {
             //     .wrap_target
-    0x6020, //  0: out    x, 32          ; X <= TX_FIFO : reserved (must be 0)
-    0x6040, //  1: out    y, 32          ; Y <= TX_FIFO : total pixels - 1
-    0x2028, //  2: wait   0 pin, 8       ; wait VSYNC=0
-    0x20a8, //  3: wait   1 pin, 8       ; wait VSYNC=1 (frame start)
-    0xa022, //  4: mov    x, y           ; reload pixel counter
-    0x20a9, //  5: wait   1 pin, 9       ; wait HREF=1 (valid line)
-    0x20aa, //  6: wait   1 pin, 10      ; PCLK high - high byte
-    0x4008, //  7: in     pins, 8        ; sample D0-D7
-    0x202a, //  8: wait   0 pin, 10      ; PCLK low
-    0x20aa, //  9: wait   1 pin, 10      ; PCLK high - low byte
-    0x4008, // 10: in     pins, 8        ; sample D0-D7
-    0x202a, // 11: wait   0 pin, 10      ; PCLK low
-    0x8020, // 12: push   block          ; blocking push (16-bit RGB565 pixel)
-    0x0045, // 13: jmp    x--, 5         ; loop until all pixels captured
-    0x0002, // 14: jmp    2              ; next frame: wait for VSYNC
+    0x6020, //  0: out    x, 32
+    0x6040, //  1: out    y, 32
+    0x2028, //  2: wait   0 pin, 8
+    0x20a8, //  3: wait   1 pin, 8
+    0xa022, //  4: mov    x, y
+    0x20a9, //  5: wait   1 pin, 9
+    0x20aa, //  6: wait   1 pin, 10
+    0x4008, //  7: in     pins, 8
+    0x202a, //  8: wait   0 pin, 10
+    0x20aa, //  9: wait   1 pin, 10
+    0x4008, // 10: in     pins, 8
+    0x202a, // 11: wait   0 pin, 10
+    0x8020, // 12: push   block
+    0x0045, // 13: jmp    x--, 5
+    0x0002, // 14: jmp    2
             //     .wrap
 };
 

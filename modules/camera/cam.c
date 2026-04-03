@@ -44,6 +44,7 @@
 
 static void handle_half_complete(uint32_t completed_ch);
 static void vsync_raw_irq_handler(void);
+static void clear_pio_jpeg_state(void);
 
 // init PIO
 static PIO pio_cam = pio0;
@@ -150,24 +151,22 @@ void setup_dma_for_capture()
 
     // Configure CH_A: transfers one half-frame, then chains to CH_B
     dma_channel_config c_a = get_cam_config(pio_cam, sm_cam, DMA_CH_A);
-    channel_config_set_transfer_data_size(&c_a,
-        (cam_capture_mode == CAM_MODE_RGB565) ? DMA_SIZE_16 : DMA_SIZE_32);
+    channel_config_set_transfer_data_size(&c_a, DMA_SIZE_32);
     channel_config_set_chain_to(&c_a, DMA_CH_B);
     dma_channel_configure(DMA_CH_A, &c_a,
                           bucket[0] + BUCKET_TAG_SIZE, // write past 20-byte tag
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
-                          cam_half_frame_xfers,   // 38,400 x 16-bit (RGB565) or 19,200 x 32-bit (JPEG)
+                          cam_half_frame_xfers,
                           false);                 // don't start yet
 
     // Configure CH_B: transfers one half-frame, then chains to CH_A
     dma_channel_config c_b = get_cam_config(pio_cam, sm_cam, DMA_CH_B);
-    channel_config_set_transfer_data_size(&c_b,
-        (cam_capture_mode == CAM_MODE_RGB565) ? DMA_SIZE_16 : DMA_SIZE_32);
+    channel_config_set_transfer_data_size(&c_b, DMA_SIZE_32);
     channel_config_set_chain_to(&c_b, DMA_CH_A);
     dma_channel_configure(DMA_CH_B, &c_b,
                           bucket[1] + BUCKET_TAG_SIZE, // write past 20-byte tag
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
-                          cam_half_frame_xfers,   // 38,400 x 16-bit (RGB565) or 19,200 x 32-bit (JPEG)
+                          cam_half_frame_xfers,
                           false);                 // don't start yet
 
     // Reset three-bucket system state
@@ -194,19 +193,12 @@ void setup_dma_for_capture()
     bucket_tx_next_cemented[1] = 1; // CH_B is preconfigured as next target
     bucket_tx_next_cemented[2] = 0;
 
-    // VSYNC GPIO interrupt: only needed for JPEG mode.
-    // RGB565 mode handles VSYNC inside the PIO program.
-    if (cam_capture_mode == CAM_MODE_JPEG) {
-        if (!vsync_raw_irq_handler_installed) {
-            gpio_add_raw_irq_handler(g_cam_pinmap.vsync, vsync_raw_irq_handler);
-            vsync_raw_irq_handler_installed = true;
-        }
-        gpio_set_irq_enabled(g_cam_pinmap.vsync, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
-        irq_set_enabled(IO_IRQ_BANK0, true);
-    } else {
-        // Disable VSYNC GPIO interrupt if it was previously enabled
-        gpio_set_irq_enabled(g_cam_pinmap.vsync, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+    if (!vsync_raw_irq_handler_installed) {
+        gpio_add_raw_irq_handler(g_cam_pinmap.vsync, vsync_raw_irq_handler);
+        vsync_raw_irq_handler_installed = true;
     }
+    gpio_set_irq_enabled(g_cam_pinmap.vsync, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
+    irq_set_enabled(IO_IRQ_BANK0, true);
 
     // Enable IRQ on both channels
     dma_channel_set_irq0_enabled(DMA_CH_A, true);
@@ -444,20 +436,16 @@ static void vsync_handler(uint gpio, uint32_t events) {
     bool is_first_bucket = bucket_half_is_upper(bucket_state[completed]);
 
     if (is_first_bucket && written_bytes < 16) {
-        // Trailing VSYNC from a perfectly filled frame (e.g. RGB565)
-        // that just hardware-chained into this first bucket. Ignore it.
+        // Trailing VSYNC from a frame that hardware-chained into the next bucket.
         return;
     }
 
     // It's a valid early frame end (JPEG). Abort the DMA.
     dma_channel_abort(active_ch);
 
-    // Clear the PIO state machine so it drops the stuck half-word from the last frame
-    // and resets its program counter back to 'wait 1 pin 9' for the new frame.
-    pio_sm_set_enabled(pio_cam, sm_cam, false);
-    pio_sm_restart(pio_cam, sm_cam);
-    pio_sm_clear_fifos(pio_cam, sm_cam);
-    pio_sm_set_enabled(pio_cam, sm_cam, true);
+    // Reset the JPEG PIO to a known clean state so leftover bytes in the
+    // shift register cannot phase-shift the next frame.
+    clear_pio_jpeg_state();
 
     if (is_first_bucket) {
         jpeg_frame_size = written_bytes;
@@ -496,9 +484,11 @@ static void vsync_handler(uint gpio, uint32_t events) {
         handle_half_complete(next_ch);
     }
 
-    // Restart the continuous DMA chain loop for the next frame
+    // Restart the continuous DMA chain loop for the next frame.
     uint32_t next_ch_to_start = (active_ch == DMA_CH_A) ? DMA_CH_B : DMA_CH_A;
     uint32_t channel_to_start = is_first_bucket ? active_ch : next_ch_to_start;
+    dma_channel_set_trans_count(DMA_CH_A, cam_half_frame_xfers, false);
+    dma_channel_set_trans_count(DMA_CH_B, cam_half_frame_xfers, false);
     dma_channel_start(channel_to_start);
 }
 
@@ -574,69 +564,53 @@ void cam_set_pinmap(uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3, uint8_t d4, 
 static uint32_t offset_cam = 0;
 static bool pio_program_loaded = false;
 
+static void clear_pio_jpeg_state(void)
+{
+    pio_sm_set_enabled(pio_cam, sm_cam, false);
+    pio_sm_clear_fifos(pio_cam, sm_cam);
+    pio_sm_exec(pio_cam, sm_cam, pio_encode_mov(pio_isr, pio_null));
+    pio_sm_restart(pio_cam, sm_cam);
+    pio_sm_set_enabled(pio_cam, sm_cam, true);
+}
+
 /********************************************************************************
 function:   Start the camera
-parameter:  mode - CAM_MODE_JPEG (0) or CAM_MODE_RGB565 (1)
+parameter:  mode - CAM_MODE_JPEG (0); RGB565 temporarily unsupported
 ********************************************************************************/
 void start_cam(uint8_t mode)
 {
     uint32_t cam_base_pin = g_cam_pinmap.d[0];
-    uint32_t cam_num_pins = 11;
+    uint32_t cam_num_pins = 8;
+
+    if (mode != CAM_MODE_JPEG) {
+        mp_printf(MP_PYTHON_PRINTER,
+                  "start_cam: RGB565 temporarily unsupported, forcing JPEG\n");
+        mode = CAM_MODE_JPEG;
+    }
 
     // Remove previous PIO program if loaded
     if (pio_program_loaded) {
         pio_sm_set_enabled(pio_cam, sm_cam, false);
-        if (cam_capture_mode == CAM_MODE_RGB565) {
-            pio_remove_program(pio_cam, &picampinos_rgb565_program, offset_cam);
-        } else {
-            pio_remove_program(pio_cam, &picampinos_program, offset_cam);
-        }
+        pio_remove_program(pio_cam, &picampinos_program, offset_cam);
         pio_program_loaded = false;
     }
 
-    // Set mode globals BEFORE setup_dma_for_capture() uses them
-    cam_capture_mode = mode;
-    if (mode == CAM_MODE_RGB565) {
-        cam_half_frame_xfers = HALF_FRAME_XFERS_16BIT;  // 38,400 RGB565 half-words
-        cam_dma_word_bytes = 2;
-    } else {
-        cam_half_frame_xfers = HALF_FRAME_XFERS_32BIT;  // 33,280 JPEG words
-        cam_dma_word_bytes = 4;
-    }
+    cam_capture_mode = CAM_MODE_JPEG;
+    cam_half_frame_xfers = HALF_FRAME_XFERS_32BIT;
+    cam_dma_word_bytes = 4;
 
-    if (mode == CAM_MODE_RGB565) {
-        // RGB565: 11 consecutive pins (D0-D7 + VSYNC + HREF + PCLK)
-        offset_cam = pio_add_program(pio_cam, &picampinos_rgb565_program);
-        pio_program_loaded = true;
-        picampinos_rgb565_program_init(pio_cam, sm_cam, offset_cam, cam_base_pin, cam_num_pins);
-        // No need to init VSYNC as SIO GPIO — PIO owns it via wait instructions
-    } else {
-        // JPEG: 8 data pins + separate href/pclk via jmp_pin
-        offset_cam = pio_add_program(pio_cam, &picampinos_program);
-        pio_program_loaded = true;
-        picampinos_program_init(pio_cam, sm_cam, offset_cam, cam_base_pin, cam_num_pins,
-                                g_cam_pinmap.href, g_cam_pinmap.pclk);
+    offset_cam = pio_add_program(pio_cam, &picampinos_program);
+    pio_program_loaded = true;
+    picampinos_program_init(pio_cam, sm_cam, offset_cam, cam_base_pin, cam_num_pins,
+                            g_cam_pinmap.href, g_cam_pinmap.pclk);
 
-        // Keep VSYNC on SIO for reliable GPIO edge detection and diagnostics.
-        gpio_init(g_cam_pinmap.vsync);
-        gpio_set_dir(g_cam_pinmap.vsync, GPIO_IN);
-        gpio_disable_pulls(g_cam_pinmap.vsync);
-    }
+    gpio_init(g_cam_pinmap.vsync);
+    gpio_set_dir(g_cam_pinmap.vsync, GPIO_IN);
+    gpio_disable_pulls(g_cam_pinmap.vsync);
 
-    // Clear state machine and restart
-    pio_sm_set_enabled(pio_cam, sm_cam, false);
-    pio_sm_clear_fifos(pio_cam, sm_cam);
-    pio_sm_restart(pio_cam, sm_cam);
-    pio_sm_set_enabled(pio_cam, sm_cam, true);
+    clear_pio_jpeg_state();
 
-    if (mode == CAM_MODE_RGB565) {
-        // Preload X=0 (reserved) and Y=total_pixels-1 via TX FIFO
-        pio_sm_put_blocking(pio_cam, sm_cam, 0);
-        pio_sm_put_blocking(pio_cam, sm_cam, CAM_FUL_SIZE - 1);
-    }
-
-    mp_printf(MP_PYTHON_PRINTER, "start_cam finished, mode=%s\n",
-              mode == CAM_MODE_RGB565 ? "RGB565" : "JPEG");
+    mp_printf(MP_PYTHON_PRINTER, "start_cam finished, mode=JPEG\n");
     setup_dma_for_capture();
 }
 
@@ -673,11 +647,7 @@ void free_cam()
 
     // Remove PIO program from instruction memory
     if (pio_program_loaded) {
-        if (cam_capture_mode == CAM_MODE_RGB565) {
-            pio_remove_program(pio_cam, &picampinos_rgb565_program, offset_cam);
-        } else {
-            pio_remove_program(pio_cam, &picampinos_program, offset_cam);
-        }
+        pio_remove_program(pio_cam, &picampinos_program, offset_cam);
         pio_program_loaded = false;
     }
 

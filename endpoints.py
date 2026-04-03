@@ -114,8 +114,8 @@ Connection: close
         const width = 240;
         const height = 320;
         const TAG_SIZE = 20;  // 20-byte tag per half-frame (time_us + bucket tag + tx states + hints + isr_time)
-        const halfPixelBytes = width * (height / 2) * 2; // 76800
-        const frameSize = width * height * 2 + TAG_SIZE * 2; // 153640
+        const rgb565HalfBytes = width * (height / 2) * 2; // 76800
+        const rgb565FrameSize = width * height * 2 + TAG_SIZE * 2; // 153640
 
         let frameCount = 0;
         let fpsCounter = 0;
@@ -131,13 +131,14 @@ Connection: close
 
         function displayImage(arrayBuffer) {
             const data = new Uint8Array(arrayBuffer);
+            const halfPayloadBytes = Math.max(0, (data.length - TAG_SIZE * 2) >> 1);
 
             // --- Extract frame numbers from 20-byte tags ---
             // Tag layout: [time_us(4B), bucket_state(4B), tx_states(4B), hints(4B), isr_time(4B)]
             // bucket_state: bits 31-3 = frame number, bit 2 = half, bit 1 = dirty, bit 0 = valid
-            // Upper tag at offset 0, lower tag at offset TAG_SIZE + halfPixelBytes
+            // Upper tag at offset 0, lower tag at offset TAG_SIZE + half payload bytes
             const upperStateOffset = 4; // bytes 4-7 of upper tag
-            const lowerTagStart = TAG_SIZE + halfPixelBytes;
+            const lowerTagStart = TAG_SIZE + halfPayloadBytes;
             const lowerStateOffset = lowerTagStart + 4; // bytes 4-7 of lower tag
 
             const upperState = data[upperStateOffset]
@@ -175,9 +176,12 @@ Connection: close
 
             // Auto-detect JPEG by looking for SOI marker (FF D8)
             if (data[TAG_SIZE] === 0xFF && data[TAG_SIZE + 1] === 0xD8) {
-                const jpegData = new Uint8Array(halfPixelBytes * 2);
-                jpegData.set(data.subarray(TAG_SIZE, TAG_SIZE + halfPixelBytes), 0);
-                jpegData.set(data.subarray(TAG_SIZE * 2 + halfPixelBytes, TAG_SIZE * 2 + halfPixelBytes * 2), halfPixelBytes);
+                const jpegData = new Uint8Array(halfPayloadBytes * 2);
+                jpegData.set(data.subarray(TAG_SIZE, TAG_SIZE + halfPayloadBytes), 0);
+                jpegData.set(
+                    data.subarray(TAG_SIZE * 2 + halfPayloadBytes, TAG_SIZE * 2 + halfPayloadBytes * 2),
+                    halfPayloadBytes,
+                );
 
                 let eoiIndex = jpegData.length;
                 for (let i = 0; i < jpegData.length - 1; i++) {
@@ -204,6 +208,10 @@ Connection: close
             }
 
             // --- RGB565 Rendering ---
+            if (halfPayloadBytes < rgb565HalfBytes) {
+                return;
+            }
+
             if (canvas.width !== width || canvas.height !== height) {
                 canvas.width = width;
                 canvas.height = height;
@@ -526,16 +534,21 @@ Connection: close
                             }
                         }
 
-                        if (dataStart === -1 || buffer.length - dataStart < frameSize) {
+                        const headerBytes = buffer.slice(boundaryIndex, dataStart);
+                        const headerText = new TextDecoder().decode(headerBytes);
+                        const contentLengthMatch = headerText.match(/Content-Length:\s*(\d+)/i);
+                        const contentLength = contentLengthMatch ? parseInt(contentLengthMatch[1], 10) : rgb565FrameSize;
+
+                        if (!Number.isFinite(contentLength) || buffer.length - dataStart < contentLength) {
                             break; // Not enough data yet
                         }
 
                         // Extract and display frame
-                        const frameData = buffer.slice(dataStart, dataStart + frameSize);
+                        const frameData = buffer.slice(dataStart, dataStart + contentLength);
                         displayImage(frameData);
 
                         // Remove processed data
-                        buffer = buffer.slice(dataStart + frameSize);
+                        buffer = buffer.slice(dataStart + contentLength);
                     }
                 }
             } catch (err) {

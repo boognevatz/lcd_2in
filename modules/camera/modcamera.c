@@ -36,11 +36,14 @@ static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_pwm_pin_obj, camera_set_pwm_pin);
 
 
 // Wrapper for start_cam(mode)
-// mode: 0 = JPEG (default), 1 = RGB565
+// mode: 0 = JPEG (default); RGB565 temporarily unsupported
 static mp_obj_t camera_start_cam(size_t n_args, const mp_obj_t *args) {
     uint8_t mode = CAM_MODE_JPEG; // default
     if (n_args >= 1) {
         mode = (uint8_t)mp_obj_get_int(args[0]);
+    }
+    if (mode != CAM_MODE_JPEG) {
+        mp_raise_ValueError(MP_ERROR_TEXT("RGB565 temporarily unsupported"));
     }
     start_cam(mode);
     return mp_const_none;

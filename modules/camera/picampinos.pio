@@ -27,8 +27,8 @@
     wait 1 pin 10      ; PCLK high - byte 4
     in   pins, 8
     wait 0 pin 10
-    push noblock
-    jmp  pin, 1        ; loop while HREF high (skip sync on continuation)
+    push block
+    jmp  pin, 2        ; loop while HREF high (skip sync on continuation)
 
 % c-sdk {
 static inline void picampinos_program_init( PIO pio, uint32_t sm, uint32_t offset, uint32_t in_base ,uint32_t in_pin_num, uint32_t href_pin, uint32_t pclk_pin)
@@ -140,4 +140,3 @@ static inline void picampinos_rgb565_program_init(PIO pio, uint32_t sm, uint32_t
     pio_sm_set_enabled(pio, sm, true);
 }
 %}
-
