@@ -229,11 +229,82 @@ JPEG_VGA_REGS = [
 
     (0x3039, 0x00),
     (0x3034, 0x1A),
-    (0x3035, 0x11),
+    (0x3035, 0x21),
     (0x3036, 0x2D),
     (0x3037, 0x13),
     (0x3108, 0x16),
     (0x3824, 0x02),
+    (0x460C, 0x22),
+    (0x3103, 0x13),
+    (0x300E, 0x58),
+
+    (0x3821, 0x26),
+    (0x4740, 0x21),
+
+    (0x3000, 0x00),
+    (0x3002, 0x00),
+    (0xFFFF, 50),
+]
+
+# Derived strictly from the working JPEG_VGA_REGS sequence, changing only the
+# resolution-dependent registers for a 1280x720 JPEG mode.
+JPEG_720P_REGS = [
+    (0xFFFF, 50),
+
+    (0x3820, 0x41),
+    (0x3821, 0x27),
+    (0x3814, 0x31),
+    (0x3815, 0x31),
+
+    (0x3800, 0x00),
+    (0x3801, 0x00),
+    (0x3802, 0x00),
+    (0x3803, 0xFA),
+    (0x3804, 0x0A),
+    (0x3805, 0x3F),
+    (0x3806, 0x06),
+    (0x3807, 0xA9),
+
+    (0x3808, 0x05),
+    (0x3809, 0x00),
+    (0x380A, 0x02),
+    (0x380B, 0xD0),
+
+    (0x380C, 0x0A),
+    (0x380D, 0x8C),
+    (0x380E, 0x04),
+    (0x380F, 0x80),
+
+    (0x3810, 0x00),
+    (0x3811, 0x10),
+    (0x3812, 0x00),
+    (0x3813, 0x06),
+    (0xFFFF, 50),
+
+    (0x3002, 0x00),
+    (0x3006, 0xFF),
+    (0x501F, 0x00),
+    (0x4300, 0x30),
+    (0x4407, 0x20),
+    (0x460B, 0x35),
+    (0x471C, 0x50),
+    (0x4713, 0x03),
+    (0x5001, 0x83),
+    (0x3503, 0x00),
+
+    (0x4602, 0x05),
+    (0x4603, 0x00),
+    (0x4604, 0x02),
+    (0x4605, 0xD0),
+    (0xFFFF, 50),
+
+    (0x3039, 0x00),
+    (0x3034, 0x1A),
+    (0x3035, 0x11),
+    (0x3036, 0x2D),
+    (0x3037, 0x13),
+    (0x3108, 0x16),
+    (0x3824, 0x04),
     (0x460C, 0x22),
     (0x3103, 0x13),
     (0x300E, 0x58),
@@ -257,6 +328,19 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
 
     if format == "jpeg" and resolution == "vga":
         camera.write_registers(BASE_REGS + JPEG_VGA_REGS)
+        if test_pattern:
+            camera.write_register(0x503D, 0xC0)
+        time.sleep_ms(50)
+        camera.start_cam(0)  # CAM_MODE_JPEG
+        try:
+            camera.stream_start()
+        except AttributeError:
+            pass
+        print(f"Camera reinitialized: format={format}, resolution={resolution}")
+        return
+
+    if format == "jpeg" and resolution == "720p":
+        camera.write_registers(BASE_REGS + JPEG_720P_REGS)
         if test_pattern:
             camera.write_register(0x503D, 0xC0)
         time.sleep_ms(50)
@@ -334,41 +418,6 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
             camera.write_register(0x4407, 0x20) # Modest compression for VGA
             #camera.write_register(0x3035, 0x11) # WARNING: MAKE BLACK IMAGE with 0x3824 together sys_div=1 (faster clock, was 0x21)
             camera.write_register(0x3824, 0x02) # PCLK ratio=2 (was 0x10)
-
-        elif resolution == "720p":
-            # 720p (1280x720) config 
-            camera.write_register(0x3820, 0x41) 
-            camera.write_register(0x3814, 0x31) # X_INC (subsample x2)
-            camera.write_register(0x3815, 0x31) # Y_INC
-            camera.write_register(0x3824, 0x04) # PCLK ratio=4 (safe for 720p)
-
-            # 16:9 2592x1458 window (cropped vertically)
-            camera.write_register(0x3800, 0x00)
-            camera.write_register(0x3801, 0x00)
-            camera.write_register(0x3802, 0x00)
-            camera.write_register(0x3803, 0xF3) # Y_ST = 243
-            camera.write_register(0x3804, 0x0A)
-            camera.write_register(0x3805, 0x1F) # X_END = 2591
-            camera.write_register(0x3806, 0x06)
-            camera.write_register(0x3807, 0xA5) # Y_END = 1701
-
-            camera.write_register(0x3808, 0x05) # X Out (1280)
-            camera.write_register(0x3809, 0x00)
-            camera.write_register(0x380a, 0x02) # Y Out (720)
-            camera.write_register(0x380b, 0xd0)
-
-            camera.write_register(0x4602, 0x05) # VFIFO (1280)
-            camera.write_register(0x4603, 0x00)
-            camera.write_register(0x4604, 0x02) # VFIFO (720)
-            camera.write_register(0x4605, 0xd0)
-
-            camera.write_register(0x380c, 0x0A) # HTS (Increase timing for 720p)
-            camera.write_register(0x380d, 0x8C)
-            camera.write_register(0x380e, 0x04) # VTS
-            camera.write_register(0x380f, 0x80)
-
-            # Better compression now that X_INC is fixed and subsampling properly reduces frame size
-            camera.write_register(0x4407, 0x10)
 
     elif format == "rgb565":
         # === RGB565 Base settings (240x320 portrait) ===
