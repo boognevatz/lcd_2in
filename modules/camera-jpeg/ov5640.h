@@ -29,7 +29,7 @@
 #ifndef _OV5640_H
 #define _OV5640_H
 
-#define FW_VERSION "jpeg-0.6.1"
+#define FW_VERSION "1.0"
 
 #include <stdio.h>
 #include "pico/stdlib.h"

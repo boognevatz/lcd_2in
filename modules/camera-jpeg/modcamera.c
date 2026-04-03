@@ -403,6 +403,60 @@ static mp_obj_t camera_capture_head(void) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(camera_capture_head_obj, camera_capture_head);
 
+// Send ONLY frame data from read buffer to socket (no boundary/headers).
+// Caller must hold read lock (start_read) and send boundary+headers first.
+// Returns: True = sent, False = error/disconnect, None = no frame ready
+static mp_obj_t camera_send_raw_frame_c(mp_obj_t socket_obj) {
+    if (!buffer_ready || !read_in_progress) {
+        return mp_const_none;
+    }
+
+    int errcode;
+    const size_t chunk_size = 16384;
+    const size_t frame_size = cam_get_frame_size();
+    size_t total_sent = 0;
+
+    while (total_sent < frame_size) {
+        size_t to_send = frame_size - total_sent;
+        if (to_send > chunk_size) {
+            to_send = chunk_size;
+        }
+
+        mp_uint_t ret = mp_stream_write_exactly(socket_obj, cam_python_read_buf + total_sent, to_send, &errcode);
+        if (ret == MP_STREAM_ERROR || ret == 0) {
+            return mp_const_false;
+        }
+
+        total_sent += ret;
+    }
+
+    return mp_const_true;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_send_raw_frame_c_obj, camera_send_raw_frame_c);
+
+// Combined stream info — returns tuple:
+// (frame_size, soi_pos, eoi_pos, buffer_ready, vsync_count, fps_x10, isr_us)
+// One C call replaces multiple individual calls per frame.
+static mp_obj_t camera_get_stream_info(void) {
+    uint32_t frame_size;
+    int32_t soi_pos, eoi_pos;
+    bool ready;
+    uint32_t vsync_count, fps_x10, isr_us;
+
+    cam_get_stream_info(&frame_size, &soi_pos, &eoi_pos, &ready, &vsync_count, &fps_x10, &isr_us);
+
+    mp_obj_t items[7];
+    items[0] = mp_obj_new_int(frame_size);
+    items[1] = mp_obj_new_int(soi_pos);
+    items[2] = mp_obj_new_int(eoi_pos);
+    items[3] = mp_obj_new_bool(ready);
+    items[4] = mp_obj_new_int(vsync_count);
+    items[5] = mp_obj_new_int(fps_x10);
+    items[6] = mp_obj_new_int(isr_us);
+    return mp_obj_new_tuple(7, items);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(camera_get_stream_info_obj, camera_get_stream_info);
+
 // Get firmware version string
 static mp_obj_t camera_fw_version(void) {
     return mp_obj_new_str(FW_VERSION, strlen(FW_VERSION));
@@ -431,9 +485,11 @@ static const mp_rom_map_elem_t camera_module_globals_table[] = {
     // C-level streaming functions
     { MP_ROM_QSTR(MP_QSTR_send_frame_over_eth), MP_ROM_PTR(&camera_send_frame_over_eth_obj) },
     { MP_ROM_QSTR(MP_QSTR_send_frame_data_c), MP_ROM_PTR(&camera_send_frame_data_c_obj) },
+    { MP_ROM_QSTR(MP_QSTR_send_raw_frame_c), MP_ROM_PTR(&camera_send_raw_frame_c_obj) },
     { MP_ROM_QSTR(MP_QSTR_stream_loop_c), MP_ROM_PTR(&camera_stream_loop_c_obj) },
-    // JPEG frame size
+    // JPEG frame size + combined stream info
     { MP_ROM_QSTR(MP_QSTR_get_frame_size), MP_ROM_PTR(&camera_get_frame_size_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_stream_info), MP_ROM_PTR(&camera_get_stream_info_obj) },
     // VSYNC frame-end edge and diagnostics
     { MP_ROM_QSTR(MP_QSTR_set_vsync_end_on_rising), MP_ROM_PTR(&camera_set_vsync_end_on_rising_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_vsync_end_on_rising), MP_ROM_PTR(&camera_get_vsync_end_on_rising_obj) },

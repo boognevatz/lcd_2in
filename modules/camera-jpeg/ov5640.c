@@ -67,7 +67,7 @@ const uint16_t sensor_default_regs[][2] = {
     {0x5003, 0x08},//special_effect
 
     //unknown
-    {0x370c, 0x02},//!!IMPORTANT
+    {0x370c, 0x03},//analog bias (all ref drivers use 0x03, OV5640-1B fix)
     {0x3634, 0x40},//!!IMPORTANT
 
     //AEC/AGC
@@ -79,16 +79,16 @@ const uint16_t sensor_default_regs[][2] = {
     {0x3a0b, 0xf6},
     {0x3a0d, 0x04},
     {0x3a0e, 0x03},
-    {0x3a0f, 0x30},//ae_level
-    {0x3a10, 0x28},//ae_level
+    {0x3a0f, 0x28},//ae_level high (tuned for highlight/detail balance)
+    {0x3a10, 0x20},//ae_level low
     {0x3a11, 0x60},//ae_level
     {0x3a13, 0x43},
     {0x3a14, 0x03},
     {0x3a15, 0xd8},
     {0x3a18, 0x00},//gainceiling
     {0x3a19, 0xf8},//gainceiling
-    {0x3a1b, 0x30},//ae_level
-    {0x3a1e, 0x26},//ae_level
+    {0x3a1b, 0x28},//ae_level fast-mode high
+    {0x3a1e, 0x18},//ae_level fast-mode low
     {0x3a1f, 0x14},//ae_level
 
     //vcm debug
@@ -111,6 +111,7 @@ const uint16_t sensor_default_regs[][2] = {
     //BLC
     {0x4001, 0x02},
     {0x4004, 0x02},
+    {0x4005, 0x1a},//BLC always-update (OV5640-1B blue channel fix)
 
     //AWB — OV5640-1B manufacturer calibration
     {0x5180, 0xff},
@@ -223,13 +224,13 @@ const uint16_t sensor_default_regs[][2] = {
     {0x538b, 0x98},
 
     //CIP control (Sharpness)
-    {0x5300, 0x10},//sharpness
-    {0x5301, 0x10},//sharpness
-    {0x5302, 0x18},//sharpness
-    {0x5303, 0x19},//sharpness
+    {0x5300, 0x20},//sharpness MT thresh1 (increased for detail)
+    {0x5301, 0x20},//sharpness MT thresh2
+    {0x5302, 0x10},//sharpness MT offset1 (lower=stronger)
+    {0x5303, 0x10},//sharpness MT offset2
     {0x5304, 0x10},
     {0x5305, 0x10},
-    {0x5306, 0x08},//denoise
+    {0x5306, 0x04},//denoise thresh (lower=more detail preserved)
     {0x5307, 0x16},
     {0x5308, 0x40},
     {0x5309, 0x10},//sharpness
@@ -376,11 +377,11 @@ void sccb_init(const uint32_t sda_pin, const uint32_t scl_pin)
     // PLL configuration for 37MHz XCLK (scaled from manufacturer's 24MHz values)
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_5, 0x00);
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_0, 0x1A);
-    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_1, 0x21);  // sys_div=2 (was 0x11)
-    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_2, 0x2D);  // mult=45 (was 11, scaled 70*24/37)
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_1, 0x11);  // sys_div=1 (was 2)
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_2, 0x2D);  // mult=45 (VCO=555MHz, mult=70 too fast for PIO)
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SC_PLL_CONTRL_3, 0x13);  // prediv (manufacturer value)
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SYSTEM_ROOT_DIVIDER, 0x16);
-    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,PCLK_RATIO, 0x10);       // ratio=16 for clean PIO capture
+    OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,PCLK_RATIO, 0x02);       // ratio=2 (ratio=1 too fast for PIO)
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,VFIFO_CTRL0C, 0x22);
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,SCCB_SYSTEM_CTRL1, 0x13);
     OV5640_WR_Reg(ov5640_i2c,ov5640_cam_addr,0x300e, 0x58);           // DVP control (was missing)

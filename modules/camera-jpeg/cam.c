@@ -157,6 +157,12 @@ static volatile uint32_t jpeg_last_sample_ff = 0;
 static volatile uint32_t jpeg_last_sample_len = 0;
 static uint8_t cam_capture_head[32]; // first 32 bytes of last capture
 
+// ISR-level FPS counter: tracks completed frames per second
+static volatile uint32_t fps_frame_count = 0;       // frames since last FPS calc
+static volatile uint32_t fps_last_calc_us = 0;       // timestamp of last FPS calc
+static volatile uint32_t fps_value_x10 = 0;          // FPS * 10 (e.g., 125 = 12.5fps)
+static volatile uint32_t isr_duration_us = 0;        // last ISR duration in microseconds
+
 uint8_t pin_i2c1_sda = 22; // default on RP2350 touch 2in
 uint8_t pin_i2c1_scl = 23; // default on RP2350 touch 2in
 uint8_t pin_xclk_pwm = 11; // GPIO11 (camera's xclk(24MHz))
@@ -183,8 +189,7 @@ function:   Shared frame finalization path
             Aborts DMA, swaps buffers, restarts capture. Minimal ISR work.
 ********************************************************************************/
 static void finalize_capture_and_restart(void) {
-    // ULTRA-FAST: abort → swap → restart FIRST, then analyze.
-    // This ensures PIO/DMA restart within microseconds to catch next frame's SOI.
+    uint32_t isr_start_us = time_us_32();
 
     // 1. Abort DMA and stop PIO
     dma_channel_abort(DMA_CAM_RD_CH);
@@ -218,32 +223,52 @@ static void finalize_capture_and_restart(void) {
     pio_sm_restart(pio_cam, sm_cam);
     pio_sm_set_enabled(pio_cam, sm_cam, true);
 
-    // 5. NOW analyze the captured buffer (safe — it's the read buffer now)
-    jpeg_write_size = write_offset;
-    uint32_t head_len = (write_offset < 32) ? write_offset : 32;
-    memcpy(cam_capture_head, captured_buf, head_len);
+    // 5. Analyze captured buffer — only when we swapped (read not in progress).
+    //    When read_in_progress, Python is mid-send using jpeg_frame_size — must not touch it.
+    //    Also captured_buf == write buf which DMA is already refilling (step 4).
+    if (write_offset > 0 && !read_in_progress) {
+        jpeg_write_size = write_offset;
+        uint32_t head_len = (write_offset < 32) ? write_offset : 32;
+        memcpy(cam_capture_head, captured_buf, head_len);
 
-    uint32_t sample_len = (write_offset < 4096) ? write_offset : 4096;
-    jpeg_last_sample_len = sample_len;
-    uint32_t ff_count = 0, nz_count = 0;
-    for (uint32_t i = 0; i < sample_len; i++) {
-        if (captured_buf[i] != 0) nz_count++;
-        if (captured_buf[i] == 0xFF) ff_count++;
-    }
-    jpeg_last_sample_nonzero = nz_count;
-    jpeg_last_sample_ff = ff_count;
-
-    jpeg_last_soi_pos = -1;
-    jpeg_last_eoi_pos = -1;
-    for (uint32_t i = 0; i + 1 < write_offset; i++) {
-        if (captured_buf[i] == 0xFF) {
-            if (captured_buf[i+1] == 0xD8 && jpeg_last_soi_pos == -1) {
+        // SOI: scan first 16 bytes only (always at or near byte 0)
+        jpeg_last_soi_pos = -1;
+        uint32_t soi_limit = (write_offset < 16) ? write_offset : 16;
+        for (uint32_t i = 0; i + 1 < soi_limit; i++) {
+            if (captured_buf[i] == 0xFF && captured_buf[i+1] == 0xD8) {
                 jpeg_last_soi_pos = (int32_t)i;
-            }
-            if (captured_buf[i+1] == 0xD9) {
-                jpeg_last_eoi_pos = (int32_t)i;
+                break;
             }
         }
+
+        // EOI: scan forward from SOI (or byte 0), stop at first FF D9.
+        jpeg_last_eoi_pos = -1;
+        if (write_offset >= 2) {
+            uint32_t eoi_start = (jpeg_last_soi_pos >= 0) ? (uint32_t)jpeg_last_soi_pos + 2 : 2;
+            for (uint32_t i = eoi_start; i + 1 < write_offset; i++) {
+                if (captured_buf[i] == 0xFF && captured_buf[i+1] == 0xD9) {
+                    jpeg_last_eoi_pos = (int32_t)i;
+                    break;
+                }
+            }
+        }
+
+        // Set frame size to actual JPEG end
+        if (jpeg_last_eoi_pos >= 0) {
+            jpeg_frame_size = (uint32_t)(jpeg_last_eoi_pos + 2);
+        }
+    }
+
+    isr_duration_us = time_us_32() - isr_start_us;
+
+    // FPS counter: calculate every 1 second (1,000,000 us)
+    fps_frame_count++;
+    uint32_t now_us = time_us_32();
+    uint32_t elapsed_us = now_us - fps_last_calc_us;
+    if (elapsed_us >= 1000000) {
+        fps_value_x10 = (fps_frame_count * 10000000) / elapsed_us;
+        fps_frame_count = 0;
+        fps_last_calc_us = now_us;
     }
 }
 
@@ -455,6 +480,30 @@ uint32_t cam_get_last_sample_len(void)
 const uint8_t* cam_get_capture_head(void)
 {
     return cam_capture_head;
+}
+
+uint32_t cam_get_fps_x10(void)
+{
+    return fps_value_x10;
+}
+
+uint32_t cam_get_isr_duration_us(void)
+{
+    return isr_duration_us;
+}
+
+void cam_get_stream_info(uint32_t *out_frame_size, int32_t *out_soi_pos,
+                         int32_t *out_eoi_pos, bool *out_ready,
+                         uint32_t *out_vsync_count, uint32_t *out_fps_x10,
+                         uint32_t *out_isr_us)
+{
+    *out_frame_size = jpeg_frame_size;
+    *out_soi_pos = jpeg_last_soi_pos;
+    *out_eoi_pos = jpeg_last_eoi_pos;
+    *out_ready = buffer_ready;
+    *out_vsync_count = vsync_frame_end_count;
+    *out_fps_x10 = fps_value_x10;
+    *out_isr_us = isr_duration_us;
 }
 
 

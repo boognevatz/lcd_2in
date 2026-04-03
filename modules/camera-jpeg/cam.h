@@ -89,6 +89,18 @@ const uint8_t* cam_get_capture_head(void); // first 32 bytes of last capture
 uint32_t cam_get_last_sample_ff(void);
 uint32_t cam_get_last_sample_len(void);
 
+// ISR-level FPS counter (frames per second * 10, e.g., 125 = 12.5fps)
+uint32_t cam_get_fps_x10(void);
+
+// ISR duration in microseconds (for bottleneck diagnosis)
+uint32_t cam_get_isr_duration_us(void);
+
+// Combined stream info — one call instead of multiple Python→C round-trips
+void cam_get_stream_info(uint32_t *out_frame_size, int32_t *out_soi_pos,
+                         int32_t *out_eoi_pos, bool *out_ready,
+                         uint32_t *out_vsync_count, uint32_t *out_fps_x10,
+                         uint32_t *out_isr_us);
+
 // Camera pin mapping struct for runtime configuration
 typedef struct {
     uint8_t d[8]; // D0-D7
