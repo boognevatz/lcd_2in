@@ -451,7 +451,16 @@
     <div id="main-row">
       <div id="viewer-left-column">
         <div id="viewer-card">
-          <div id="canvas-wrap">
+          <div id="view-controls" style="display: flex; gap: 8px; padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--border); justify-content: center; align-items: center; overflow-x: auto; flex-wrap: wrap;">
+            <span style="font-size: 12px; color: var(--muted);">View Size:</span>
+            <button class="nav-btn view-btn" data-size="auto" style="width: auto; padding: 0 10px; font-size: 12px;">Auto Fit</button>
+            <button class="nav-btn view-btn" data-size="native" style="width: auto; padding: 0 10px; font-size: 12px;">1:1 Native</button>
+            <button class="nav-btn view-btn" data-size="640x480" style="width: auto; padding: 0 10px; font-size: 12px;">640x480</button>
+            <button class="nav-btn view-btn" data-size="1280x720" style="width: auto; padding: 0 10px; font-size: 12px;">720p</button>
+            <button class="nav-btn view-btn" data-size="1920x1080" style="width: auto; padding: 0 10px; font-size: 12px;">1080p</button>
+          </div>
+
+          <div id="canvas-wrap" style="max-height: 80vh; overflow: hidden; display: flex; justify-content: center; align-items: center; position: relative;">
             <div id="img-dim" style="position: absolute; top: 16px; left: 16px; background: rgba(0,0,0,0.65); color: #fff; padding: 4px 6px; border-radius: 4px; font-size: 11px; font-family: monospace; pointer-events: none; z-index: 10;">Waiting...</div>
             <canvas id="canvas" width="240" height="320"></canvas>
           </div>
@@ -510,6 +519,55 @@
       const $optSwap = document.getElementById('opt-swap-bytes');
       const $optRB = document.getElementById('opt-swap-rb');
       const $optForceRGB = document.getElementById('opt-force-rgb565');
+      const $viewBtns = document.querySelectorAll('.view-btn');
+      const $canvasWrap = document.getElementById('canvas-wrap');
+
+      let currentViewMode = 'auto'; // 'auto', 'native', '640x480', '1280x720', '1920x1080'
+
+      function applyViewSize() {
+        // Reset defaults
+        $canvasWrap.style.overflow = 'hidden';
+        $canvas.style.maxWidth = '100%';
+        $canvas.style.maxHeight = '80vh';
+        $canvas.style.width = 'auto';
+        $canvas.style.height = 'auto';
+        $canvas.style.objectFit = 'contain';
+
+        if (currentViewMode !== 'auto') {
+          $canvasWrap.style.overflow = 'auto';
+          $canvas.style.maxWidth = 'none';
+          $canvas.style.maxHeight = 'none';
+
+          if (currentViewMode === 'native') {
+            $canvas.style.width = $canvas.width + 'px';
+            $canvas.style.height = $canvas.height + 'px';
+          } else {
+            const parts = currentViewMode.split('x');
+            $canvas.style.width = parts[0] + 'px';
+            $canvas.style.height = parts[1] + 'px';
+          }
+        }
+        
+        // Update button visual state
+        $viewBtns.forEach(b => {
+          if (b.dataset.size === currentViewMode) {
+            b.style.background = 'var(--accent)';
+            b.style.color = '#fff';
+          } else {
+            b.style.background = '';
+            b.style.color = '';
+          }
+        });
+      }
+
+      $viewBtns.forEach(b => {
+        b.addEventListener('click', (e) => {
+          currentViewMode = e.target.size || e.target.getAttribute('data-size');
+          applyViewSize();
+        });
+      });
+      applyViewSize();
+
       const ctx = $canvas.getContext('2d');
       ctx.imageSmoothingEnabled = false;
       const W = 240, H = 320;
@@ -774,6 +832,7 @@
             document.getElementById('img-dim').innerHTML = `<b>${img.naturalWidth}</b> x <b>${img.naturalHeight}</b> JPEG<br><span style="opacity:0.7">${formatBytes(eoiIndex)}</span>`;
             ctx.drawImage(img, 0, 0, $canvas.width, $canvas.height);
             URL.revokeObjectURL(url);
+            applyViewSize(); // Apply manually selected view size to the newly dimensioned canvas
         };
         img.src = url;
       }
