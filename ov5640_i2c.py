@@ -214,7 +214,7 @@ JPEG_VGA_REGS = [
     (0x3006, 0xFF),
     (0x501F, 0x00),
     (0x4300, 0x30),
-    (0x4407, 0x20),
+    (0x4407, 0x08),
     (0x460B, 0x35),
     (0x471C, 0x50),
     (0x4713, 0x03),
@@ -285,7 +285,7 @@ JPEG_720P_REGS = [
     (0x3006, 0xFF),
     (0x501F, 0x00),
     (0x4300, 0x30),
-    (0x4407, 0x20),
+    (0x4407, 0x08),
     (0x460B, 0x35),
     (0x471C, 0x50),
     (0x4713, 0x03),
@@ -356,7 +356,7 @@ JPEG_1080P_REGS = [
     (0x3006, 0xFF),
     (0x501F, 0x00),
     (0x4300, 0x30),
-    (0x4407, 0x38), # Heavy compression to ensure 1080p fits in 260KB!
+    (0x4407, 0x08), # Compression 0x08 (best quality) - 0.38 (worst quality)
     (0x460B, 0x35),
     (0x471C, 0x50),
     (0x4713, 0x03),
@@ -499,7 +499,7 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
             camera.write_register(0x380e, 0x04) # VTS
             camera.write_register(0x380f, 0x38)
 
-            camera.write_register(0x4407, 0x20) # Modest compression for VGA
+            camera.write_register(0x4407, 0x08) # Least compression for VGA
             #camera.write_register(0x3035, 0x11) # WARNING: MAKE BLACK IMAGE with 0x3824 together sys_div=1 (faster clock, was 0x21)
             camera.write_register(0x3824, 0x02) # PCLK ratio=2 (was 0x10)
 
