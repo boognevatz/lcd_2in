@@ -38,14 +38,14 @@
 #define RGB565_CAPTURE_HALF_FRAME_BYTES  (RGB565_FRAME_BYTES / 2)      // 76,800 captured bytes per half
 
 // JPEG streaming uses a larger real capture budget so 720p frames can span bigger halves.
-#define JPEG_CAPTURE_HALF_FRAME_BYTES  (130 * 1024)                    // 133,120 captured bytes per half
+#define JPEG_CAPTURE_HALF_FRAME_BYTES  (120 * 1024)                    // captured bytes per half
 #define TX_HALF_FRAME_BYTES            JPEG_CAPTURE_HALF_FRAME_BYTES    // transmitted bytes per half
 
-#define HALF_FRAME_XFERS_32BIT  (JPEG_CAPTURE_HALF_FRAME_BYTES / sizeof(uint32_t)) // 33,280 (JPEG: 4 bytes/word)
-#define HALF_FRAME_XFERS_16BIT  (RGB565_CAPTURE_HALF_FRAME_BYTES / sizeof(uint16_t)) // 38,400 (RGB565: 2 bytes/word)
-#define HALF_FRAME_XFERS        HALF_FRAME_XFERS_32BIT                // default (backward compat)
+#define HALF_FRAME_XFERS_32BIT  (JPEG_CAPTURE_HALF_FRAME_BYTES / sizeof(uint32_t)) // JPEG: 4 bytes/word
+#define HALF_FRAME_XFERS_16BIT  (RGB565_CAPTURE_HALF_FRAME_BYTES / sizeof(uint16_t)) // RGB565: 2 bytes/word
+#define HALF_FRAME_XFERS        HALF_FRAME_XFERS_32BIT                // default
 #define BUCKET_TAG_SIZE       20                                 // 20-byte tag (time_us + bucket tag + tx states + camera hint + isr_time_us)
-#define TAGGED_HALF_FRAME_BYTES (BUCKET_TAG_SIZE + TX_HALF_FRAME_BYTES) // 133,140
+#define TAGGED_HALF_FRAME_BYTES (BUCKET_TAG_SIZE + TX_HALF_FRAME_BYTES) 
 
 // Camera capture mode
 #define CAM_MODE_JPEG    0

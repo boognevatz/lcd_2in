@@ -527,6 +527,7 @@
       function applyViewSize() {
         // Reset defaults
         $canvasWrap.style.overflow = 'hidden';
+        $canvasWrap.style.maxHeight = '80vh';
         $canvas.style.maxWidth = '100%';
         $canvas.style.maxHeight = '80vh';
         $canvas.style.width = 'auto';
@@ -534,7 +535,9 @@
         $canvas.style.objectFit = 'contain';
 
         if (currentViewMode !== 'auto') {
-          $canvasWrap.style.overflow = 'auto';
+          $canvasWrap.style.overflowX = 'auto';
+          $canvasWrap.style.overflowY = 'hidden';
+          $canvasWrap.style.maxHeight = 'none';
           $canvas.style.maxWidth = 'none';
           $canvas.style.maxHeight = 'none';
 

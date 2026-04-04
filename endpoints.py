@@ -57,11 +57,29 @@ Connection: close
         .btn-stream-mode { background: #555; color: #fff; border: none; }
         #color-format-options { margin-top: 10px; }
         #color-format-options label { display: block; margin: 5px 0; }
+        
+        /* New View Sizing Styles */
+        #camera-canvas { border: 2px solid #0f0; display: block; max-width: 100%; max-height: 80vh; width: auto; height: auto; object-fit: contain; }
+        .view-btn { background: #444; color: #fff; border: 1px solid #666; padding: 4px 10px; cursor: pointer; font-size: 12px; margin-right: 4px; border-radius: 3px; }
+        .view-btn.active { background: #3b82f6; border-color: #2563eb; }
+        #canvas-wrap { position: relative; display: inline-flex; justify-content: center; align-items: center; overflow: hidden; max-height: 80vh; max-width: 100%; }
+        #img-dim { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,0.65); color: #fff; padding: 4px 6px; border-radius: 4px; font-size: 11px; font-family: monospace; pointer-events: none; z-index: 10; }
     </style>
 </head>
 <body>
     <h2>Camera Stream - Auto-Detect (JPEG/RGB565)</h2>
-    <canvas id="camera-canvas" width="240" height="320"></canvas>
+    <div id="view-controls" style="margin-bottom: 10px;">
+        <span style="font-size: 14px; margin-right: 8px;">View Size:</span>
+        <button class="view-btn active" data-size="auto">Auto Fit</button>
+        <button class="view-btn" data-size="native">1:1 Native</button>
+        <button class="view-btn" data-size="640x480">640x480</button>
+        <button class="view-btn" data-size="1280x720">720p</button>
+        <button class="view-btn" data-size="1920x1080">1080p</button>
+    </div>
+    <div id="canvas-wrap">
+        <div id="img-dim">Waiting...</div>
+        <canvas id="camera-canvas" width="240" height="320"></canvas>
+    </div>
     <div id="stats">
         <div class="metric">FPS: <span id="fps">0.00</span></div>
         <div class="metric">Frame: <span id="frame-count">0</span></div>
@@ -111,6 +129,63 @@ Connection: close
         <label><input type="radio" name="color-format" value="rbg"> r01234_b012345_g01234</label>
     </div>
     <script>
+        // ---- View Sizing Logic ----
+        const viewBtns = document.querySelectorAll('.view-btn');
+        const canvasWrap = document.getElementById('canvas-wrap');
+        const imgDim = document.getElementById('img-dim');
+        let currentViewMode = 'auto';
+
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+
+        function applyViewSize() {
+            canvasWrap.style.overflow = 'hidden';
+            canvasWrap.style.maxHeight = '80vh';
+            canvas.style.maxWidth = '100%';
+            canvas.style.maxHeight = '80vh';
+            canvas.style.width = 'auto';
+            canvas.style.height = 'auto';
+            canvas.style.objectFit = 'contain';
+
+            if (currentViewMode !== 'auto') {
+                canvasWrap.style.overflowX = 'auto';
+                canvasWrap.style.overflowY = 'hidden';
+                canvasWrap.style.maxHeight = 'none';
+                canvas.style.maxWidth = 'none';
+                canvas.style.maxHeight = 'none';
+
+                if (currentViewMode === 'native') {
+                    canvas.style.width = canvas.width + 'px';
+                    canvas.style.height = canvas.height + 'px';
+                } else {
+                    const parts = currentViewMode.split('x');
+                    canvas.style.width = parts[0] + 'px';
+                    canvas.style.height = parts[1] + 'px';
+                }
+            }
+
+            viewBtns.forEach(b => {
+                if (b.dataset.size === currentViewMode) {
+                    b.classList.add('active');
+                } else {
+                    b.classList.remove('active');
+                }
+            });
+        }
+
+        viewBtns.forEach(b => {
+            b.addEventListener('click', (e) => {
+                currentViewMode = e.target.dataset.size;
+                applyViewSize();
+            });
+        });
+        
         const canvas = document.getElementById('camera-canvas');
         const ctx = canvas.getContext('2d');
         const width = 240;
@@ -201,8 +276,10 @@ Connection: close
                         canvas.width = img.naturalWidth;
                         canvas.height = img.naturalHeight;
                     }
+                    imgDim.innerHTML = `<b>${img.naturalWidth}</b> x <b>${img.naturalHeight}</b> JPEG<br><span style="opacity:0.7">${formatBytes(eoiIndex)}</span>`;
                     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                     URL.revokeObjectURL(url);
+                    applyViewSize();
                     updateStats();
                 };
                 img.src = url;
@@ -254,7 +331,9 @@ Connection: close
                 di += 4;
             }
 
+            imgDim.innerHTML = `<b>${width}</b> x <b>${height}</b> RGB565<br><span style="opacity:0.7">Raw uncompressed</span>`;
             ctx.putImageData(imageData, 0, 0);
+            applyViewSize();
             updateStats();
         }
 
@@ -538,7 +617,7 @@ Connection: close
 
                         const headerBytes = buffer.slice(boundaryIndex, dataStart);
                         const headerText = new TextDecoder().decode(headerBytes);
-                        const contentLengthMatch = headerText.match(/Content-Length:\s*(\d+)/i);
+                        const contentLengthMatch = headerText.match(/Content-Length:\\s*(\\d+)/i);
                         const contentLength = contentLengthMatch ? parseInt(contentLengthMatch[1], 10) : rgb565FrameSize;
 
                         if (!Number.isFinite(contentLength) || buffer.length - dataStart < contentLength) {
