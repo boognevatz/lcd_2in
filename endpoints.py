@@ -82,11 +82,13 @@ Connection: close
         <button class="btn-stream-mode" onclick="switchStream('/streamc')">VGA JPEG</button>
         <button class="btn-stream-mode" onclick="switchStream('/streamc_rgb565')">RGB565</button>
         <button class="btn-stream-mode" onclick="switchStream('/streamc_720p')">720p JPEG</button>
+        <button class="btn-stream-mode" onclick="switchStream('/streamc_1080p')">1080p JPEG</button>
     </div>
     <div id="controls">
         <strong>Runtime Switch:</strong>
         <button class="btn-res" onclick="setCameraFormat('jpeg', 'vga')">VGA JPEG</button>
         <button class="btn-res" onclick="setCameraFormat('jpeg', '720p')">720p JPEG</button>
+        <button class="btn-res" onclick="setCameraFormat('jpeg', '1080p')">1080p JPEG</button>
         <button class="btn-res" onclick="setCameraFormat('rgb565', 'vga')">RGB565</button>
     </div>
     <div id="i2c-controls" style="margin-top: 10px; padding: 10px; border: 1px solid #555;">
@@ -184,7 +186,7 @@ Connection: close
                 );
 
                 let eoiIndex = jpegData.length;
-                for (let i = 0; i < jpegData.length - 1; i++) {
+                for (let i = jpegData.length - 2; i >= 0; i--) {
                     if (jpegData[i] === 0xFF && jpegData[i+1] === 0xD9) {
                         eoiIndex = i + 2;
                         break;
@@ -874,6 +876,12 @@ def handle_streamc_720p(cl, s, create_server_socket_fn):
     return _streamc_common(cl, s, create_server_socket_fn)
 
 
+def handle_streamc_1080p(cl, s, create_server_socket_fn):
+    """Handle /streamc_1080p endpoint - 1080p JPEG streaming"""
+    ov5640_i2c.set_format("jpeg", "1080p")
+    return _streamc_common(cl, s, create_server_socket_fn)
+
+
 # ============== DISPATCHER ==============
 
 def handle_getbarometer():
@@ -984,6 +992,9 @@ def handle_request(path, cl, s, create_server_socket_fn, set_head_led_brightness
         return None, new_s, True
     elif path == '/streamc_720p':
         new_s, _ = handle_streamc_720p(cl, s, create_server_socket_fn)
+        return None, new_s, True
+    elif path == '/streamc_1080p':
+        new_s, _ = handle_streamc_1080p(cl, s, create_server_socket_fn)
         return None, new_s, True
     elif path == "/":
         return handle_root(), s, False

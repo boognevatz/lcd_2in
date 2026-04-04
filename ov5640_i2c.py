@@ -317,10 +317,81 @@ JPEG_720P_REGS = [
     (0xFFFF, 50),
 ]
 
+# Derived strictly from the working JPEG_720P_REGS sequence, changing only the
+# resolution-dependent registers for a 1920x1080 JPEG mode (no subsampling).
+JPEG_1080P_REGS = [
+    (0xFFFF, 50),
+
+    (0x3820, 0x41),
+    (0x3821, 0x27),
+    (0x3814, 0x11), # 1x scaling (no subsampling)
+    (0x3815, 0x11),
+
+    (0x3800, 0x01), # X Start (336)
+    (0x3801, 0x50),
+    (0x3802, 0x01), # Y Start (434)
+    (0x3803, 0xB2),
+    (0x3804, 0x08), # X End (2287)
+    (0x3805, 0xEF),
+    (0x3806, 0x05), # Y End (1521)
+    (0x3807, 0xF1),
+
+    (0x3808, 0x07), # X Out (1920)
+    (0x3809, 0x80),
+    (0x380A, 0x04), # Y Out (1080)
+    (0x380B, 0x38),
+
+    (0x380C, 0x09), # HTS (2500)
+    (0x380D, 0xC4),
+    (0x380E, 0x04), # VTS (1120)
+    (0x380F, 0x60),
+
+    (0x3810, 0x00), # X offset (16)
+    (0x3811, 0x10),
+    (0x3812, 0x00), # Y offset (4)
+    (0x3813, 0x04),
+    (0xFFFF, 50),
+
+    (0x3002, 0x00),
+    (0x3006, 0xFF),
+    (0x501F, 0x00),
+    (0x4300, 0x30),
+    (0x4407, 0x38), # Heavy compression to ensure 1080p fits in 260KB!
+    (0x460B, 0x35),
+    (0x471C, 0x50),
+    (0x4713, 0x03),
+    (0x5001, 0x83), # Disable scaling, purely crop
+    (0x3503, 0x00),
+
+    (0x4602, 0x07), # VFIFO X (1920)
+    (0x4603, 0x80),
+    (0x4604, 0x04), # VFIFO Y (1080)
+    (0x4605, 0x38),
+    (0xFFFF, 50),
+
+    (0x3039, 0x00),
+    (0x3034, 0x1A),
+    (0x3035, 0x11),
+    (0x3036, 0x2D),
+    (0x3037, 0x13),
+    (0x3108, 0x16),
+    (0x3824, 0x04), # PCLK ratio=4 (Can be tweaked if 1080p drops DMA frames)
+    (0x460C, 0x22),
+    (0x3103, 0x13),
+    (0x300E, 0x58),
+
+    (0x3821, 0x26),
+    (0x4740, 0x21),
+
+    (0x3000, 0x00),
+    (0x3002, 0x00),
+    (0xFFFF, 50),
+]
+
 def set_format(format="jpeg", resolution="vga", test_pattern=False):
     """
     Switch camera formats dynamically at runtime.
-    resolution options: "vga" (640x480), "720p" (1280x720), "rgb565" (240x320 portrait)
+    resolution options: "vga" (640x480), "720p" (1280x720), "1080p" (1920x1080), "rgb565" (240x320 portrait)
     """
     # 1. Stop hardware gracefully
     camera.free_cam()
@@ -341,6 +412,19 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
 
     if format == "jpeg" and resolution == "720p":
         camera.write_registers(BASE_REGS + JPEG_720P_REGS)
+        if test_pattern:
+            camera.write_register(0x503D, 0xC0)
+        time.sleep_ms(50)
+        camera.start_cam(0)  # CAM_MODE_JPEG
+        try:
+            camera.stream_start()
+        except AttributeError:
+            pass
+        print(f"Camera reinitialized: format={format}, resolution={resolution}")
+        return
+
+    if format == "jpeg" and resolution == "1080p":
+        camera.write_registers(BASE_REGS + JPEG_1080P_REGS)
         if test_pattern:
             camera.write_register(0x503D, 0xC0)
         time.sleep_ms(50)

@@ -411,16 +411,14 @@
     }
 
     @media (max-width: 520px) {
-      #canvas {
-        width: 240px;
-        height: 320px;
+      #meta-panel {
+        width: 100%;
       }
     }
 
     @media (min-width: 900px) {
-      #canvas {
-        width: 480px;
-        height: 640px;
+      #main-row {
+        flex-direction: row;
       }
     }
   </style>
@@ -454,6 +452,7 @@
       <div id="viewer-left-column">
         <div id="viewer-card">
           <div id="canvas-wrap">
+            <div id="img-dim" style="position: absolute; top: 16px; left: 16px; background: rgba(0,0,0,0.65); color: #fff; padding: 4px 6px; border-radius: 4px; font-size: 11px; font-family: monospace; pointer-events: none; z-index: 10;">Waiting...</div>
             <canvas id="canvas" width="240" height="320"></canvas>
           </div>
 
@@ -740,6 +739,7 @@
           $canvas.width = W;
           $canvas.height = H;
         }
+        document.getElementById('img-dim').innerHTML = `<b>${W}</b> x <b>${H}</b> RGB565<br><span style="opacity:0.7">Raw uncompressed</span>`;
         ctx.putImageData(imageData, 0, 0);
       }
 
@@ -756,7 +756,7 @@
         );
 
         let eoiIndex = jpegData.length;
-        for (let i = 0; i < jpegData.length - 1; i++) {
+        for (let i = jpegData.length - 2; i >= 0; i--) {
             if (jpegData[i] === 0xFF && jpegData[i+1] === 0xD9) {
                 eoiIndex = i + 2;
                 break;
@@ -771,6 +771,7 @@
                 $canvas.width = img.naturalWidth;
                 $canvas.height = img.naturalHeight;
             }
+            document.getElementById('img-dim').innerHTML = `<b>${img.naturalWidth}</b> x <b>${img.naturalHeight}</b> JPEG<br><span style="opacity:0.7">${formatBytes(eoiIndex)}</span>`;
             ctx.drawImage(img, 0, 0, $canvas.width, $canvas.height);
             URL.revokeObjectURL(url);
         };
