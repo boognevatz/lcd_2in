@@ -771,56 +771,70 @@ static void write_tx_vs_camera_header(tx_pair_mode_t pair_mode)
     }
 }
 
-static bool tx_pick_pair_common(
-    const uint32_t snap[3], uint8_t just_finished,
+static bool tx_pick_pair_camera_faster(
+    const uint32_t snap[3], const uint8_t snap_cement[3],
     uint8_t *tx_first_out, uint8_t *tx_second_out, int8_t *wait_upper_bucket_out
 ) {
-    uint8_t cand_a = (just_finished + 1) % 3;
-    uint8_t cand_b = (just_finished + 2) % 3;
+    (void)wait_upper_bucket_out;
 
-    *wait_upper_bucket_out = -1;
+    int32_t dirty_upper_frame = -1;
+    for (int i = 0; i < 3; i++) {
+        if (!bucket_is_valid(snap[i]) || !bucket_is_dirty(snap[i]) || !bucket_half_is_upper(snap[i])) {
+            continue;
+        }
 
-    // Order: Upper half goes first (spec rule).
-    bool a_upper = bucket_is_valid(snap[cand_a]) && bucket_half_is_upper(snap[cand_a]);
-    bool b_upper = bucket_is_valid(snap[cand_b]) && bucket_half_is_upper(snap[cand_b]);
-
-    if (a_upper && !b_upper) {
-        *tx_first_out = cand_a;
-        *tx_second_out = cand_b;
-    } else if (b_upper && !a_upper) {
-        *tx_first_out = cand_b;
-        *tx_second_out = cand_a;
-    } else {
-        // Tiebreaker: higher frame number first.
-        uint32_t fa = bucket_get_halfframe(snap[cand_a]);
-        uint32_t fb = bucket_get_halfframe(snap[cand_b]);
-        if (fb > fa) {
-            *tx_first_out = cand_b;
-            *tx_second_out = cand_a;
-        } else {
-            *tx_first_out = cand_a;
-            *tx_second_out = cand_b;
+        int32_t frame = (int32_t)(snap[i] >> BUCKET_FRAME_SHIFT);
+        if (frame > dirty_upper_frame) {
+            dirty_upper_frame = frame;
         }
     }
 
-    uint32_t hfa = bucket_get_halfframe(snap[cand_a]);
-    uint32_t hfb = bucket_get_halfframe(snap[cand_b]);
-    bool a_dirty_lower = bucket_is_dirty(snap[cand_a]) && !bucket_half_is_upper(snap[cand_a]);
-    bool b_dirty_lower = bucket_is_dirty(snap[cand_b]) && !bucket_half_is_upper(snap[cand_b]);
-    if (a_dirty_lower && hfb <= last_sent_half_frame) {
-        *wait_upper_bucket_out = cand_b;
-    } else if (b_dirty_lower && hfa <= last_sent_half_frame) {
-        *wait_upper_bucket_out = cand_a;
+    int best_upper = -1;
+    int best_lower = -1;
+    uint32_t best_frame = 0;
+    bool have_pair = false;
+
+    for (int i = 0; i < 3; i++) {
+        if (!bucket_is_valid(snap[i]) || !bucket_half_is_upper(snap[i])) {
+            continue;
+        }
+
+        uint32_t upper_frame = snap[i] >> BUCKET_FRAME_SHIFT;
+        if (snap_cement[i]) {
+            upper_frame += 1;
+        }
+
+        for (int j = 0; j < 3; j++) {
+            if (i == j || !bucket_is_valid(snap[j]) || bucket_half_is_upper(snap[j])) {
+                continue;
+            }
+
+            uint32_t lower_frame = snap[j] >> BUCKET_FRAME_SHIFT;
+            if (snap_cement[j] && dirty_upper_frame >= 0) {
+                lower_frame = (uint32_t)dirty_upper_frame;
+            }
+
+            if (upper_frame != lower_frame) {
+                continue;
+            }
+
+            if (!have_pair || upper_frame > best_frame) {
+                best_upper = i;
+                best_lower = j;
+                best_frame = upper_frame;
+                have_pair = true;
+            }
+        }
     }
 
-    return true;
-}
+    if (!have_pair) {
+        return false;
+    }
 
-static bool tx_pick_pair_camera_faster(
-    const uint32_t snap[3], uint8_t just_finished,
-    uint8_t *tx_first_out, uint8_t *tx_second_out, int8_t *wait_upper_bucket_out
-) {
-    return tx_pick_pair_common(snap, just_finished, tx_first_out, tx_second_out, wait_upper_bucket_out);
+    *tx_first_out = (uint8_t)best_upper;
+    *tx_second_out = (uint8_t)best_lower;
+    *wait_upper_bucket_out = -1;
+    return true;
 }
 
 static bool tx_pick_pair_warmup(
@@ -1063,7 +1077,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
                     snap, snap_cement, &tx_first, &tx_second, &wait_upper_bucket);
             } else {
                 have_choice = tx_pick_pair_camera_faster(
-                    snap, just_finished, &tx_first, &tx_second, &wait_upper_bucket);
+                    snap, snap_cement, &tx_first, &tx_second, &wait_upper_bucket);
             }
 
             if (!have_choice) {
