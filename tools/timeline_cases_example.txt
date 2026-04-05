@@ -1,0 +1,10 @@
+# Case header:
+# Buckets: (<A>,<B>,<C>), Hints: (<h1>,<h2>,<h3>), Steps: <optional limit>
+#
+# Expected timeline lines:
+# 01. Buckets: (<A>,<B>,<C>) | Hints: (<remaining hints>)
+
+Buckets: (5U,5L,+10U), Hints: (A,B,C)
+01. Buckets: (^5U,5L,~11L) | Hints: (B,C)
+02. Buckets: (~12U,^5L,11L) | Hints: (C)
+03. Buckets: (12U,~12L,^11L) | Hints: (-)
