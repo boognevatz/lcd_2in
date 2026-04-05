@@ -483,6 +483,7 @@ static uint32_t prev_lower_start_time_us;
 static uint32_t last_sent_half_frame;
 static int8_t   wait_upper_bucket;
 static uint32_t frame_count;
+static bool     warmup_manual_steer_done;
 static uint32_t accum_send_us;
 static uint32_t accum_total_us;
 static uint32_t accum_count;
@@ -993,6 +994,7 @@ function:   Initialize stream state. Call once before the batched stream loop.
 static mp_obj_t camera_stream_start(void) {
     first_frame = true;
     frame_count = 0;
+    warmup_manual_steer_done = false;
 
     // With A,B-only ISR rotation (when TX inactive), startup pair is always A,B.
     // Bucket A always has upper halves, B always has lower halves, C is idle.
@@ -1110,7 +1112,6 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
     // called during camera init without a subsequent stream_loop_c.
     if (first_frame) {
         cam_tx_active = true;
-        tx_force_camera_hints(2, 2, 2);
     }
 
     while (streaming && batch_sent < batch_size) {
@@ -1139,7 +1140,6 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 
             bool have_choice;
             if (pair_mode == TX_PAIR_MODE_WARMUP) {
-                tx_force_camera_hints(2, 2, 2);
                 have_choice = tx_pick_pair_warmup(
                     snap, just_finished, &tx_first, &tx_second, &wait_upper_bucket);
             } else if (pair_mode == TX_PAIR_MODE_CAMERA_SLOWER) {
@@ -1478,8 +1478,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         prev_lower_mid_cement[2] = bucket_tx_next_cemented[2];
         prev_lower_mid_time_us = mp_hal_ticks_us();
         apply_50_percent_protection(tx_second);
-        if (pair_mode == TX_PAIR_MODE_WARMUP) {
-            tx_force_camera_hints(2, 2, 2);
+        if (pair_mode == TX_PAIR_MODE_WARMUP && !warmup_manual_steer_done) {
+            tx_force_camera_hints(0, 1, 2);
+            warmup_manual_steer_done = true;
         }
 
         // Phase 2: send remaining 50%
