@@ -916,6 +916,7 @@
         const bucketsTx = map.get('X-Buckets-tx') || 'N/A';
         const lowerMidHints = map.get('X-Buckets-lower-mid-hints') || 'N/A';
         const upperStartTime = formatHeaderTime(map.get('X-Buckets-Upper-Start-time') || 'N/A');
+        const afterWaitTime = formatHeaderTime(map.get('X-Buckets-after-wait-time') || 'N/A');
         
         let bucketsCounterStr = 'N/A';
         const rawCamCounter = map.get('X-Buckets-halfframe-counter');
@@ -962,8 +963,8 @@
           ['PREV Buckets Lower start: ', bucketsPrevLowerStartValue],
           ['PREV Buckets Lower Mid hints', lowerMidHintsValue],
           ['PREV Buckets End', bucketsPrevEndValue],
-          ['Buckets Decision', upperStartTime + ' (cam=' + bucketsCounterStr + ')\n' + bucketsDecision],
-          ['Buckets After Wait', upperStartTime + ' (cam=' + bucketsCounterStr + ')\n' + bucketsAfterWait],
+          ['Buckets Decision Time', upperStartTime + ' (cam=' + bucketsCounterStr + ')\n' + bucketsDecision],
+          ['Buckets After Wait', afterWaitTime + ' (cam=' + bucketsCounterStr + ')\n' + bucketsAfterWait],
           ['Buckets Upper Start state', bucketsTx],
           ['Upper tag', formatBucketTag(upperTag)],
           ['Lower tag', formatBucketTag(lowerTag)]

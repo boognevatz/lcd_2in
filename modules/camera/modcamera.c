@@ -162,6 +162,8 @@ static char x_header_buckets_after_wait[] = "X-Buckets-after-wait: A,A,         
 #define X_HEADER_AFTER_WAIT_BUCKET_A_OFFSET 26
 #define X_HEADER_AFTER_WAIT_BUCKET_B_OFFSET 39
 #define X_HEADER_AFTER_WAIT_BUCKET_C_OFFSET 52
+static char x_header_buckets_after_wait_time[] = "X-Buckets-after-wait-time: 0000000000000\r\n";
+#define X_HEADER_AFTER_WAIT_TIME_OFFSET 27
 static char x_header_upper_start_time[] = "X-Buckets-Upper-Start-time: 0000000000000\r\n";
 #define X_HEADER_UPPER_START_TIME_OFFSET 28
 
@@ -476,6 +478,7 @@ static uint8_t  prev_lower_start_cement[3];
 static uint32_t prev_upper_end_time_us;
 static uint32_t prev_end_time_us;
 static uint32_t upper_start_time_us;
+static uint32_t after_wait_time_us;
 static uint32_t buckets_time_counter;
 static uint32_t prev_upper_start_time_us;
 static uint32_t prev_lower_mid_time_us;
@@ -1016,6 +1019,7 @@ static mp_obj_t camera_stream_start(void) {
     prev_upper_end_time_us = 0;
     prev_end_time_us = 0;
     upper_start_time_us = mp_hal_ticks_us();
+    after_wait_time_us = upper_start_time_us;
     buckets_time_counter = cam_counter;
     prev_upper_start_time_us = 0;
     prev_lower_mid_time_us = 0;
@@ -1136,6 +1140,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             snap_hints[1] = cam_hint_next_next;
             snap_hints[2] = cam_hint_next_next_next;
             upper_start_time_us = mp_hal_ticks_us();
+            after_wait_time_us = upper_start_time_us;
             buckets_time_counter = cam_counter;
 
             bool have_choice;
@@ -1158,7 +1163,21 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
                 uint8_t hint_bucket = 3 - tx_first - tx_second;
                 tx_force_camera_hints(hint_bucket, hint_bucket, hint_bucket);
             }
+            if (pair_mode == TX_PAIR_MODE_CAMERA_FASTER && wait_upper_bucket < 0) {
+                uint32_t fast_tx_wait_us = speed_tx_us / 5; // wait 20%
+                if (fast_tx_wait_us > 0) {
+                    mp_hal_delay_us(fast_tx_wait_us);
 
+                    snap[0] = bucket_state[0];
+                    snap[1] = bucket_state[1];
+                    snap[2] = bucket_state[2];
+                    snap_cement[0] = bucket_tx_next_cemented[0];
+                    snap_cement[1] = bucket_tx_next_cemented[1];
+                    snap_cement[2] = bucket_tx_next_cemented[2];
+                    after_wait_time_us = mp_hal_ticks_us();
+                    buckets_time_counter = cam_counter;
+                }
+            }
             if (wait_upper_bucket >= 0) {
                 while (true) {
                     uint32_t s = bucket_state[wait_upper_bucket];
@@ -1174,7 +1193,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
                 snap_cement[0] = bucket_tx_next_cemented[0];
                 snap_cement[1] = bucket_tx_next_cemented[1];
                 snap_cement[2] = bucket_tx_next_cemented[2];
-                upper_start_time_us = mp_hal_ticks_us();
+                after_wait_time_us = mp_hal_ticks_us();
                 buckets_time_counter = cam_counter;
                 wait_upper_bucket = -1;
             }
@@ -1243,7 +1262,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
                     snap_cement[0] = bucket_tx_next_cemented[0];
                     snap_cement[1] = bucket_tx_next_cemented[1];
                     snap_cement[2] = bucket_tx_next_cemented[2];
-                    upper_start_time_us = mp_hal_ticks_us();
+                    after_wait_time_us = mp_hal_ticks_us();
                     buckets_time_counter = cam_counter;
                 }
             }
@@ -1279,6 +1298,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         write_u32_grouped(&x_header_prev_upper_end_time[X_HEADER_PREV_UPPER_END_TIME_OFFSET], prev_upper_end_time_us);
         write_u32_grouped(&x_header_prev_end_time[X_HEADER_PREV_END_TIME_OFFSET], prev_end_time_us);
         write_u32_grouped(&x_header_upper_start_time[X_HEADER_UPPER_START_TIME_OFFSET], upper_start_time_us);
+        write_u32_grouped(&x_header_buckets_after_wait_time[X_HEADER_AFTER_WAIT_TIME_OFFSET], after_wait_time_us);
         write_u32_grouped(&x_header_buckets_halfframe_counter[X_HEADER_BUCKETS_COUNTER_OFFSET], buckets_time_counter);
         write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], bucket_tx_state[0]);
         write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], bucket_tx_state[1]);
@@ -1343,6 +1363,9 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
         ret = mp_stream_write_exactly(socket_obj, x_header_buckets_after_wait, sizeof(x_header_buckets_after_wait) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+        ret = mp_stream_write_exactly(socket_obj, x_header_buckets_after_wait_time, sizeof(x_header_buckets_after_wait_time) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
         ret = mp_stream_write_exactly(socket_obj, x_header_upper_start_time, sizeof(x_header_upper_start_time) - 1, &errcode);
@@ -1478,9 +1501,13 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         prev_lower_mid_cement[2] = bucket_tx_next_cemented[2];
         prev_lower_mid_time_us = mp_hal_ticks_us();
         apply_50_percent_protection(tx_second);
-        if (pair_mode == TX_PAIR_MODE_WARMUP && !warmup_manual_steer_done) {
-            tx_force_camera_hints(0, 1, 2);
-            warmup_manual_steer_done = true;
+        if (pair_mode == TX_PAIR_MODE_WARMUP) {
+            if (frame_count == 0 || frame_count == 1) {
+                tx_force_camera_hints(2, 2, 2);
+            } else if (frame_count == 2 && !warmup_manual_steer_done) {
+                tx_force_camera_hints(0, 1, 2);
+                warmup_manual_steer_done = true;
+            }
         }
 
         // Phase 2: send remaining 50%

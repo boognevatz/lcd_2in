@@ -44,7 +44,7 @@ Connection: close
     <title>Camera Stream</title>
     <style>
         body { margin: 20px; font-family: Arial, sans-serif; background: #222; color: #fff; }
-        #camera-canvas { border: 2px solid #0f0; display: block; }
+        #camera-canvas { border: 2px solid #000; display: block; }
         #stats { margin-top: 10px; font-size: 16px; }
         .metric { display: inline-block; margin-right: 20px; padding: 5px 10px; background: #333; }
         #controls { margin-top: 10px; }
@@ -59,7 +59,7 @@ Connection: close
         #color-format-options label { display: block; margin: 5px 0; }
         
         /* New View Sizing Styles */
-        #camera-canvas { border: 2px solid #0f0; display: block; max-width: 100%; max-height: 80vh; width: auto; height: auto; object-fit: contain; }
+        #camera-canvas { border: 2px solid #000; display: block; max-width: 100%; max-height: 80vh; width: auto; height: auto; object-fit: contain; }
         .view-btn { background: #444; color: #fff; border: 1px solid #666; padding: 4px 10px; cursor: pointer; font-size: 12px; margin-right: 4px; border-radius: 3px; }
         .view-btn.active { background: #3b82f6; border-color: #2563eb; }
         #canvas-wrap { position: relative; display: inline-flex; justify-content: center; align-items: center; overflow: hidden; max-height: 80vh; max-width: 100%; }
@@ -97,7 +97,7 @@ Connection: close
     </div>
     <div id="controls">
         <strong>Direct Stream:</strong>
-        <button class="btn-stream-mode" onclick="switchStream('/streamc')">VGA JPEG</button>
+        <button class="btn-stream-mode" onclick="switchStream('/streamc_vga')">VGA JPEG</button>
         <button class="btn-stream-mode" onclick="switchStream('/streamc_rgb565')">RGB565</button>
         <button class="btn-stream-mode" onclick="switchStream('/streamc_720p')">720p JPEG</button>
         <button class="btn-stream-mode" onclick="switchStream('/streamc_1080p')">1080p JPEG</button>
