@@ -28,7 +28,7 @@ BASE_REGS = [
 
     (0x4713, 0x02), # jpg mode select
 
-    (0x5001, 0x83), # ISP_CONTROL_01: turn color matrix, awb and SDE
+    (0x5001, 0x81), # ISP_CONTROL_01: turn color matrix, awb and disable SDE
 
     # sys reset
     (0x3000, 0x20), # reset MCU
@@ -41,7 +41,7 @@ BASE_REGS = [
 
     # isp control
     (0x5000, 0xa7),
-    (0x5001, 0xa3), # ISP_CONTROL_01
+    (0x5001, 0xa1), # ISP_CONTROL_01
     (0x5003, 0x08), # special_effect
 
     # unknown
@@ -218,7 +218,7 @@ JPEG_VGA_REGS = [
     (0x460B, 0x35),
     (0x471C, 0x50),
     (0x4713, 0x03),
-    (0x5001, 0xA3),
+    (0x5001, 0xA1),
     (0x3503, 0x00),
 
     (0x4602, 0x02),
@@ -289,7 +289,7 @@ JPEG_720P_REGS = [
     (0x460B, 0x35),
     (0x471C, 0x50),
     (0x4713, 0x03),
-    (0x5001, 0x83),
+    (0x5001, 0x81),
     (0x3503, 0x00),
 
     (0x4602, 0x05),
@@ -448,7 +448,7 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
         camera.write_register(0x460b, 0x35) # JPEG marker enable
         camera.write_register(0x471c, 0x50) # DVP path
         camera.write_register(0x4713, 0x03) # JPEG mode 3
-        camera.write_register(0x5001, 0xa3) # ISP control
+        camera.write_register(0x5001, 0xa1) # ISP control
         camera.write_register(0x3503, 0x00) # Auto AEC
         camera.write_register(0x3821, 0x27) # Compress enable, HMIRROR, binning
 
