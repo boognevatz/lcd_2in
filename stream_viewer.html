@@ -947,9 +947,29 @@
         const lowerMidHintsValue = prevLowerMidTime + '\n' + lowerMidHints + '\n' + bucketsPrevLowerMid;
         const bucketsPrevEndValue = prevEndTime + '\n' + bucketsPrevEnd;
         
-        const speedCam = formatHeaderTime(map.get('X-Speed-Cam') || 'N/A');
-        const speedTx = formatHeaderTime(map.get('X-Speed-TX') || 'N/A');
-        const txVsCamera = map.get('X-TX-VS-CAMERA') || 'N/A';
+        const speedCamUpperStr = map.get('X-Speed-Cam-Upper');
+        const speedCamLowerStr = map.get('X-Speed-Cam-Lower');
+        const speedTxUpperStr = map.get('X-Speed-TX-Upper');
+        const speedTxLowerStr = map.get('X-Speed-TX-Lower');
+        
+        const cu = parseInt(speedCamUpperStr || '0', 10);
+        const cl = parseInt(speedCamLowerStr || '0', 10);
+        const tu = parseInt(speedTxUpperStr || '0', 10);
+        const tl = parseInt(speedTxLowerStr || '0', 10);
+        
+        const camTotal = cu + cl;
+        const txTotal = tu + tl;
+        
+        let clientVs = 'camera-faster';
+        if (camTotal > txTotal && camTotal !== 0 && txTotal !== 0) {
+           clientVs = 'camera-slower';
+        } else if (camTotal === 0 || txTotal === 0) {
+           clientVs = 'warmup';
+        }
+        
+        const speedCam = formatHeaderTime(camTotal.toString()) + ' (U: ' + formatHeaderTime(speedCamUpperStr || 'N/A') + ', L: ' + formatHeaderTime(speedCamLowerStr || 'N/A') + ')';
+        const speedTx = formatHeaderTime(txTotal.toString()) + ' (U: ' + formatHeaderTime(speedTxUpperStr || 'N/A') + ', L: ' + formatHeaderTime(speedTxLowerStr || 'N/A') + ')';
+        const txVsCamera = (map.get('X-TX-VS-CAMERA') || 'N/A') + ' (Client calculates: ' + clientVs + ')';
         const memFree = map.get('X-MemFree') || 'N/A';
 
         const rows = [

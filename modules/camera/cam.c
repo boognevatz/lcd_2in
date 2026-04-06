@@ -100,7 +100,8 @@ static volatile int32_t jpeg_last_eoi_pos = -1;
 static volatile uint32_t jpeg_last_sample_nonzero = 0;
 static volatile uint32_t jpeg_last_sample_ff = 0;
 static volatile uint32_t jpeg_last_sample_len = 0;
-volatile uint32_t speed_cam_us = 0;
+volatile uint32_t speed_cam_upper_us = 0;
+volatile uint32_t speed_cam_lower_us = 0;
 static volatile bool speed_cam_valid_data = true;
 static uint32_t last_half_complete_time_us = 0;
 static uint8_t cam_capture_head[32]; // first 32 bytes of last capture
@@ -282,7 +283,11 @@ static void handle_half_complete(uint32_t completed_ch)
     uint32_t now_us = time_us_32();
     ((uint32_t *)bucket[completed])[4] = now_us;
     if (speed_cam_valid_data && last_half_complete_time_us != 0) {
-        speed_cam_us = now_us - last_half_complete_time_us;
+        if (bucket_half_is_upper(bucket_state[completed])) {
+            speed_cam_upper_us = now_us - last_half_complete_time_us;
+        } else {
+            speed_cam_lower_us = now_us - last_half_complete_time_us;
+        }
     }
     speed_cam_valid_data = true; // reset for next call
     last_half_complete_time_us = now_us;

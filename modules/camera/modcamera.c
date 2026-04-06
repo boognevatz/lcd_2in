@@ -197,11 +197,14 @@ static char x_header_prev_lower_mid_time[] = "X-Buckets-Prev-Lower-Mid-time: 000
 static char x_header_prev_lower_start_time[] = "X-Buckets-Prev-Lower-Start-time: 0000000000000\r\n";
 #define X_HEADER_PREV_LOWER_START_TIME_OFFSET 33
 
-static char x_header_speed_cam[] = "X-Speed-Cam: 0000000000000\r\n";
-#define X_HEADER_SPEED_CAM_OFFSET 13
-
-static char x_header_speed_tx[] = "X-Speed-TX: 0000000000000\r\n";
-#define X_HEADER_SPEED_TX_OFFSET 12
+static char x_header_speed_cam_upper[] = "X-Speed-Cam-Upper: 0000000000000\r\n";
+#define X_HEADER_SPEED_CAM_UPPER_OFFSET 19
+static char x_header_speed_cam_lower[] = "X-Speed-Cam-Lower: 0000000000000\r\n";
+#define X_HEADER_SPEED_CAM_LOWER_OFFSET 19
+static char x_header_speed_tx_upper[] = "X-Speed-TX-Upper: 0000000000000\r\n";
+#define X_HEADER_SPEED_TX_UPPER_OFFSET 18
+static char x_header_speed_tx_lower[] = "X-Speed-TX-Lower: 0000000000000\r\n";
+#define X_HEADER_SPEED_TX_LOWER_OFFSET 18
 
 static char x_header_tx_vs_camera[] = "X-TX-VS-CAMERA: camera-slower\r\n";
 #define X_HEADER_TX_VS_CAMERA_OFFSET 16
@@ -491,7 +494,8 @@ static uint32_t accum_send_us;
 static uint32_t accum_total_us;
 static uint32_t accum_count;
 static uint32_t t_frame_start;
-static uint32_t speed_tx_us = 0;
+static uint32_t speed_tx_upper_us = 0;
+static uint32_t speed_tx_lower_us = 0;
 
 typedef enum {
     TX_PAIR_MODE_WARMUP = 0,
@@ -748,7 +752,10 @@ static tx_pair_mode_t tx_get_pair_mode(void) {
         return TX_PAIR_MODE_WARMUP;
     }
 
-    if (speed_cam_us > speed_tx_us && speed_cam_us != 0 && speed_tx_us != 0) {
+    uint32_t total_cam = speed_cam_upper_us + speed_cam_lower_us;
+    uint32_t total_tx = speed_tx_upper_us + speed_tx_lower_us;
+
+    if (total_cam > total_tx && total_cam != 0 && total_tx != 0) {
         return TX_PAIR_MODE_CAMERA_SLOWER;
     }
 
@@ -1164,7 +1171,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
                 tx_force_camera_hints(hint_bucket, hint_bucket, hint_bucket);
             }
             if (pair_mode == TX_PAIR_MODE_CAMERA_FASTER && wait_upper_bucket < 0) {
-                uint32_t fast_tx_wait_us = speed_tx_us / 5; // wait 20%
+                uint32_t fast_tx_wait_us = (speed_tx_upper_us + speed_tx_lower_us) / 5; // wait 20% of full frame
                 if (fast_tx_wait_us > 0) {
                     mp_hal_delay_us(fast_tx_wait_us);
 
@@ -1246,7 +1253,8 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             if (bucket_is_dirty(ws)) {
                 uint32_t wait_start = mp_hal_ticks_us();
                 // Fallback timeout for the first frame when speed stats are 0.
-                uint32_t timeout_us = (speed_cam_us != 0) ? (speed_cam_us * 2) : 500000;
+                uint32_t total_cam = speed_cam_upper_us + speed_cam_lower_us;
+                uint32_t timeout_us = (total_cam != 0) ? total_cam : 500000;
                 bool waited = false;
                 while (bucket_is_dirty(bucket_state[tx_first])) {
                     waited = true;
@@ -1307,8 +1315,10 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         write_u32_grouped(&x_header_prev_upper_start_time[X_HEADER_PREV_UPPER_START_TIME_OFFSET], prev_upper_start_time_us);
         write_u32_grouped(&x_header_prev_lower_mid_time[X_HEADER_PREV_LOWER_MID_TIME_OFFSET], prev_lower_mid_time_us);
         write_u32_grouped(&x_header_prev_lower_start_time[X_HEADER_PREV_LOWER_START_TIME_OFFSET], prev_lower_start_time_us);
-        write_u32_grouped(&x_header_speed_cam[X_HEADER_SPEED_CAM_OFFSET], speed_cam_us);
-        write_u32_grouped(&x_header_speed_tx[X_HEADER_SPEED_TX_OFFSET], speed_tx_us);
+        write_u32_grouped(&x_header_speed_cam_upper[X_HEADER_SPEED_CAM_UPPER_OFFSET], speed_cam_upper_us);
+        write_u32_grouped(&x_header_speed_cam_lower[X_HEADER_SPEED_CAM_LOWER_OFFSET], speed_cam_lower_us);
+        write_u32_grouped(&x_header_speed_tx_upper[X_HEADER_SPEED_TX_UPPER_OFFSET], speed_tx_upper_us);
+        write_u32_grouped(&x_header_speed_tx_lower[X_HEADER_SPEED_TX_LOWER_OFFSET], speed_tx_lower_us);
         write_tx_vs_camera_header(pair_mode);
         gc_info_t gc_info_state;
         gc_info(&gc_info_state);
@@ -1392,10 +1402,13 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         ret = mp_stream_write_exactly(socket_obj, x_header_prev_lower_start_time, sizeof(x_header_prev_lower_start_time) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
-        ret = mp_stream_write_exactly(socket_obj, x_header_speed_cam, sizeof(x_header_speed_cam) - 1, &errcode);
+        ret = mp_stream_write_exactly(socket_obj, x_header_speed_cam_upper, sizeof(x_header_speed_cam_upper) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
-
-        ret = mp_stream_write_exactly(socket_obj, x_header_speed_tx, sizeof(x_header_speed_tx) - 1, &errcode);
+        ret = mp_stream_write_exactly(socket_obj, x_header_speed_cam_lower, sizeof(x_header_speed_cam_lower) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+        ret = mp_stream_write_exactly(socket_obj, x_header_speed_tx_upper, sizeof(x_header_speed_tx_upper) - 1, &errcode);
+        if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+        ret = mp_stream_write_exactly(socket_obj, x_header_speed_tx_lower, sizeof(x_header_speed_tx_lower) - 1, &errcode);
         if (ret == MP_STREAM_ERROR) { streaming = false; break; }
 
         ret = mp_stream_write_exactly(socket_obj, x_header_tx_vs_camera, sizeof(x_header_tx_vs_camera) - 1, &errcode);
@@ -1459,7 +1472,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         prev_mid_cement[1] = bucket_tx_next_cemented[1];
         prev_mid_cement[2] = bucket_tx_next_cemented[2];
         prev_upper_end_time_us = mp_hal_ticks_us();
-        speed_tx_us = prev_upper_end_time_us - upper_time_us;
+        speed_tx_upper_us = prev_upper_end_time_us - upper_time_us;
 
         // --- Send second half-frame (20-byte tag + 76,800 bytes) ---
         // Split at 50%: send first 50%, apply protection swap, send rest.
@@ -1530,6 +1543,7 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         prev_end_cement[1] = bucket_tx_next_cemented[1];
         prev_end_cement[2] = bucket_tx_next_cemented[2];
         prev_end_time_us = mp_hal_ticks_us();
+        speed_tx_lower_us = prev_end_time_us - lower_time_us;
 
         first_frame = false;
         frame_count++;
@@ -1555,8 +1569,8 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
                 (unsigned long)avg_total,
                 (unsigned long)(fps_x10 / 10),
                 (unsigned long)(fps_x10 % 10),
-                (unsigned long)speed_cam_us,
-                (unsigned long)speed_tx_us);
+                (unsigned long)(speed_cam_upper_us + speed_cam_lower_us),
+                (unsigned long)(speed_tx_upper_us + speed_tx_lower_us));
             accum_send_us = 0;
             accum_total_us = 0;
             accum_count = 0;
@@ -1574,7 +1588,8 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
         cam_hint_next_next = -1;
         cam_hint_next_next_next = -1;
         cam_tx_active = false;
-        speed_tx_us = 0;
+        speed_tx_upper_us = 0;
+        speed_tx_lower_us = 0;
     }
 
     return mp_obj_new_int(batch_sent);
