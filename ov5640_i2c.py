@@ -41,7 +41,7 @@ BASE_REGS = [
 
     # isp control
     (0x5000, 0xa7),
-    (0x5001, 0xa1), # ISP_CONTROL_01
+    (0x5001, 0xa3), # ISP_CONTROL_01
     (0x5003, 0x08), # special_effect
 
     # unknown
@@ -164,6 +164,9 @@ BASE_REGS = [
     (0x5580, 0x06), (0x5583, 0x40), (0x5584, 0x40), (0x5586, 0x20),
     (0x5587, 0x00), (0x5588, 0x01), (0x5589, 0x10), (0x558a, 0x00),
     (0x558b, 0xf8), (0x501d, 0x40),
+    
+    # ISP color overflow fixes
+    (0x5025, 0x00), (0x5043, 0x44),
 
     # power on
     (0x3008, 0x02),
@@ -210,6 +213,12 @@ JPEG_VGA_REGS = [
     (0x3813, 0x06),
     (0xFFFF, 50),
 
+    # Analog Array Control (Subsampling fix)
+    (0x3618, 0x00),
+    (0x3612, 0x29),
+    (0x3708, 0x64),
+    (0x3709, 0x52),
+
     (0x3002, 0x00),
     (0x3006, 0xFF),
     (0x501F, 0x00),
@@ -218,7 +227,7 @@ JPEG_VGA_REGS = [
     (0x460B, 0x35),
     (0x471C, 0x50),
     (0x4713, 0x03),
-    (0x5001, 0xA1),
+    (0x5001, 0xA3),
     (0x3503, 0x00),
 
     (0x4602, 0x02),
@@ -238,8 +247,15 @@ JPEG_VGA_REGS = [
     (0x3103, 0x13),
     (0x300E, 0x58),
 
-    (0x3821, 0x26),
+    (0x3821, 0x27),
     (0x4740, 0x21),
+
+    # AEC/AWB Window for VGA (640x480)
+    (0x5680, 0x00), (0x5681, 0x00), # Start X = 0
+    (0x5682, 0x00), (0x5683, 0x00), # Start Y = 0
+    (0x5684, 0x02), (0x5685, 0x80), # End X = 640
+    (0x5686, 0x01), (0x5687, 0xE0), # End Y = 480
+
 
     (0x3000, 0x00),
     (0x3002, 0x00),
@@ -281,6 +297,12 @@ JPEG_720P_REGS = [
     (0x3813, 0x06),
     (0xFFFF, 50),
 
+    # Analog Array Control (Subsampling fix)
+    (0x3618, 0x00),
+    (0x3612, 0x29),
+    (0x3708, 0x64),
+    (0x3709, 0x52),
+
     (0x3002, 0x00),
     (0x3006, 0xFF),
     (0x501F, 0x00),
@@ -289,7 +311,7 @@ JPEG_720P_REGS = [
     (0x460B, 0x35),
     (0x471C, 0x50),
     (0x4713, 0x03),
-    (0x5001, 0x81),
+    (0x5001, 0x83),
     (0x3503, 0x00),
 
     (0x4602, 0x05),
@@ -309,8 +331,15 @@ JPEG_720P_REGS = [
     (0x3103, 0x13),
     (0x300E, 0x58),
 
-    (0x3821, 0x26),
+    (0x3821, 0x27),
     (0x4740, 0x21),
+
+    # AEC/AWB Window for 720p (1280x720)
+    (0x5680, 0x00), (0x5681, 0x00), # Start X = 0
+    (0x5682, 0x00), (0x5683, 0x00), # Start Y = 0
+    (0x5684, 0x05), (0x5685, 0x00), # End X = 1280
+    (0x5686, 0x02), (0x5687, 0xD0), # End Y = 720
+
 
     (0x3000, 0x00),
     (0x3002, 0x00),
@@ -448,7 +477,9 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
         camera.write_register(0x460b, 0x35) # JPEG marker enable
         camera.write_register(0x471c, 0x50) # DVP path
         camera.write_register(0x4713, 0x03) # JPEG mode 3
-        camera.write_register(0x5001, 0xa1) # ISP control
+        camera.write_register(0x5001, 0xa3) # ISP control
+        camera.write_register(0x5025, 0x00) # ISP color overflow fix
+        camera.write_register(0x5043, 0x44) # ISP color overflow fix
         camera.write_register(0x3503, 0x00) # Auto AEC
         camera.write_register(0x3821, 0x27) # Compress enable, HMIRROR, binning
 
@@ -499,9 +530,26 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
             camera.write_register(0x380e, 0x04) # VTS
             camera.write_register(0x380f, 0x38)
 
+            # Analog Array Control (Subsampling fix)
+            camera.write_register(0x3618, 0x00)
+            camera.write_register(0x3612, 0x29)
+            camera.write_register(0x3708, 0x64)
+            camera.write_register(0x3709, 0x52)
+
             camera.write_register(0x4407, 0x08) # Least compression for VGA
             #camera.write_register(0x3035, 0x11) # WARNING: MAKE BLACK IMAGE with 0x3824 together sys_div=1 (faster clock, was 0x21)
             camera.write_register(0x3824, 0x02) # PCLK ratio=2 (was 0x10)
+            
+            # AEC/AWB Window for VGA
+            camera.write_register(0x5680, 0x00) # Start X
+            camera.write_register(0x5681, 0x00)
+            camera.write_register(0x5682, 0x00) # Start Y
+            camera.write_register(0x5683, 0x00)
+            camera.write_register(0x5684, 0x02) # End X (640)
+            camera.write_register(0x5685, 0x80)
+            camera.write_register(0x5686, 0x01) # End Y (480)
+            camera.write_register(0x5687, 0xe0)
+            
 
     elif format == "rgb565":
         # === RGB565 Base settings (240x320 portrait) ===
@@ -541,6 +589,16 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
         camera.write_register(0x380d, 0x68)
         camera.write_register(0x380e, 0x03)
         camera.write_register(0x380f, 0xd8)
+
+        # AEC/AWB Window for RGB565 (240x320)
+        camera.write_register(0x5680, 0x00) # Start X
+        camera.write_register(0x5681, 0x00)
+        camera.write_register(0x5682, 0x00) # Start Y
+        camera.write_register(0x5683, 0x00)
+        camera.write_register(0x5684, 0x00) # End X (240)
+        camera.write_register(0x5685, 0xf0)
+        camera.write_register(0x5686, 0x01) # End Y (320)
+        camera.write_register(0x5687, 0x40)
 
     camera.write_register(0x3000, 0x00) # Release reset
     camera.write_register(0x3002, 0x00)

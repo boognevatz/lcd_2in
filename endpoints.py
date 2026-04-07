@@ -85,6 +85,7 @@ Connection: close
         <div class="metric">Frame: <span id="frame-count">0</span></div>
         <div class="metric">Status: <span id="status">Starting...</span></div>
         <div class="metric">Dropped halves: <span id="dropped-halves">0</span></div>
+        <div class="metric">Mem Free: <span id="mem-free">N/A</span></div>
     </div>
     <div id="controls">
         <button id="btn-stream" onclick="toggleStream()">Stop Stream</button>
@@ -617,8 +618,13 @@ Connection: close
 
                         const headerBytes = buffer.slice(boundaryIndex, dataStart);
                         const headerText = new TextDecoder().decode(headerBytes);
-                        const contentLengthMatch = headerText.match(/Content-Length:\\s*(\\d+)/i);
+                        const contentLengthMatch = headerText.match(/Content-Length:\s*(\d+)/i);
                         const contentLength = contentLengthMatch ? parseInt(contentLengthMatch[1], 10) : rgb565FrameSize;
+
+                        const memFreeMatch = headerText.match(/X-MemFree:\s*([\d\s]+)/i);
+                        if (memFreeMatch) {
+                            document.getElementById('mem-free').textContent = memFreeMatch[1].trim();
+                        }
 
                         if (!Number.isFinite(contentLength) || buffer.length - dataStart < contentLength) {
                             break; // Not enough data yet
