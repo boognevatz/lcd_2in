@@ -444,23 +444,6 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
         camera.write_register(0x380E, 0x04) # VTS MSB
         camera.write_register(0x380F, 0x1A) # VTS LSB = 1050
 
-        # 3. Restore and scale Auto-Exposure for the new 20fps line rate (48us/line).
-        # Without this, the camera thinks 10ms is still 295 lines, causing a dark image.
-        # This allows the camera to drop the framerate in dark scenes to expose properly.
-        camera.write_register(0x3a08, 0x00) # 50Hz band step MSB
-        camera.write_register(0x3a09, 0xD0) # 50Hz band step LSB (208 lines = 10ms)
-        camera.write_register(0x3a0a, 0x00) # 60Hz band step MSB
-        camera.write_register(0x3a0b, 0xAD) # 60Hz band step LSB (173 lines = 8.33ms)
-
-        # Increase the absolute maximum exposure limit to 3840 lines (184ms)
-        # so it can see in the dark (dropping to ~5.4 fps in pitch black).
-        camera.write_register(0x3a0d, 0x0F) # AEC max exposure MSB
-        camera.write_register(0x3a0e, 0x00) # AEC max exposure LSB
-
-        # Increase the AEC target level slightly for a brighter overall image
-        camera.write_register(0x3a0f, 0x38) # ae_level high
-        camera.write_register(0x3a10, 0x30) # ae_level low
-
         if test_pattern:
             camera.write_register(0x503D, 0xC0)
         time.sleep_ms(50)
