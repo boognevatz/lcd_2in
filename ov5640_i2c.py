@@ -540,9 +540,9 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
             camera.write_register(0x3708, 0x64)
             camera.write_register(0x3709, 0x52)
 
-            camera.write_register(0x4407, 0x08) # Least compression for VGA
-            #camera.write_register(0x3035, 0x11) # WARNING: MAKE BLACK IMAGE with 0x3824 together sys_div=1 (faster clock, was 0x21)
-            camera.write_register(0x3824, 0x02) # PCLK ratio=2 (was 0x10)
+            camera.write_register(0x4407, 0x10) # Reduced compression quality for higher FPS (was 0x08)
+            camera.write_register(0x3035, 0x11) # sys_div=1 (was 0x21)
+            camera.write_register(0x3824, 0x01) # PCLK ratio=1 (was 0x02)
             
             # AEC/AWB Window for VGA
             camera.write_register(0x5680, 0x00) # Start X
