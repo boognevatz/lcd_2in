@@ -444,12 +444,6 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
         camera.write_register(0x380E, 0x04) # VTS MSB
         camera.write_register(0x380F, 0x1A) # VTS LSB = 1050
 
-        # 3. Cap exposure so AEC never artificially drops framerate
-        # We cap max exposure to exactly VTS so it never drops below target fps.
-        # (Removed the write to 0x3a00 because 0x00 disabled Auto Exposure entirely!)
-        camera.write_register(0x3a15, 0x04) # Max exposure high = VTS (0x04)
-        camera.write_register(0x3a16, 0x1A) # Max exposure low  = VTS (0x1A)
-
         if test_pattern:
             camera.write_register(0x503D, 0xC0)
         time.sleep_ms(50)
