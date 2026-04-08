@@ -429,6 +429,26 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
 
     if format == "jpeg" and resolution == "vga":
         camera.write_registers(BASE_REGS + JPEG_VGA_REGS)
+
+        # --- Safe ~20fps VGA Profile for RP2350 ---
+        # 1. Double the PCLK from 14MHz to 28MHz by halving SYS_DIV.
+        camera.write_register(0x3035, 0x11) # sys_div=1 (was 0x21)
+        camera.write_register(0x3824, 0x02) # PCLK ratio=2 (keep safe default)
+
+        # 2. Reduce HTS and VTS blanking to hit ~20 fps
+        # IMPORTANT: VTS must be at least ~1050 to give the JPEG FIFO enough
+        # vertical blanking (76+ lines) to flush. 980 was too small and caused
+        # alternating corrupted frames!
+        camera.write_register(0x380C, 0x05) # HTS MSB
+        camera.write_register(0x380D, 0x46) # HTS LSB = 1350
+        camera.write_register(0x380E, 0x04) # VTS MSB
+        camera.write_register(0x380F, 0x1A) # VTS LSB = 1050
+
+        # 3. Cap exposure so AEC never artificially drops framerate
+        camera.write_register(0x3a00, 0x00) # Disable night mode
+        camera.write_register(0x3a15, 0x04) # Max exposure high = VTS (0x04)
+        camera.write_register(0x3a16, 0x1A) # Max exposure low  = VTS (0x1A)
+
         if test_pattern:
             camera.write_register(0x503D, 0xC0)
         time.sleep_ms(50)
