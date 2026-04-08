@@ -37,14 +37,19 @@
 #define RGB565_FRAME_BYTES       (CAM_FUL_SIZE * 2)                    // 153,600 real RGB565 image bytes
 #define RGB565_CAPTURE_HALF_FRAME_BYTES  (RGB565_FRAME_BYTES / 2)      // 76,800 captured bytes per half
 
-// JPEG streaming uses a larger real capture budget so 720p frames can span bigger halves.
-#define JPEG_CAPTURE_HALF_FRAME_BYTES  (120 * 1024)                    // captured bytes per half
+// JPEG streaming uses a larger real capture budget so 720p/1080p frames can span bigger halves.
+#define JPEG_CAPTURE_SUB_BUCKET_BYTES  (40 * 1024)                     // captured bytes per 40k chunk
+#define JPEG_SUB_BUCKET_COUNT          3
+#define JPEG_CAPTURE_HALF_FRAME_BYTES  (JPEG_CAPTURE_SUB_BUCKET_BYTES * JPEG_SUB_BUCKET_COUNT)
 #define TX_HALF_FRAME_BYTES            JPEG_CAPTURE_HALF_FRAME_BYTES    // transmitted bytes per half
+#define VGA_SUB_BUCKET_COUNT           (3 * JPEG_SUB_BUCKET_COUNT)
 
 #define HALF_FRAME_XFERS_32BIT  (JPEG_CAPTURE_HALF_FRAME_BYTES / sizeof(uint32_t)) // JPEG: 4 bytes/word
+#define SUB_BUCKET_XFERS_32BIT  (JPEG_CAPTURE_SUB_BUCKET_BYTES / sizeof(uint32_t))
 #define HALF_FRAME_XFERS_16BIT  (RGB565_CAPTURE_HALF_FRAME_BYTES / sizeof(uint16_t)) // RGB565: 2 bytes/word
 #define HALF_FRAME_XFERS        HALF_FRAME_XFERS_32BIT                // default
 #define BUCKET_TAG_SIZE       20                                 // 20-byte tag (time_us + bucket tag + tx states + camera hint + isr_time_us)
+#define TAGGED_SUB_BUCKET_BYTES (BUCKET_TAG_SIZE + JPEG_CAPTURE_SUB_BUCKET_BYTES)
 #define TAGGED_HALF_FRAME_BYTES (BUCKET_TAG_SIZE + TX_HALF_FRAME_BYTES) 
 
 // Camera capture mode
@@ -52,6 +57,18 @@
 #define CAM_MODE_RGB565  1
 
 extern uint8_t *bucket[3];              // 3 half-frame buckets
+
+static inline uint8_t subbucket_bucket(uint8_t linear_idx) {
+    return linear_idx / JPEG_SUB_BUCKET_COUNT;
+}
+
+static inline uint8_t subbucket_index(uint8_t linear_idx) {
+    return linear_idx % JPEG_SUB_BUCKET_COUNT;
+}
+
+static inline uint8_t subbucket_linear(uint8_t bucket_idx, uint8_t sub_idx) {
+    return bucket_idx * JPEG_SUB_BUCKET_COUNT + sub_idx;
+}
 
 // --- Three-bucket system shared state ---
 
@@ -87,12 +104,13 @@ static inline uint32_t bucket_make_dirty(uint32_t frame, bool is_upper) {
            (is_upper ? BUCKET_HALF_MASK : 0);
 }
 
-// Camera counter: increments every half-frame
-// frame = counter / 2, half = counter % 2 (0=UPPER, 1=LOWER)
+// Camera counter: increments every half-frame in grouped mode, every full frame in VGA mode.
 extern volatile uint32_t cam_counter;
+extern volatile bool cam_vga_mode;
 
 // Bucket state array: [0]=A, [1]=B, [2]=C
 extern volatile uint32_t bucket_state[3];
+extern volatile uint32_t subbucket_state[VGA_SUB_BUCKET_COUNT];
 
 // Per-bucket TX state (three_bucket_system.md terminology)
 // Written by TX main thread, read+upgraded by ISR.
@@ -109,6 +127,8 @@ extern volatile uint8_t  bucket_tx_state[3];
 extern volatile uint32_t bucket_tx_min_counter[3]; // ISR only upgrades TX state if
                                                     // completed counter >= this value
 extern volatile uint8_t  bucket_tx_next_cemented[3];
+extern volatile uint8_t  subbucket_tx_state[VGA_SUB_BUCKET_COUNT];
+extern volatile uint32_t subbucket_complete_time_us[VGA_SUB_BUCKET_COUNT];
 extern volatile int8_t   cam_hint_next;
 extern volatile int8_t   cam_hint_next_next;
 extern volatile int8_t   cam_hint_next_next_next;
@@ -140,6 +160,8 @@ void read_cam_data_blocking(uint8_t *buffer, size_t length);
 dma_channel_config get_cam_config(PIO pio, uint32_t sm, uint32_t dma_chan);
 void cam_handler();
 void setup_dma_for_capture();
+void cam_set_vga_mode(bool enabled);
+bool cam_get_vga_mode(void);
 
 uint32_t cam_get_frame_size(void);
 void cam_set_vsync_end_on_rising(bool enabled);

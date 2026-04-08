@@ -43,6 +43,7 @@
 #include <stdbool.h>
 
 static void handle_half_complete(uint32_t completed_ch);
+static void handle_vga_frame_complete(uint32_t completed_ch);
 static void vsync_raw_irq_handler(void);
 static void clear_pio_jpeg_state(void);
 
@@ -66,15 +67,18 @@ static uint32_t DMA_CH_B;
 
 // Per-bucket state packed into single uint32_t (see cam.h for layout)
 volatile uint32_t bucket_state[3] = {0, 0, 0};
+volatile uint32_t subbucket_state[VGA_SUB_BUCKET_COUNT] = {0};
 
-// Camera counter: increments every half-frame
-// frame = cam_counter / 2, is_upper = (cam_counter % 2) == 0
+// Camera counter: increments every half-frame in grouped mode, every full frame in VGA mode.
 volatile uint32_t cam_counter = 0;
+volatile bool cam_vga_mode = false;
 
 // TX intent (TX writes, ISR reads+upgrades)
 volatile uint8_t bucket_tx_state[3] = {BUCKET_TX_STATE_FREE, BUCKET_TX_STATE_FREE, BUCKET_TX_STATE_FREE};
 volatile uint32_t bucket_tx_min_counter[3] = {0, 0, 0};
 volatile uint8_t bucket_tx_next_cemented[3] = {0, 0, 0};
+volatile uint8_t subbucket_tx_state[VGA_SUB_BUCKET_COUNT] = {0};
+volatile uint32_t subbucket_complete_time_us[VGA_SUB_BUCKET_COUNT] = {0};
 volatile int8_t cam_hint_next = -1;
 volatile int8_t cam_hint_next_next = -1;
 volatile int8_t cam_hint_next_next_next = -1;
@@ -84,8 +88,8 @@ volatile uint8_t  cam_capture_mode = CAM_MODE_JPEG;
 volatile uint32_t cam_half_frame_xfers = HALF_FRAME_XFERS_32BIT;
 volatile uint8_t  cam_dma_word_bytes = 4;
 
-// Internal ISR tracking: which bucket each DMA channel targets
-// ch_target[0] = CH_A's target bucket, ch_target[1] = CH_B's target bucket
+// Internal ISR tracking: current DMA target per channel.
+// Grouped mode uses logical buckets 0..2, VGA mode uses subbuckets 0..8.
 static volatile uint8_t ch_target[2] = {0, 1};
 
 // --- VSYNC GPIO interrupt support ---
@@ -118,6 +122,24 @@ void set_i2c_pins(uint8_t sda, uint8_t scl) {
 void set_pwm_pin(uint8_t pwm) {
     pin_xclk_pwm = pwm;
 }
+
+static inline uint8_t *logical_bucket_payload_ptr(uint8_t bucket_idx)
+{
+    return bucket[bucket_idx] + BUCKET_TAG_SIZE;
+}
+
+static inline uint8_t *subbucket_payload_ptr(uint8_t linear_idx)
+{
+    return bucket[subbucket_bucket(linear_idx)] + BUCKET_TAG_SIZE +
+           (subbucket_index(linear_idx) * JPEG_CAPTURE_SUB_BUCKET_BYTES);
+}
+
+static inline bool is_protected_subbucket(uint8_t idx)
+{
+    uint8_t s = subbucket_tx_state[idx];
+    return s == BUCKET_TX_STATE_TXP || s == BUCKET_TX_STATE_PD;
+}
+
 /********************************************************************************
 function:   Camera initialization
 parameter:
@@ -155,7 +177,7 @@ void setup_dma_for_capture()
     channel_config_set_transfer_data_size(&c_a, DMA_SIZE_32);
     channel_config_set_chain_to(&c_a, DMA_CH_B);
     dma_channel_configure(DMA_CH_A, &c_a,
-                          bucket[0] + BUCKET_TAG_SIZE, // write past 20-byte tag
+                          cam_vga_mode ? subbucket_payload_ptr(0) : logical_bucket_payload_ptr(0),
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
                           cam_half_frame_xfers,
                           false);                 // don't start yet
@@ -165,7 +187,7 @@ void setup_dma_for_capture()
     channel_config_set_transfer_data_size(&c_b, DMA_SIZE_32);
     channel_config_set_chain_to(&c_b, DMA_CH_A);
     dma_channel_configure(DMA_CH_B, &c_b,
-                          bucket[1] + BUCKET_TAG_SIZE, // write past 20-byte tag
+                          cam_vga_mode ? subbucket_payload_ptr(1) : logical_bucket_payload_ptr(1),
                           &pio_cam->rxf[sm_cam],  // read from PIO RX FIFO
                           cam_half_frame_xfers,
                           false);                 // don't start yet
@@ -177,6 +199,11 @@ void setup_dma_for_capture()
         bucket_tx_min_counter[i] = 0;
         bucket_tx_next_cemented[i] = 0;
     }
+    for (int i = 0; i < VGA_SUB_BUCKET_COUNT; i++) {
+        subbucket_state[i] = bucket_make_empty();
+        subbucket_tx_state[i] = BUCKET_TX_STATE_FREE;
+        subbucket_complete_time_us[i] = 0;
+    }
     cam_hint_next = -1;
     cam_hint_next_next = -1;
     cam_hint_next_next_next = -1;
@@ -185,14 +212,18 @@ void setup_dma_for_capture()
     ch_target[0] = 0;       // CH_A starts at bucket 0
     ch_target[1] = 1;       // CH_B starts at bucket 1
 
-    // Mark bucket 0 as dirty (being written)
-    // cam_counter=0 → frame=0, half=(0%2)=0 → UPPER, so is_upper=true
-    bucket_state[0] = bucket_make_dirty(0, true);
-    ((uint32_t *)bucket[0])[1] = bucket_state[0];
-    // Keep cemented-next-target update paired with dirty update.
-    bucket_tx_next_cemented[0] = 0;
-    bucket_tx_next_cemented[1] = 1; // CH_B is preconfigured as next target
-    bucket_tx_next_cemented[2] = 0;
+    if (cam_vga_mode) {
+        subbucket_state[0] = bucket_make_dirty(0, true);
+    } else {
+        // Mark bucket 0 as dirty (being written)
+        // cam_counter=0 → frame=0, half=(0%2)=0 → UPPER, so is_upper=true
+        bucket_state[0] = bucket_make_dirty(0, true);
+        ((uint32_t *)bucket[0])[1] = bucket_state[0];
+        // Keep cemented-next-target update paired with dirty update.
+        bucket_tx_next_cemented[0] = 0;
+        bucket_tx_next_cemented[1] = 1; // CH_B is preconfigured as next target
+        bucket_tx_next_cemented[2] = 0;
+    }
 
     if (!vsync_raw_irq_handler_installed) {
         gpio_add_raw_irq_handler(g_cam_pinmap.vsync, vsync_raw_irq_handler);
@@ -206,7 +237,8 @@ void setup_dma_for_capture()
     dma_channel_set_irq0_enabled(DMA_CH_B, true);
 
     irq_add_shared_handler(DMA_IRQ_0, cam_handler, PICO_SHARED_IRQ_HANDLER_DEFAULT_ORDER_PRIORITY);
-    mp_printf(MP_PYTHON_PRINTER, "irq_add_shared_handler: cam_handler (3-bucket skip)\n");
+    mp_printf(MP_PYTHON_PRINTER, "irq_add_shared_handler: cam_handler (%s)\n",
+              cam_vga_mode ? "VGA 9-subbucket" : "3-bucket skip");
 
     irq_set_enabled(DMA_IRQ_0, true);
     dma_channel_start(DMA_CH_A); // Start first half-frame capture
@@ -221,6 +253,49 @@ static inline bool is_protected(uint8_t b)
 {
     uint8_t s = bucket_tx_state[b];
     return s == BUCKET_TX_STATE_TXP || s == BUCKET_TX_STATE_PD;
+}
+
+static void handle_vga_frame_complete(uint32_t completed_ch)
+{
+    uint8_t ch_idx = (completed_ch == DMA_CH_A) ? 0 : 1;
+    uint8_t completed = ch_target[ch_idx];
+
+    uint8_t other_idx = 1 - ch_idx;
+    uint8_t other_target = ch_target[other_idx];
+
+    uint32_t old_counter = cam_counter;
+    subbucket_state[completed] = bucket_make_complete(old_counter, true);
+
+    uint32_t now_us = time_us_32();
+    subbucket_complete_time_us[completed] = now_us;
+    if (speed_cam_valid_data && last_half_complete_time_us != 0) {
+        speed_cam_upper_us = now_us - last_half_complete_time_us;
+        speed_cam_lower_us = 0;
+    }
+    speed_cam_valid_data = true;
+    last_half_complete_time_us = now_us;
+
+    cam_counter++;
+
+    if (subbucket_tx_state[completed] == BUCKET_TX_STATE_TX_REC ||
+        subbucket_tx_state[completed] == BUCKET_TX_STATE_TX) {
+        subbucket_tx_state[completed] = BUCKET_TX_STATE_TXP;
+    }
+
+    uint8_t cand_a = (other_target + 1) % VGA_SUB_BUCKET_COUNT;
+    uint8_t chosen = cand_a;
+    for (int step = 0; step < VGA_SUB_BUCKET_COUNT; step++) {
+        uint8_t candidate = (other_target + 1 + step) % VGA_SUB_BUCKET_COUNT;
+        if (!is_protected_subbucket(candidate)) {
+            chosen = candidate;
+            break;
+        }
+    }
+
+    subbucket_state[other_target] = bucket_make_dirty(cam_counter, true);
+
+    ch_target[ch_idx] = chosen;
+    dma_channel_set_write_addr(completed_ch, subbucket_payload_ptr(chosen), false);
 }
 
 /********************************************************************************
@@ -438,6 +513,33 @@ static void vsync_handler(uint gpio, uint32_t events) {
 
     uint8_t ch_idx = (active_ch == DMA_CH_A) ? 0 : 1;
     uint8_t completed = ch_target[ch_idx];
+
+    if (cam_vga_mode) {
+        dma_channel_abort(active_ch);
+        clear_pio_jpeg_state();
+
+        jpeg_frame_size = written_bytes;
+
+        if (written_bytes < JPEG_CAPTURE_SUB_BUCKET_BYTES) {
+            memset(subbucket_payload_ptr(completed) + written_bytes, 0x00,
+                   JPEG_CAPTURE_SUB_BUCKET_BYTES - written_bytes);
+        }
+
+        uint32_t head_len = (written_bytes < 32) ? written_bytes : 32;
+        if (head_len > 0) {
+            memcpy(cam_capture_head, subbucket_payload_ptr(completed), head_len);
+        }
+
+        dma_hw->ints0 = (1u << active_ch);
+        handle_vga_frame_complete(active_ch);
+
+        uint32_t next_ch_to_start = (active_ch == DMA_CH_A) ? DMA_CH_B : DMA_CH_A;
+        dma_channel_set_trans_count(DMA_CH_A, cam_half_frame_xfers, false);
+        dma_channel_set_trans_count(DMA_CH_B, cam_half_frame_xfers, false);
+        dma_channel_start(next_ch_to_start);
+        return;
+    }
+
     bool is_first_bucket = bucket_half_is_upper(bucket_state[completed]);
 
     if (is_first_bucket && written_bytes < 16) {
@@ -513,11 +615,21 @@ void cam_handler(void)
     uint32_t ints = dma_hw->ints0;
     if (ints & (1u << DMA_CH_A)) {
         dma_hw->ints0 = 1u << DMA_CH_A;
-        handle_half_complete(DMA_CH_A);
+        if (cam_vga_mode) {
+            jpeg_frame_size = JPEG_CAPTURE_SUB_BUCKET_BYTES;
+            handle_vga_frame_complete(DMA_CH_A);
+        } else {
+            handle_half_complete(DMA_CH_A);
+        }
     }
     if (ints & (1u << DMA_CH_B)) {
         dma_hw->ints0 = 1u << DMA_CH_B;
-        handle_half_complete(DMA_CH_B);
+        if (cam_vga_mode) {
+            jpeg_frame_size = JPEG_CAPTURE_SUB_BUCKET_BYTES;
+            handle_vga_frame_complete(DMA_CH_B);
+        } else {
+            handle_half_complete(DMA_CH_B);
+        }
     }
 }
 
@@ -601,7 +713,7 @@ void start_cam(uint8_t mode)
     }
 
     cam_capture_mode = CAM_MODE_JPEG;
-    cam_half_frame_xfers = HALF_FRAME_XFERS_32BIT;
+    cam_half_frame_xfers = cam_vga_mode ? SUB_BUCKET_XFERS_32BIT : HALF_FRAME_XFERS_32BIT;
     cam_dma_word_bytes = 4;
 
     offset_cam = pio_add_program(pio_cam, &picampinos_program);
@@ -615,7 +727,8 @@ void start_cam(uint8_t mode)
 
     clear_pio_jpeg_state();
 
-    mp_printf(MP_PYTHON_PRINTER, "start_cam finished, mode=JPEG\n");
+    mp_printf(MP_PYTHON_PRINTER, "start_cam finished, mode=JPEG, layout=%s\n",
+              cam_vga_mode ? "VGA-40k" : "grouped-120k");
     setup_dma_for_capture();
 }
 
@@ -717,6 +830,16 @@ void set_pwm_freq_kHz(uint32_t freq_khz, uint8_t gpio_num)
 uint32_t cam_get_frame_size(void)
 {
     return jpeg_frame_size;
+}
+
+void cam_set_vga_mode(bool enabled)
+{
+    cam_vga_mode = enabled;
+}
+
+bool cam_get_vga_mode(void)
+{
+    return cam_vga_mode;
 }
 
 void cam_set_vsync_end_on_rising(bool enabled)

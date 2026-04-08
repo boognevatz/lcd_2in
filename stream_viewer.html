@@ -578,6 +578,7 @@
       const BASE_PIXEL_BYTES = W * H * 2;
       const PIXEL_BYTES = BASE_PIXEL_BYTES + (DEFAULT_TAG_SIZE * 2); // 153640 (2x20-byte tags + pixel data)
       const MIN_PIXEL_BYTES = BASE_PIXEL_BYTES + 8; // 2x4-byte tags
+      const VGA_BUCKET_BYTES = (40 * 1024) + DEFAULT_TAG_SIZE;
       const HALF_PIXEL_BYTES = W * (H / 2) * 2; // 76800
 
       // ---- State ----
@@ -622,11 +623,16 @@
       // Scans the multipart file to find each frame's data offset.
       // Each frame: [optional \r\n]--frame\r\n<headers>\r\n\r\n<contentLength bytes>
       function guessTagSize(contentLength) {
+        if (contentLength <= VGA_BUCKET_BYTES + 64) return DEFAULT_TAG_SIZE;
         const extra = contentLength - BASE_PIXEL_BYTES;
         if (extra % 2 !== 0) return DEFAULT_TAG_SIZE;
         const tag = extra / 2;
         if (tag === 20 || tag === 16 || tag === 12 || tag === 8 || tag === 4) return tag;
         return DEFAULT_TAG_SIZE;
+      }
+
+      function isVgaMultipartFrame(contentLength) {
+        return contentLength <= VGA_BUCKET_BYTES + 64;
       }
 
       async function buildIndex(f) {
@@ -680,7 +686,14 @@
             isPartial = true;
           }
 
-          result.push({ dataOffset, contentLength: actualLength, headers: headerText, tagSize, isPartial });
+          result.push({
+            dataOffset,
+            contentLength: actualLength,
+            headers: headerText,
+            tagSize,
+            isPartial,
+            isVga: isVgaMultipartFrame(actualLength)
+          });
 
           // Advance past pixel data
           offset = dataOffset + contentLength;
@@ -804,17 +817,19 @@
         ctx.putImageData(imageData, 0, 0);
       }
 
-      function decodeJpeg(pixelData, tagSize) {
-        const transmittedHalfBytes = Math.floor((pixelData.length - 2 * tagSize) / 2);
-        const jpegData = new Uint8Array(transmittedHalfBytes * 2);
-        
-        // Extract full transmitted bucket 1
-        jpegData.set(pixelData.subarray(tagSize, tagSize + transmittedHalfBytes), 0);
-        // Extract full transmitted bucket 2
-        jpegData.set(
-          pixelData.subarray(tagSize + transmittedHalfBytes + tagSize, tagSize + transmittedHalfBytes + tagSize + transmittedHalfBytes),
-          transmittedHalfBytes
-        );
+      function decodeJpeg(pixelData, tagSize, isVga) {
+        let jpegData;
+        if (isVga) {
+          jpegData = pixelData.subarray(tagSize);
+        } else {
+          const transmittedHalfBytes = Math.floor((pixelData.length - 2 * tagSize) / 2);
+          jpegData = new Uint8Array(transmittedHalfBytes * 2);
+          jpegData.set(pixelData.subarray(tagSize, tagSize + transmittedHalfBytes), 0);
+          jpegData.set(
+            pixelData.subarray(tagSize + transmittedHalfBytes + tagSize, tagSize + transmittedHalfBytes + tagSize + transmittedHalfBytes),
+            transmittedHalfBytes
+          );
+        }
 
         let eoiIndex = jpegData.length;
         for (let i = jpegData.length - 2; i >= 0; i--) {
@@ -851,18 +866,18 @@
 
         try {
           const fr = frames[idx];
-          if (!fr || (fr.contentLength < PIXEL_BYTES && !fr.isPartial)) {
+          const tagSize = (fr && fr.tagSize) || DEFAULT_TAG_SIZE;
+          if (!fr || (fr.contentLength < tagSize && !fr.isPartial)) {
             console.error('showFrame: invalid frame data at index', idx, fr);
             showError('Frame ' + (idx + 1) + ' has invalid or missing pixel data.');
             return;
           }
           const pixelData = await readSlice(file, fr.dataOffset, fr.dataOffset + fr.contentLength);
-          const tagSize = fr.tagSize || DEFAULT_TAG_SIZE;
           const isJpeg = pixelData[tagSize] === 0xFF && pixelData[tagSize + 1] === 0xD8;
           const forceRGB = $optForceRGB.checked;
 
           if (isJpeg && !forceRGB) {
-            decodeJpeg(pixelData, tagSize);
+            decodeJpeg(pixelData, tagSize, !!fr.isVga);
           } else {
             if (!autoSwapSet) {
               const analysis = analyzeEndianness(pixelData, tagSize);
@@ -878,9 +893,12 @@
 
           // Extract and display bucket tags
           const upperTag = pixelData.length >= tagSize ? readBucketTag(pixelData, 0) : null;
-          const lowerTagOffset = tagSize + Math.max(HALF_PIXEL_BYTES, Math.floor((pixelData.length - 2 * tagSize) / 2));
-          const lowerTag = pixelData.length >= lowerTagOffset + tagSize ? readBucketTag(pixelData, lowerTagOffset) : null;
-          renderMetadata(fr.headers, upperTag, lowerTag);
+          let lowerTag = null;
+          if (!fr.isVga) {
+            const lowerTagOffset = tagSize + Math.max(HALF_PIXEL_BYTES, Math.floor((pixelData.length - 2 * tagSize) / 2));
+            lowerTag = pixelData.length >= lowerTagOffset + tagSize ? readBucketTag(pixelData, lowerTagOffset) : null;
+          }
+          renderMetadata(fr.headers, upperTag, lowerTag, !!fr.isVga);
 
           updateUI();
         } catch (err) {
@@ -892,7 +910,22 @@
       }
 
       // ---- Parse & display metadata ----
-      function renderMetadata(headerText, upperTag, lowerTag) {
+      function formatCamCounter(rawValue, isVga, upperTag) {
+        if (!rawValue) return 'N/A';
+        const digits = rawValue.replace(/\D/g, '');
+        if (!digits) return 'N/A';
+        const n = parseInt(digits, 10);
+        if (Number.isNaN(n)) return 'N/A';
+        if (isVga) {
+          const slot = upperTag ? formatSubbucketNameFromTag(upperTag.tag >>> 0) : '?';
+          return n + 'U (' + slot + ')';
+        }
+        const frame = Math.floor(n / 2);
+        const half = (n % 2 === 0) ? 'U' : 'L';
+        return frame + half;
+      }
+
+      function renderMetadata(headerText, upperTag, lowerTag, isVga) {
         const lines = headerText.split(/\r?\n/);
         const map = new Map();
         for (const line of lines) {
@@ -918,19 +951,8 @@
         const upperStartTime = formatHeaderTime(map.get('X-Buckets-Upper-Start-time') || 'N/A');
         const afterWaitTime = formatHeaderTime(map.get('X-Buckets-after-wait-time') || 'N/A');
         
-        let bucketsCounterStr = 'N/A';
         const rawCamCounter = map.get('X-Buckets-halfframe-counter');
-        if (rawCamCounter) {
-          const digits = rawCamCounter.replace(/\D/g, '');
-          if (digits) {
-            const n = parseInt(digits, 10);
-            if (!Number.isNaN(n)) {
-              const frame = Math.floor(n / 2);
-              const half = (n % 2 === 0) ? 'U' : 'L';
-              bucketsCounterStr = frame + half;
-            }
-          }
-        }
+        const bucketsCounterStr = formatCamCounter(rawCamCounter, isVga, upperTag);
         
         const prevUpperStartTime = formatHeaderTime(map.get('X-Buckets-Prev-Upper-Start-time') || 'N/A');
         const prevLowerMidTime = formatHeaderTime(map.get('X-Buckets-Prev-Lower-Mid-time') || 'N/A');
@@ -975,6 +997,7 @@
         const rows = [
           [{ k: 'Temperature', v: temp }, { k: 'Barometer', v: baro }],
           ['Ext temp', extTemp],
+          ['Stream layout', isVga ? 'VGA single-bucket frame' : 'Grouped two-half frame'],
           [{ k: 'Cam Speed', v: speedCam }, { k: 'TX Speed', v: speedTx }],
           ['TX vs Camera', txVsCamera],
           ['Mem Free', memFree],
@@ -986,8 +1009,8 @@
           ['Buckets Decision Time', upperStartTime + ' (cam=' + bucketsCounterStr + ')\n' + bucketsDecision],
           ['Buckets After Wait', afterWaitTime + ' (cam=' + bucketsCounterStr + ')\n' + bucketsAfterWait],
           ['Buckets Upper Start state', bucketsTx],
-          ['Upper tag', formatBucketTag(upperTag)],
-          ['Lower tag', formatBucketTag(lowerTag)]
+          [isVga ? 'Frame tag' : 'Upper tag', formatBucketTag(upperTag, isVga)],
+          [isVga ? 'Unused lower tag' : 'Lower tag', isVga ? 'N/A' : formatBucketTag(lowerTag, false)]
         ];
 
         let html = '';
@@ -1122,9 +1145,15 @@
         return s;
       }
 
+      function formatSubbucketNameFromTag(tag) {
+        const frame = (tag >>> 3);
+        const letters = ['A', 'B', 'C'];
+        return letters[Math.floor(frame / 3) % 3] + (frame % 3);
+      }
+
       // Format a 32-bit bucket tag for display
       // bits 31-3 = frame number, bit 2 = upper(1)/lower(0), bit 1 = dirty, bit 0 = valid
-      function formatBucketTag(tagInfo) {
+      function formatBucketTag(tagInfo, isVga) {
         if (!tagInfo) return 'N/A';
         const tag = tagInfo.tag >>> 0;
         const frame = (tag >>> 3);
@@ -1135,6 +1164,7 @@
         const txTime = tagInfo.time >>> 0;
         return formatTxStates(tagInfo.tx >>> 0)
           + '\n' + 'frame=' + frame
+          + (isVga ? ' bucket=' + formatSubbucketNameFromTag(tag) : '')
           + ' ' + (isUpper ? 'UPPER' : 'LOWER')
           + ' dirty=' + (isDirty ? 'Y' : 'N')
           + ' valid=' + (isValid ? 'Y' : 'N')

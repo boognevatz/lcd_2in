@@ -1,6 +1,7 @@
 #include "cam.h"
 #include <string.h>
 #include <stdint.h>
+#include <stdio.h>
 #include "ov5640.h"
 #include "py/obj.h"
 #include "py/gc.h"
@@ -50,6 +51,12 @@ static mp_obj_t camera_start_cam(size_t n_args, const mp_obj_t *args) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(camera_start_cam_obj, 0, 1, camera_start_cam);
 
+static mp_obj_t camera_set_vga_mode(mp_obj_t enabled_obj) {
+    cam_set_vga_mode(mp_obj_is_true(enabled_obj));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_vga_mode_obj, camera_set_vga_mode);
+
 
 // Wrapper for ov5640_set_data_order()
 static mp_obj_t camera_set_data_order(mp_obj_t reverse_obj) {
@@ -92,17 +99,36 @@ static MP_DEFINE_CONST_FUN_OBJ_1(camera_set_xclk_pin_obj, camera_set_xclk_pin);
 // Boundary prefix for MJPEG-style multipart streaming.
 // Followed by the dynamic x_header buffer (temperature + diagnostics + blank line).
 // Content-Length is zero-padded to fixed width (8 digits).
-static const char boundary_prefix_first[] =
-    "--frame\r\n"
-    "Content-Type: application/octet-stream\r\n"
-    "Content-Length: 00245800\r\n";
-static const char boundary_prefix_subsequent[] =
-    "\r\n--frame\r\n"
-    "Content-Type: application/octet-stream\r\n"
-    "Content-Length: 00245800\r\n";
+#define BOUNDARY_PREFIX_MAX_LEN 96
 
 // Bucket name lookup: index 0->'A', 1->'B', 2->'C'
 static const char bucket_name[] = "ABC";
+
+static inline char subbucket_name_letter(uint8_t linear_idx)
+{
+    return bucket_name[subbucket_bucket(linear_idx)];
+}
+
+static inline char subbucket_name_index(uint8_t linear_idx)
+{
+    return (char)('0' + subbucket_index(linear_idx));
+}
+
+static size_t build_boundary_prefix(char *buf, size_t buf_size, bool first_frame, size_t content_length)
+{
+    int written = snprintf(buf, buf_size,
+                           first_frame
+                               ? "--frame\r\nContent-Type: application/octet-stream\r\nContent-Length: %08u\r\n"
+                               : "\r\n--frame\r\nContent-Type: application/octet-stream\r\nContent-Length: %08u\r\n",
+                           (unsigned)content_length);
+    if (written < 0) {
+        return 0;
+    }
+    if ((size_t)written >= buf_size) {
+        return buf_size - 1;
+    }
+    return (size_t)written;
+}
 
 // --- X-header: dynamic per-frame headers (temperature + bucket diagnostics) ---
 //
@@ -496,6 +522,7 @@ static uint32_t accum_count;
 static uint32_t t_frame_start;
 static uint32_t speed_tx_upper_us = 0;
 static uint32_t speed_tx_lower_us = 0;
+static uint32_t vga_tx_counter;
 
 typedef enum {
     TX_PAIR_MODE_WARMUP = 0,
@@ -994,6 +1021,89 @@ static bool tx_pick_pair_camera_slower(
     return true;
 }
 
+static int find_newest_complete_subbucket(uint32_t *counter_out)
+{
+    int best_idx = -1;
+    uint32_t best_counter = 0;
+
+    for (int i = 0; i < VGA_SUB_BUCKET_COUNT; i++) {
+        uint32_t s = subbucket_state[i];
+        if (!bucket_is_complete(s)) {
+            continue;
+        }
+        uint32_t counter = s >> BUCKET_FRAME_SHIFT;
+        if (best_idx < 0 || counter >= best_counter) {
+            best_idx = i;
+            best_counter = counter;
+        }
+    }
+
+    if (best_idx >= 0 && counter_out != NULL) {
+        *counter_out = best_counter;
+    }
+    return best_idx;
+}
+
+static uint32_t pack_vga_tx_states(uint8_t current_idx)
+{
+    uint32_t packed = 0;
+
+    for (uint8_t group = 0; group < 3; group++) {
+        uint8_t state = BUCKET_TX_STATE_FREE;
+        for (uint8_t sub = 0; sub < JPEG_SUB_BUCKET_COUNT; sub++) {
+            uint8_t idx = subbucket_linear(group, sub);
+            if (subbucket_tx_state[idx] != BUCKET_TX_STATE_FREE) {
+                state = subbucket_tx_state[idx];
+                break;
+            }
+        }
+        if (group == subbucket_bucket(current_idx) &&
+            subbucket_tx_state[current_idx] != BUCKET_TX_STATE_FREE) {
+            state = subbucket_tx_state[current_idx];
+        }
+        packed |= ((uint32_t)(state & 0xff)) << (group * 8);
+    }
+
+    return packed;
+}
+
+static bool vga_wait_or_skip_next(uint8_t *slot_out, uint32_t *counter_out)
+{
+    uint32_t target_counter = vga_tx_counter;
+
+    for (;;) {
+        uint32_t produced = cam_counter;
+        if (produced > target_counter && (produced - target_counter) >= 4) {
+            uint32_t newest_counter = 0;
+            int newest_idx = find_newest_complete_subbucket(&newest_counter);
+            if (newest_idx >= 0) {
+                target_counter = newest_counter;
+                *slot_out = (uint8_t)newest_idx;
+                *counter_out = newest_counter;
+                vga_tx_counter = newest_counter;
+                return true;
+            }
+        }
+
+        uint8_t slot = (uint8_t)(target_counter % VGA_SUB_BUCKET_COUNT);
+        uint32_t s = subbucket_state[slot];
+        uint32_t slot_counter = s >> BUCKET_FRAME_SHIFT;
+
+        if (bucket_is_complete(s) && slot_counter == target_counter) {
+            *slot_out = slot;
+            *counter_out = target_counter;
+            return true;
+        }
+
+        if (bucket_is_valid(s) && slot_counter > target_counter) {
+            target_counter = slot_counter;
+            continue;
+        }
+
+        mp_handle_pending(true);
+    }
+}
+
 
 
 /********************************************************************************
@@ -1005,6 +1115,20 @@ static mp_obj_t camera_stream_start(void) {
     first_frame = true;
     frame_count = 0;
     warmup_manual_steer_done = false;
+    vga_tx_counter = 0;
+
+    if (cam_get_vga_mode()) {
+        for (int i = 0; i < VGA_SUB_BUCKET_COUNT; i++) {
+            subbucket_tx_state[i] = BUCKET_TX_STATE_FREE;
+        }
+        cam_tx_active = false;
+        cam_hint_next = -1;
+        cam_hint_next_next = -1;
+        cam_hint_next_next_next = -1;
+        write_lower_mid_hints_header(-1, -1, -1);
+        t_frame_start = mp_hal_ticks_us();
+        return mp_const_none;
+    }
 
     // With A,B-only ISR rotation (when TX inactive), startup pair is always A,B.
     // Bucket A always has upper halves, B always has lower halves, C is idle.
@@ -1123,6 +1247,101 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
     // called during camera init without a subsequent stream_loop_c.
     if (first_frame) {
         cam_tx_active = true;
+    }
+
+    if (cam_get_vga_mode()) {
+        char boundary_prefix[BOUNDARY_PREFIX_MAX_LEN];
+
+        while (streaming && batch_sent < batch_size) {
+            mp_handle_pending(true);
+
+            uint8_t tx_slot_local;
+            uint32_t tx_counter_local;
+            vga_wait_or_skip_next(&tx_slot_local, &tx_counter_local);
+
+            subbucket_tx_state[tx_slot_local] = BUCKET_TX_STATE_TXP;
+
+            write_temperature(&x_header_temperature[X_HEADER_TEMP_VAL_OFFSET], mcu_temp_x10);
+            x_header_buckets_decision[X_HEADER_TX1_OFFSET] = subbucket_name_letter(tx_slot_local);
+            x_header_buckets_decision[X_HEADER_TX2_OFFSET] = subbucket_name_index(tx_slot_local);
+            x_header_buckets_after_wait[X_HEADER_AFTER_WAIT_TX1_OFFSET] = subbucket_name_letter(tx_slot_local);
+            x_header_buckets_after_wait[X_HEADER_AFTER_WAIT_TX2_OFFSET] = subbucket_name_index(tx_slot_local);
+            write_u32_grouped(&x_header_buckets_halfframe_counter[X_HEADER_BUCKETS_COUNTER_OFFSET], tx_counter_local);
+
+            uint32_t packed_tx_states = pack_vga_tx_states(tx_slot_local);
+            write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], packed_tx_states & 0xffu);
+            write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_B_OFFSET], (packed_tx_states >> 8) & 0xffu);
+            write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_C_OFFSET], (packed_tx_states >> 16) & 0xffu);
+
+            size_t prefix_len = build_boundary_prefix(
+                boundary_prefix, sizeof(boundary_prefix), first_frame, TAGGED_SUB_BUCKET_BYTES);
+            mp_uint_t ret = mp_stream_write_exactly(socket_obj, boundary_prefix, prefix_len, &errcode);
+            if (ret == MP_STREAM_ERROR) {
+                streaming = false;
+                break;
+            }
+
+            ret = mp_stream_write_exactly(socket_obj, x_header_temperature, sizeof(x_header_temperature) - 1, &errcode);
+            if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+            ret = mp_stream_write_exactly(socket_obj, x_header_ext_temp, sizeof(x_header_ext_temp) - 1, &errcode);
+            if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+            ret = mp_stream_write_exactly(socket_obj, x_header_barometer, sizeof(x_header_barometer) - 1, &errcode);
+            if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+            ret = mp_stream_write_exactly(socket_obj, x_header_buckets_decision, sizeof(x_header_buckets_decision) - 1, &errcode);
+            if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+            ret = mp_stream_write_exactly(socket_obj, x_header_buckets_after_wait, sizeof(x_header_buckets_after_wait) - 1, &errcode);
+            if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+            ret = mp_stream_write_exactly(socket_obj, x_header_buckets_tx, sizeof(x_header_buckets_tx) - 1, &errcode);
+            if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+            ret = mp_stream_write_exactly(socket_obj, x_header_buckets_halfframe_counter, sizeof(x_header_buckets_halfframe_counter) - 1, &errcode);
+            if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+            ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
+            if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+
+            uint32_t tag_words[5] = {
+                mp_hal_ticks_us(),
+                subbucket_state[tx_slot_local],
+                packed_tx_states,
+                0,
+                subbucket_complete_time_us[tx_slot_local],
+            };
+
+            ret = mp_stream_write_exactly(socket_obj, tag_words, sizeof(tag_words), &errcode);
+            if (ret == MP_STREAM_ERROR || ret == 0) {
+                streaming = false;
+                break;
+            }
+
+            uint32_t send_start_us = tag_words[0];
+            ret = mp_stream_write_exactly(socket_obj,
+                                          bucket[subbucket_bucket(tx_slot_local)] + BUCKET_TAG_SIZE +
+                                              (subbucket_index(tx_slot_local) * JPEG_CAPTURE_SUB_BUCKET_BYTES),
+                                          JPEG_CAPTURE_SUB_BUCKET_BYTES,
+                                          &errcode);
+            if (ret == MP_STREAM_ERROR || ret == 0) {
+                streaming = false;
+                break;
+            }
+
+            subbucket_tx_state[tx_slot_local] = BUCKET_TX_STATE_FREE;
+            speed_tx_upper_us = mp_hal_ticks_us() - send_start_us;
+            speed_tx_lower_us = 0;
+            vga_tx_counter = tx_counter_local + 1;
+            first_frame = false;
+            frame_count++;
+            batch_sent++;
+        }
+
+        if (!streaming) {
+            for (int i = 0; i < VGA_SUB_BUCKET_COUNT; i++) {
+                subbucket_tx_state[i] = BUCKET_TX_STATE_FREE;
+            }
+            cam_tx_active = false;
+            speed_tx_upper_us = 0;
+            speed_tx_lower_us = 0;
+        }
+
+        return mp_obj_new_int(batch_sent);
     }
 
     while (streaming && batch_sent < batch_size) {
@@ -1326,19 +1545,13 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
 
         uint32_t t_send_start = mp_hal_ticks_us();
 
-        // --- Send boundary prefix (static) ---
-        const char *prefix;
-        size_t prefix_len;
-        if (first_frame) {
-            prefix = boundary_prefix_first;
-            prefix_len = sizeof(boundary_prefix_first) - 1;
-        } else {
-            prefix = boundary_prefix_subsequent;
-            prefix_len = sizeof(boundary_prefix_subsequent) - 1;
-        }
+        // --- Send boundary prefix ---
+        char boundary_prefix[BOUNDARY_PREFIX_MAX_LEN];
+        size_t prefix_len = build_boundary_prefix(
+            boundary_prefix, sizeof(boundary_prefix), first_frame, 2 * TAGGED_HALF_FRAME_BYTES);
 
         mp_uint_t ret = mp_stream_write_exactly(
-            socket_obj, prefix, prefix_len, &errcode);
+            socket_obj, boundary_prefix, prefix_len, &errcode);
         if (ret == MP_STREAM_ERROR) {
             streaming = false;
             break;
@@ -1710,6 +1923,7 @@ static const mp_rom_map_elem_t camera_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_set_pwm_pin), MP_ROM_PTR(&camera_set_pwm_pin_obj) },
     { MP_ROM_QSTR(MP_QSTR_free_cam), MP_ROM_PTR(&camera_free_cam_obj) },
     { MP_ROM_QSTR(MP_QSTR_start_cam), MP_ROM_PTR(&camera_start_cam_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_vga_mode), MP_ROM_PTR(&camera_set_vga_mode_obj) },
     { MP_ROM_QSTR(MP_QSTR_stream_start), MP_ROM_PTR(&camera_stream_start_obj) },
     { MP_ROM_QSTR(MP_QSTR_stream_loop_c), MP_ROM_PTR(&camera_stream_loop_c_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_temperature), MP_ROM_PTR(&camera_set_temperature_obj) },

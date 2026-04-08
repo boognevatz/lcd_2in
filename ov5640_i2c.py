@@ -431,6 +431,7 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
         if test_pattern:
             camera.write_register(0x503D, 0xC0)
         time.sleep_ms(50)
+        camera.set_vga_mode(True)
         camera.start_cam(0)  # CAM_MODE_JPEG
         try:
             camera.stream_start()
@@ -444,6 +445,7 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
         if test_pattern:
             camera.write_register(0x503D, 0xC0)
         time.sleep_ms(50)
+        camera.set_vga_mode(False)
         camera.start_cam(0)  # CAM_MODE_JPEG
         try:
             camera.stream_start()
@@ -457,6 +459,7 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
         if test_pattern:
             camera.write_register(0x503D, 0xC0)
         time.sleep_ms(50)
+        camera.set_vga_mode(False)
         camera.start_cam(0)  # CAM_MODE_JPEG
         try:
             camera.stream_start()
@@ -469,6 +472,7 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
     camera.write_registers(BASE_REGS)
 
     if format == "jpeg":
+        camera.set_vga_mode(resolution == "vga")
         # === JPEG Base settings ===
         camera.write_register(0x3002, 0x00) # Release JPEG block
         camera.write_register(0x3006, 0xff) # Enable all clocks
@@ -610,6 +614,7 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
 
     time.sleep_ms(50)
     if format == "rgb565":
+        camera.set_vga_mode(False)
         camera.start_cam(1)  # CAM_MODE_RGB565
     else:
         camera.start_cam(0)  # CAM_MODE_JPEG

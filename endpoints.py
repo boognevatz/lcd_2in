@@ -192,6 +192,7 @@ Connection: close
         const width = 240;
         const height = 320;
         const TAG_SIZE = 20;  // 20-byte tag per half-frame (time_us + bucket tag + tx states + hints + isr_time)
+        const VGA_BUCKET_BYTES = (40 * 1024) + TAG_SIZE;
         const rgb565HalfBytes = width * (height / 2) * 2; // 76800
         const rgb565FrameSize = width * height * 2 + TAG_SIZE * 2; // 153640
 
@@ -199,6 +200,10 @@ Connection: close
         let fpsCounter = 0;
         let lastFpsTime = Date.now();
         let droppedHalfFrames = 0;
+
+        function isVgaFrameLength(length) {
+            return length <= VGA_BUCKET_BYTES + 64;
+        }
 
         // Single-socket guard: only one active request at a time
         let requestInProgress = false;
@@ -209,6 +214,57 @@ Connection: close
 
         function displayImage(arrayBuffer) {
             const data = new Uint8Array(arrayBuffer);
+            const isVga = isVgaFrameLength(data.length);
+
+            function updateStats() {
+                frameCount++;
+                fpsCounter++;
+                document.getElementById('frame-count').textContent = frameCount;
+
+                const now = Date.now();
+                if (now - lastFpsTime >= 1000) {
+                    const fps = fpsCounter / ((now - lastFpsTime) / 1000);
+                    document.getElementById('fps').textContent = fps.toFixed(2);
+                    fpsCounter = 0;
+                    lastFpsTime = now;
+                }
+            }
+
+            if (data.length < TAG_SIZE) {
+                return;
+            }
+
+            if (isVga) {
+                if (data[TAG_SIZE] === 0xFF && data[TAG_SIZE + 1] === 0xD8) {
+                    const jpegData = data.subarray(TAG_SIZE);
+
+                    let eoiIndex = jpegData.length;
+                    for (let i = jpegData.length - 2; i >= 0; i--) {
+                        if (jpegData[i] === 0xFF && jpegData[i + 1] === 0xD9) {
+                            eoiIndex = i + 2;
+                            break;
+                        }
+                    }
+
+                    const blob = new Blob([jpegData.subarray(0, eoiIndex)], { type: 'image/jpeg' });
+                    const url = URL.createObjectURL(blob);
+                    const img = new Image();
+                    img.onload = () => {
+                        if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+                            canvas.width = img.naturalWidth;
+                            canvas.height = img.naturalHeight;
+                        }
+                        imgDim.innerHTML = `<b>${img.naturalWidth}</b> x <b>${img.naturalHeight}</b> VGA JPEG<br><span style="opacity:0.7">${formatBytes(eoiIndex)}</span>`;
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        URL.revokeObjectURL(url);
+                        applyViewSize();
+                        updateStats();
+                    };
+                    img.src = url;
+                }
+                return;
+            }
+
             const halfPayloadBytes = Math.max(0, (data.length - TAG_SIZE * 2) >> 1);
 
             // --- Extract frame numbers from 20-byte tags ---
@@ -236,20 +292,6 @@ Connection: close
                 droppedHalfFrames += 2;
                 document.getElementById('dropped-halves').textContent = droppedHalfFrames;
                 return;
-            }
-
-            function updateStats() {
-                frameCount++;
-                fpsCounter++;
-                document.getElementById('frame-count').textContent = frameCount;
-
-                const now = Date.now();
-                if (now - lastFpsTime >= 1000) {
-                    const fps = fpsCounter / ((now - lastFpsTime) / 1000);
-                    document.getElementById('fps').textContent = fps.toFixed(2);
-                    fpsCounter = 0;
-                    lastFpsTime = now;
-                }
             }
 
             // Auto-detect JPEG by looking for SOI marker (FF D8)
