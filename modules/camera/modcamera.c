@@ -1267,6 +1267,12 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             x_header_buckets_after_wait[X_HEADER_AFTER_WAIT_TX1_OFFSET] = subbucket_name_letter(tx_slot_local);
             x_header_buckets_after_wait[X_HEADER_AFTER_WAIT_TX2_OFFSET] = subbucket_name_index(tx_slot_local);
             write_u32_grouped(&x_header_buckets_halfframe_counter[X_HEADER_BUCKETS_COUNTER_OFFSET], tx_counter_local);
+            write_u32_grouped(&x_header_speed_cam_upper[X_HEADER_SPEED_CAM_UPPER_OFFSET], speed_cam_upper_us);
+            write_u32_grouped(&x_header_speed_tx_upper[X_HEADER_SPEED_TX_UPPER_OFFSET], speed_tx_upper_us);
+
+            gc_info_t gc_info_state;
+            gc_info(&gc_info_state);
+            write_u32_grouped(&x_header_mem_free[X_HEADER_MEM_FREE_OFFSET], gc_info_state.free);
 
             uint32_t packed_tx_states = pack_vga_tx_states(tx_slot_local);
             write_tx_state_slot(&x_header_buckets_tx[X_HEADER_TX_A_OFFSET], packed_tx_states & 0xffu);
@@ -1294,6 +1300,12 @@ static mp_obj_t camera_stream_loop_c(mp_obj_t socket_obj, mp_obj_t batch_obj) {
             ret = mp_stream_write_exactly(socket_obj, x_header_buckets_tx, sizeof(x_header_buckets_tx) - 1, &errcode);
             if (ret == MP_STREAM_ERROR) { streaming = false; break; }
             ret = mp_stream_write_exactly(socket_obj, x_header_buckets_halfframe_counter, sizeof(x_header_buckets_halfframe_counter) - 1, &errcode);
+            if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+            ret = mp_stream_write_exactly(socket_obj, x_header_speed_cam_upper, sizeof(x_header_speed_cam_upper) - 1, &errcode);
+            if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+            ret = mp_stream_write_exactly(socket_obj, x_header_speed_tx_upper, sizeof(x_header_speed_tx_upper) - 1, &errcode);
+            if (ret == MP_STREAM_ERROR) { streaming = false; break; }
+            ret = mp_stream_write_exactly(socket_obj, x_header_mem_free, sizeof(x_header_mem_free) - 1, &errcode);
             if (ret == MP_STREAM_ERROR) { streaming = false; break; }
             ret = mp_stream_write_exactly(socket_obj, x_header_terminator, sizeof(x_header_terminator) - 1, &errcode);
             if (ret == MP_STREAM_ERROR) { streaming = false; break; }
