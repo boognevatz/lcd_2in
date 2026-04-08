@@ -444,6 +444,17 @@ def set_format(format="jpeg", resolution="vga", test_pattern=False):
         camera.write_register(0x380E, 0x04) # VTS MSB
         camera.write_register(0x380F, 0x1A) # VTS LSB = 1050
 
+        # 3. Keep the 20fps timing, but bias AEC/AGC toward a brighter image.
+        # This does not change the sensor timing; it only asks auto-exposure to
+        # target a brighter scene and allow a bit more analog/digital gain.
+        camera.write_register(0x3a0f, 0x30) # ae_level high
+        camera.write_register(0x3a10, 0x28) # ae_level low
+        camera.write_register(0x3a11, 0x70) # ae target
+        camera.write_register(0x3a1b, 0x30) # fast-mode high
+        camera.write_register(0x3a1e, 0x20) # fast-mode low
+        camera.write_register(0x3a1f, 0x1c) # fast-mode target
+        camera.write_register(0x3a19, 0xff) # gain ceiling
+
         if test_pattern:
             camera.write_register(0x503D, 0xC0)
         time.sleep_ms(50)
